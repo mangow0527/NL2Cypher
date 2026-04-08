@@ -679,6 +679,420 @@ Processing Time: 3.2s
 
 ---
 
+## 弱模型服务交付方案
+
+如果只交付基于弱模型的Cypher生成服务，需要将增强能力固化为可交付资产。
+
+### 核心交付架构
+
+```
+NL2Cypher生成服务
+├── 核心服务层
+│   ├── cypher-generator-service.jar    # 核心生成服务
+│   └── config/
+│       ├── application.yml              # 配置文件
+│       └── model-config.json            # 模型参数配置
+│
+├── 知识资产包
+│   ├── schema-knowledge/
+│   │   ├── schema-metadata.json         # Schema元数据
+│   │   ├── synonym-dictionary.json      # 同义词词典
+│   │   ├── business-glossary.json       # 业务术语表
+│   │   └── entity-mappings.json         # 实体映射规则
+│   │
+│   ├── example-library/
+│   │   ├── cypher-examples.json         # Cypher示例库（核心！）
+│   │   ├── templates/
+│   │   │   ├── simple-query.template    # 简单查询模板
+│   │   │   ├── complex-query.template   # 复杂查询模板
+│   │   │   └── aggregation.template     # 聚合查询模板
+│   │   └── patterns.json                # 常见查询模式
+│   │
+│   └── prompts/
+│       ├── system-prompt.txt            # 系统提示词
+│       ├── few-shot-prompt.txt          # Few-shot提示词模板
+│       └── optimization-hints.txt       # 优化建议提示词
+│
+├── 验证规则包
+│   ├── validation-rules.json            # 验证规则配置
+│   ├── security-policies.json           # 安全策略
+│   └── performance-constraints.json     # 性能约束
+│
+├── 工具脚本
+│   ├── schema-extractor.py              # Schema提取工具
+│   ├── example-collector.py             # 示例收集工具
+│   ├── knowledge-validator.py           # 知识库验证工具
+│   └── deployment/
+│       ├── deploy.sh                    # 部署脚本
+│       └── health-check.sh              # 健康检查脚本
+│
+└── 文档
+    ├── DEPLOYMENT.md                    # 部署指南
+    ├── CONFIGURATION.md                 # 配置说明
+    ├── KNOWLEDGE_UPDATE.md              # 知识库更新指南
+    └── API_REFERENCE.md                 # API参考文档
+```
+
+### 关键交付参数详解
+
+#### 1. Schema知识库 (schema-knowledge.json)
+
+**作用**：解决用户用语和Schema不匹配问题
+
+**核心结构**：
+```json
+{
+  "version": "1.0.0",
+  "schemaMetadata": {
+    "labels": [
+      {
+        "name": "Person",
+        "synonyms": ["员工", "职员", "工作人员", "雇员"],
+        "businessMeaning": "代表公司员工，包含基本信息和工作信息",
+        "properties": [
+          {
+            "name": "name",
+            "type": "String",
+            "indexed": true,
+            "businessMeaning": "员工姓名",
+            "synonyms": ["姓名", "名字", "称呼"]
+          },
+          {
+            "name": "salary",
+            "type": "Double",
+            "indexed": false,
+            "businessMeaning": "年薪（单位：万元）",
+            "synonyms": ["薪资", "工资", "收入", "年薪"],
+            "valueRange": {"min": 0, "max": 10000}
+          }
+        ]
+      }
+    ],
+    "relationships": [
+      {
+        "type": "WORKS_AT",
+        "synonyms": ["工作于", "就职于", "在...工作"],
+        "fromLabel": "Person",
+        "toLabel": "Company",
+        "businessMeaning": "员工在某个公司工作"
+      }
+    ]
+  }
+}
+```
+
+**关键参数**：
+- `synonyms`: 同义词列表，提高实体识别准确率
+- `businessMeaning`: 业务语义，帮助模型理解字段含义
+- `indexed`: 是否索引，提示模型优先使用索引字段
+- `valueRange`: 数值范围约束
+
+#### 2. Cypher示例库 (cypher-examples.json)
+
+**这是最重要的交付资产！建议包含100-150个高质量示例**
+
+**核心结构**：
+```json
+{
+  "version": "1.0.0",
+  "totalExamples": 150,
+  "categories": {
+    "simple_query": {
+      "examples": [
+        {
+          "id": "ex_001",
+          "naturalLanguage": "查找在阿里巴巴工作的所有员工",
+          "cypher": "MATCH (p:Person)-[:WORKS_AT]->(c:Company {name: '阿里巴巴'})\nRETURN p",
+          "keyPoints": ["MATCH语句", "关系连接", "属性过滤"],
+          "difficulty": "easy",
+          "tags": ["match", "relationship", "filter"]
+        }
+      ]
+    },
+    "complex_query": {
+      "examples": [
+        {
+          "id": "ex_010",
+          "naturalLanguage": "查找在阿里巴巴工作超过5年且年薪大于50万的员工",
+          "cypher": "MATCH (p:Person)-[r:WORKS_AT]->(c:Company {name: '阿里巴巴'})\nWHERE r.work_years > 5 AND p.salary > 50\nRETURN p",
+          "keyPoints": ["多条件AND连接", "关系属性过滤", "数值比较"],
+          "difficulty": "medium",
+          "tags": ["match", "multiple-conditions", "where"]
+        }
+      ]
+    }
+  },
+  "selectionStrategy": {
+    "method": "hybrid",
+    "vectorSearch": {"enabled": true, "topK": 5},
+    "keywordSearch": {"enabled": true, "topK": 5}
+  }
+}
+```
+
+**关键参数**：
+- `keyPoints`: 标注关键技术点，帮助模型理解
+- `difficulty`: 难度分级（easy/medium/hard）
+- `tags`: 标签系统，支持多维度检索
+- `selectionStrategy`: 示例选择策略（向量+关键词混合）
+
+#### 3. 提示词模板 (system-prompt.txt)
+
+**核心结构**：
+```text
+你是一个专业的Cypher查询生成专家。请根据以下信息生成准确的Cypher查询。
+
+## 图数据库Schema
+{{schema_info}}
+
+## 用户查询
+{{user_query}}
+
+## 查询分析
+{{query_analysis}}
+
+## 相似示例（供参考）
+{{similar_examples}}
+
+## 生成要求
+1. 严格按照Schema定义使用Label和Property名称
+2. 优先使用索引字段（标记为indexed的字段）进行过滤
+3. 使用参数化查询（$param）而非硬编码值
+4. 对于复杂查询，使用WITH子句优化可读性
+5. 对于大数据集查询，必须使用LIMIT
+6. 使用适当的索引提示（USING INDEX）
+7. 避免笛卡尔积（CROSS JOIN）
+
+## 常见错误避免
+- ❌ 不要使用不存在的Label或Property
+- ❌ 不要在WHERE子句中对非索引字段进行范围查询（大数据集）
+- ❌ 不要忘记为聚合查询添加分组条件
+- ❌ 不要在多跳查询中遗漏中间节点
+
+## 输出格式
+只输出Cypher代码，不要有任何解释、注释或Markdown标记。
+```
+
+**关键参数**：
+- `{{动态变量}}`: 运行时替换的实际值
+- `生成要求`: 明确的代码规范和最佳实践
+- `错误避免`: 列出常见错误，降低错误率
+
+#### 4. 模型配置参数 (model-config.json)
+
+```json
+{
+  "modelConfig": {
+    "weakModel": {
+      "provider": "qwen",
+      "modelName": "Qwen/Qwen2.5-32B-Instruct",
+      "apiEndpoint": "http://localhost:8000/v1/chat/completions",
+      
+      "generationParameters": {
+        "temperature": {
+          "simple": 0.3,
+          "medium": 0.5,
+          "complex": 0.7
+        },
+        "maxTokens": 2048,
+        "topP": 0.9
+      },
+      
+      "retryStrategy": {
+        "maxRetries": 3,
+        "retryDelay": 1000,
+        "backoffMultiplier": 2.0
+      },
+      
+      "timeout": {
+        "connection": 5000,
+        "read": 30000
+      }
+    },
+    
+    "promptOptimization": {
+      "fewShotCount": 3,
+      "maxSchemaInfoLength": 5000,
+      "maxExampleLength": 2000,
+      "includeKeyPoints": true,
+      "includeBusinessMeaning": true
+    },
+    
+    "validation": {
+      "enableSyntaxCheck": true,
+      "enableSemanticCheck": true,
+      "syntaxCheckWeight": 0.2,
+      "semanticCheckWeight": 0.8
+    }
+  }
+}
+```
+
+**关键参数**：
+- `temperature分级`: 根据查询复杂度动态调整
+- `retryStrategy`: 重试策略，提高成功率
+- `promptOptimization`: 提示词优化参数
+- `validation`: 验证配置（语法+语义验证）
+
+#### 5. 验证规则配置 (validation-rules.json)
+
+```json
+{
+  "validationRules": {
+    "syntax": {
+      "enabled": true,
+      "rules": [
+        {"name": "valid_cypher_keywords", "severity": "error"},
+        {"name": "balanced_parentheses", "severity": "error"},
+        {"name": "valid_string_quotes", "severity": "error"}
+      ]
+    },
+    
+    "semantic": {
+      "enabled": true,
+      "rules": [
+        {"name": "label_existence", "severity": "error"},
+        {"name": "property_existence", "severity": "warning"},
+        {"name": "relationship_validity", "severity": "error"},
+        {"name": "index_usage_hint", "severity": "info"}
+      ]
+    },
+    
+    "security": {
+      "enabled": true,
+      "rules": [
+        {"name": "no_write_operations", "severity": "error"},
+        {"name": "no_dangerous_functions", "severity": "error"}
+      ]
+    },
+    
+    "performance": {
+      "enabled": true,
+      "rules": [
+        {"name": "limit_required", "threshold": 10000, "severity": "warning"},
+        {"name": "index_preferred", "severity": "info"},
+        {"name": "avoid_cartesian_product", "severity": "warning"}
+      ]
+    }
+  }
+}
+```
+
+### 各组件对生成质量的贡献度
+
+| 交付组件 | 重要性 | 贡献度 | 主要价值 |
+|---------|-------|--------|---------|
+| **Cypher示例库** | ⭐⭐⭐⭐⭐ | 40% | Few-shot learning，最直接的提升 |
+| **Schema知识库** | ⭐⭐⭐⭐⭐ | 25% | 解决术语不匹配，提高准确率 |
+| **提示词模板** | ⭐⭐⭐⭐ | 15% | 规范输出格式，减少错误 |
+| **验证规则** | ⭐⭐⭐⭐ | 10% | 质量保障，自动纠错 |
+| **模型配置** | ⭐⭐⭐ | 5% | 优化生成参数 |
+| **工具脚本** | ⭐⭐⭐ | 5% | 降低使用门槛 |
+
+### 交付清单检查表
+
+#### 必须交付（核心）
+- [ ] `cypher-generator-service.jar` - 可执行的JAR包
+- [ ] `schema-knowledge.json` - Schema知识库
+- [ ] `cypher-examples.json` - 至少100个高质量示例
+- [ ] `prompts/` - 提示词模板目录
+- [ ] `application.yml` - 配置文件
+- [ ] `DEPLOYMENT.md` - 部署文档
+
+#### 建议交付（增强）
+- [ ] `validation-rules.json` - 验证规则
+- [ ] `security-policies.json` - 安全策略
+- [ ] `schema-extractor.py` - Schema提取工具
+- [ ] `example-collector.py` - 示例收集工具
+- [ ] `health-check.sh` - 健康检查脚本
+
+#### 可选交付（扩展）
+- [ ] 性能监控Dashboard
+- [ ] 用户反馈收集接口
+- [ ] 知识库自动更新脚本
+- [ ] Docker镜像
+
+### 交付成本评估
+
+| 资产类型 | 工作量 | 说明 |
+|---------|-------|------|
+| Schema知识库 | 3-5人天 | 需要DBA和业务专家配合 |
+| Cypher示例库（100个） | 5-7人天 | 需要标注和审核 |
+| 提示词模板 | 2-3人天 | 需要多次迭代优化 |
+| 验证规则 | 2-3人天 | 根据实际错误调整 |
+| 文档编写 | 2-3人天 | 部署和使用文档 |
+| **总计** | **14-21人天** | 约3-4周 |
+
+### 快速交付方案（MVP）
+
+#### 最小交付集（1周内可完成）
+```
+最小交付包
+├── cypher-generator-service.jar
+├── schema-knowledge-lite.json      # 精简版（核心Label和Property）
+├── cypher-examples-lite.json       # 30-50个核心示例
+├── prompt-template.txt             # 单一提示词模板
+├── application.yml
+└── QUICKSTART.md                   # 快速开始文档
+```
+
+**质量预期**：
+- 简单查询准确率：70-80%
+- 中等复杂度查询准确率：50-60%
+- 复杂查询准确率：30-40%
+
+#### 标准交付集（3-4周）
+完整交付包（如上所述）
+
+**质量预期**：
+- 简单查询准确率：85-95%
+- 中等复杂度查询准确率：75-85%
+- 复杂查询准确率：60-75%
+
+### 价值展示
+
+#### 1. 准确率对比
+```
+裸模型（无知识资产）：
+- 简单查询：40-50%
+- 复杂查询：20-30%
+
++ 知识资产增强：
+- 简单查询：85-95% ↑ 45%
+- 复杂查询：60-75% ↑ 40%
+```
+
+#### 2. 错误率降低
+```
+常见错误类型：
+- Schema不匹配：从30% → 5%
+- 语法错误：从20% → 3%
+- 性能问题：从15% → 8%
+```
+
+#### 3. 可维护性
+```
+知识资产可独立更新：
+- 新增业务术语 → 更新synonym-dictionary.json
+- 新增查询模式 → 更新cypher-examples.json
+- 优化提示词 → 更新prompt-template.txt
+```
+
+### 交付价值公式
+
+```
+高质量Cypher生成 = 弱模型能力 + 知识资产（示例库+Schema库） + 提示词工程 + 验证机制
+```
+
+**核心要点**：
+1. **Cypher示例库是最核心的交付资产**（100-150个高质量示例）
+2. **Schema知识库解决术语匹配问题**（同义词、业务含义）
+3. **提示词模板规范生成质量**（包含最佳实践和错误避免）
+4. **验证规则保障输出质量**（语法+语义验证）
+5. **工具脚本降低使用门槛**（Schema提取、示例收集）
+
+---
+
 ## 技术栈
 
 - **后端框架**: Spring Boot 3.1.5
