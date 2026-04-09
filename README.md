@@ -1,230 +1,213 @@
-# NL2Cypher 自然语言转Cypher系统
+# Text2Cypher 闭环系统
 
-基于强辅助弱模型架构的自然语言到Cypher查询转换系统。
+一个完整的自然语言到Cypher查询生成、测试、修复的闭环系统，基于网络图谱架构。
 
 ## 系统架构
 
-本系统采用**强辅助弱模型**架构：
-- **强模型（GLM-4）**：负责深度语义理解、意图识别、智能验证
-- **弱模型（千问3.0 32B）**：负责Cypher语法生成
+系统包含三个主要服务：
+
+1. **查询语句生成服务** (端口 8000) - 接收自然语言问题，生成Cypher查询
+2. **测试服务** (端口 8001) - 接收标准答案和查询结果，进行评测
+3. **修复服务** (端口 8002) - 分析问题，生成修复计划
 
 ## 快速开始
 
-### 前置要求
-
-1. **Java 17+**
-2. **Maven 3.6+**
-3. **千问3.0 32B本地部署**
-4. **智谱AI API Key**
-
-### 千问3.0 32B本地部署
-
-#### 方案1: 使用vLLM（推荐）
+### 1. 启动系统
 
 ```bash
-pip install vllm
+# 启动所有服务
+./start.sh
 
-python -m vllm.entrypoints.openai.api_server \
-    --model Qwen/Qwen2.5-32B-Instruct \
-    --host 0.0.0.0 \
-    --port 8000 \
-    --tensor-parallel-size 1 \
-    --max-model-len 4096
+# 停止所有服务
+./stop.sh
+
+# 测试系统功能
+./test.sh
 ```
 
-#### 方案2: 使用Ollama
+### 2. 访问Web控制台
 
+- 查询语句生成控制台: http://localhost:8000/console
+- 测试服务控制台: http://localhost:8001/console  
+- 修复服务控制台: http://localhost:8002/console
+
+### 3. 系统工作流程
+
+1. **提交问题**: 向查询语句生成服务发送自然语言问题
+2. **生成查询**: 系统加载知识包，生成Cypher查询
+3. **执行查询**: 在TuGraph图谱中执行查询
+4. **提交结果**: 将查询结果提交给测试服务
+5. **标准答案**: 向测试服务提交标准答案
+6. **自动评测**: 当查询结果和标准答案都齐全时自动评测
+7. **问题分析**: 评测失败时生成问题单
+8. **修复计划**: 修复服务分析问题并生成修复计划
+
+## API接口
+
+### 查询语句生成服务
+
+#### 提交问题
 ```bash
-ollama pull qwen2.5:32b
-ollama serve
-```
-
-### 智谱AI API Key获取
-
-1. 访问 https://open.bigmodel.cn/
-2. 注册账号并完成实名认证
-3. 进入"API Key管理"创建新的API Key
-
-### 配置应用
-
-编辑 `src/main/resources/application.yml`：
-
-```yaml
-nl2cypher:
-  strong-model:
-    api-key: "your-zhipu-api-key"  # 替换为你的智谱API Key
-    model: glm-4-plus
-    
-  weak-model:
-    api-url: "http://localhost:8000/v1/chat/completions"  # 千问本地API地址
-```
-
-### 构建和运行
-
-```bash
-# 构建
-mvn clean package
-
-# 运行演示
-mvn exec:java -Dexec.mainClass="com.nl2cypher.NL2CypherDemo"
-
-# 或启动Web服务
-mvn spring-boot:run
-```
-
-### API使用
-
-启动服务后，可以通过以下方式调用：
-
-```bash
-curl -X POST http://localhost:8080/api/nl2cypher/convert \
+curl -X POST http://localhost:8000/api/v1/qa/questions \
   -H "Content-Type: application/json" \
-  -d '{"query": "查找在阿里巴巴工作的所有员工"}'
+  -d '{
+    "id": "qa-001",
+    "question": "查询网络设备及其端口信息"
+  }'
 ```
 
-## 系统流程
-
-```
-用户查询 
-  ↓
-[阶段1] 深度语义理解（GLM-4）
-  ↓
-[阶段2] 意图与结构提取（GLM-4）
-  ↓
-[阶段3] Schema智能映射（GLM-4）
-  ↓
-[阶段4] Cypher生成（千问3.0 32B）
-  ↓
-[阶段5] 智能验证与纠错（GLM-4）
-  ↓
-最终结果
+#### 获取执行状态
+```bash
+curl http://localhost:8000/api/v1/questions/qa-001
 ```
 
-## 支持的查询类型
+### 测试服务
 
-- 简单节点查询
-- 关系查询
-- 路径查询
-- 聚合查询
-- 复杂过滤查询
-- 多跳关系查询
-
-## 示例
-
-```java
-String query = "查找在阿里巴巴工作超过5年且年龄大于30岁的员工";
-
-NL2CypherResult result = orchestrator.convert(query);
-
-if (result.isSuccess()) {
-    System.out.println("生成的Cypher:");
-    System.out.println(result.getGeneratedCypher());
-    
-    System.out.println("置信度: " + result.getConfidence());
-    System.out.println("验证分数: " + 
-        result.getValidationResult().getOverallScore().getTotalScore());
-}
+#### 提交标准答案
+```bash
+curl -X POST http://localhost:8001/api/v1/qa/goldens \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "qa-001",
+    "cypher": "MATCH (ne:NetworkElement)-[:HAS_PORT]->(p:Port) RETURN ne.name, p.name LIMIT 10",
+    "answer": [{"device_name": "router-1", "port_name": "eth0"}],
+    "difficulty": "L3"
+  }'
 ```
 
-## 技术栈
-
-- **框架**: Spring Boot 3.1.5
-- **构建工具**: Maven
-- **HTTP客户端**: OkHttp
-- **JSON处理**: Gson
-- **日志**: SLF4J + Logback
-
-## 项目结构
-
+#### 提交查询结果
+```bash
+curl -X POST http://localhost:8001/api/v1/evaluations/submissions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "qa-001",
+    "question": "查询网络设备及其端口信息",
+    "generated_cypher": "MATCH (ne:NetworkElement)-[:HAS_PORT]->(p:Port) RETURN ne.name, p.name LIMIT 10",
+    "execution": {
+      "success": true,
+      "rows": [{"device_name": "router-1", "port_name": "eth0"}],
+      "row_count": 1,
+      "error_message": null,
+      "elapsed_ms": 15
+    },
+    "knowledge_context": {
+      "package_id": "default-network-schema",
+      "version": "v1",
+      "graph_name": "network_schema_v10",
+      "summary": "Default knowledge package",
+      "loaded_knowledge_tags": ["network_element", "port"]
+    }
+  }'
 ```
-nl2cypher-system/
-├── src/
-│   ├── main/
-│   │   ├── java/com/nl2cypher/
-│   │   │   ├── config/              # 配置类
-│   │   │   ├── controller/          # REST控制器
-│   │   │   ├── model/              # 数据模型
-│   │   │   │   └── representation/ # 中间表示
-│   │   │   ├── service/
-│   │   │   │   ├── llm/           # LLM客户端
-│   │   │   │   ├── preprocess/    # 预处理服务
-│   │   │   │   ├── generation/    # 生成服务
-│   │   │   │   ├── postprocess/   # 后处理服务
-│   │   │   │   └── orchestration/ # 流程编排
-│   │   │   └── NL2CypherApplication.java
-│   │   └── resources/
-│   │       └── application.yml
-│   └── test/
-│       └── java/com/nl2cypher/
-│           └── NL2CypherDemo.java
-├── pom.xml
-└── README.md
+
+#### 获取评测状态
+```bash
+curl http://localhost:8001/evaluations/qa-001
+```
+
+#### 获取问题单
+```bash
+curl http://localhost:8001/issues/{ticket_id}
+```
+
+### 修复服务
+
+#### 提交问题单
+```bash
+curl -X POST http://localhost:8002/api/v1/issue-tickets \
+  -H "Content-Type: application/json" \
+  -d "$(curl -s http://localhost:8001/issues/{ticket_id})"
+```
+
+#### 获取修复计划
+```bash
+curl http://localhost:8002/api/v1/repair-plans/{plan_id}
 ```
 
 ## 配置说明
 
-### 强模型配置
+### 环境变量
 
-```yaml
-nl2cypher:
-  strong-model:
-    provider: zhipu
-    api-key: ${ZHIPU_API_KEY}
-    model: glm-4-plus
-    temperature: 0.3
-    max-tokens: 2048
-    timeout: 30000
-```
+#### 查询语句生成服务
+- `QUERY_GENERATOR_HOST`: 服务监听地址 (默认: 0.0.0.0)
+- `QUERY_GENERATOR_PORT`: 服务端口 (默认: 8000)
+- `QUERY_GENERATOR_TUGRAPH_URL`: TuGraph服务地址 (默认: http://localhost:7070)
+- `QUERY_GENERATOR_MOCK_TUGRAPH`: 是否使用模拟TuGraph (默认: true)
+- `QUERY_GENERATOR_LLM_ENABLED`: 是否启用LLM (默认: false)
 
-### 弱模型配置
+#### 测试服务
+- `TESTING_SERVICE_HOST`: 服务监听地址 (默认: 0.0.0.0)
+- `TESTING_SERVICE_PORT`: 服务端口 (默认: 8001)
+- `TESTING_SERVICE_REPAIR_SERVICE_URL`: 修复服务地址 (默认: http://localhost:8002)
 
-```yaml
-nl2cypher:
-  weak-model:
-    provider: local-qwen
-    api-url: ${QWEN_API_URL}
-    model: Qwen/Qwen2.5-32B-Instruct
-    temperature: 0.7
-    max-tokens: 1024
-    timeout: 60000
-```
+#### 修复服务
+- `REPAIR_SERVICE_HOST`: 服务监听地址 (默认: 0.0.0.0)
+- `REPAIR_SERVICE_PORT`: 服务端口 (默认: 8002)
+- `REPAIR_SERVICE_QUERY_GENERATOR_SERVICE_URL`: 查询语句生成服务地址 (默认: http://localhost:8000)
 
-### 验证配置
+### 知识包配置
 
-```yaml
-nl2cypher:
-  validation:
-    max-retries: 3
-    confidence-threshold: 0.7
-```
+系统使用默认的网络图谱知识包，包含：
+- 节点标签: NetworkElement, Protocol, Tunnel, Service, Port, Fiber, Link
+- 边标签: HAS_PORT, FIBER_SRC, FIBER_DST, LINK_SRC, LINK_DST, TUNNEL_SRC, TUNNEL_DST, TUNNEL_PROTO, PATH_THROUGH, SERVICE_USES_TUNNEL
+- 业务术语映射: 网络设备、端口、隧道等中文术语到图谱实体的映射
+
+## 评测维度
+
+系统从四个维度评测查询质量：
+
+1. **语法有效性** (syntax_validity): Cypher语法是否正确
+2. **模式对齐** (schema_alignment): 是否使用正确的标签和关系
+3. **结果正确性** (result_correctness): 结果是否与标准答案一致
+4. **问题对齐** (question_alignment): 查询是否正确回答了问题
+
+## 问题修复流程
+
+1. **确定性分析**: 检查语法、模式、结果等确定性因素
+2. **归因判断**: 识别问题来源 (生成逻辑/知识缺失/问题表达)
+3. **对照实验**: 必要时进行不同条件下的实验
+4. **修复计划**: 针对不同服务生成具体的修复建议
 
 ## 故障排除
 
-### 千问模型连接失败
-- 确认千问服务已启动
-- 检查API URL配置是否正确
-- 确认网络连接正常
+### 服务启动失败
 
-### 智谱API调用失败
-- 检查API Key是否正确
-- 确认API Key有足够的额度
-- 检查网络连接
+1. 检查端口是否被占用
+2. 确认Python依赖已安装: `pip install -r requirements.txt`
+3. 检查数据目录权限
 
-## 性能优化建议
+### 服务间通信失败
 
-1. **启用缓存**: 对相似查询结果进行缓存
-2. **并发处理**: 对独立处理阶段进行并发优化
-3. **模型选择**: 根据查询复杂度动态选择模型
-4. **批量处理**: 支持批量查询处理
+1. 确认所有服务都已启动
+2. 检查服务URL配置
+3. 查看服务日志
 
-## 贡献指南
+### 查询生成失败
 
-欢迎提交Issue和Pull Request！
+1. 检查TuGraph连接配置
+2. 确认图谱数据存在
+3. 查看知识包配置
+
+## 开发指南
+
+### 添加新的知识包
+
+1. 在 `shared/knowledge.py` 中定义新的知识包
+2. 更新知识标签选择逻辑
+3. 重新启动服务
+
+### 自定义评测规则
+
+1. 修改 `shared/evaluation.py` 中的评测函数
+2. 更新评测维度和标准
+3. 重新启动测试服务
+
+### 扩展修复策略
+
+1. 在 `services/repair_service/app/service.py` 中添加新的分析方法
+2. 更新修复计划生成逻辑
+3. 重新启动修复服务
 
 ## 许可证
 
-MIT License
-
-## 联系方式
-
-如有问题或建议，请提交Issue。
+本项目采用MIT许可证。

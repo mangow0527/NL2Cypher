@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Testing Service Console</title>
+  <link rel="stylesheet" href="/ui/styles.css" />
+</head>
+<body>
+  <main class="layout">
+    <section class="masthead">
+      <div>
+        <p class="eyebrow">Testing Service</p>
+        <h1>Golden 接入与评测控制台</h1>
+        <p>模拟 QA 生成服务向测试服务发送标准答案 A，并查看某个 id 是否已经和查询语句生成服务提交的实际结果成功汇合与评测。</p>
+      </div>
+      <div class="pulse-card">
+        <span></span>
+        Evaluator
+      </div>
+    </section>
+
+    <section class="panels">
+      <form id="golden-form" class="panel panel-form">
+        <h2>接收 Golden</h2>
+        <label>
+          <span>ID</span>
+          <input name="id" placeholder="例如：qa-001" />
+        </label>
+        <label>
+          <span>Golden Cypher</span>
+          <textarea name="cypher" rows="4" placeholder="MATCH (ne:NetworkElement)-[:HAS_PORT]->(p:Port) RETURN ne.name AS device_name, p.name AS port_name, p.status AS port_status LIMIT 20"></textarea>
+        </label>
+        <label>
+          <span>Golden Answer JSON</span>
+          <textarea name="answer" rows="5" placeholder='例如：[{"device_name":"edge-router-1","port_name":"ge-0/0/0","port_status":"up"}]'></textarea>
+        </label>
+        <div class="split">
+          <label>
+            <span>Difficulty</span>
+            <input name="difficulty" value="L3" />
+          </label>
+          <label>
+            <span>查询某个 ID 状态</span>
+            <input id="lookup-id" placeholder="输入 id 后点击下方按钮" />
+          </label>
+        </div>
+        <div class="row-actions">
+          <button type="submit">提交 Golden</button>
+          <button type="button" class="secondary" id="fill-golden">填充：端口查询标准答案</button>
+          <button type="button" class="secondary" id="lookup-evaluation">查看评测状态</button>
+        </div>
+      </form>
+
+      <section class="panel panel-output">
+        <h2>评测结果</h2>
+        <div class="banner" id="banner">等待操作</div>
+        <div class="output-block">
+          <h3>服务状态</h3>
+          <pre id="status-view">加载中...</pre>
+        </div>
+        <div class="chips" id="chips"></div>
+        <div class="output-block">
+          <h3>评测快照</h3>
+          <pre id="evaluation-view">{}</pre>
+        </div>
+        <div class="output-block">
+          <h3>问题单</h3>
+          <pre id="issue-view">{}</pre>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <script src="/ui/app.js"></script>
+</body>
+</html>

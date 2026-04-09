@@ -1,0 +1,201 @@
+from __future__ import annotations
+
+from typing import Any, Dict, List, Literal, Optional
+from uuid import uuid4
+
+from pydantic import BaseModel, Field
+
+
+Difficulty = Literal["L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8"]
+DimensionStatus = Literal["pass", "fail"]
+Verdict = Literal["pass", "fail", "partial_fail"]
+RootCauseType = Literal[
+    "generator_logic_issue",
+    "knowledge_gap_issue",
+    "qa_question_issue",
+    "mixed_issue",
+    "unknown",
+]
+ActionTarget = Literal["query_generator_service", "knowledge_ops_service", "qa_generation_service"]
+ActionType = Literal["prompt_adjustment", "knowledge_enrichment", "question_rewrite", "manual_review"]
+QuestionRecordStatus = Literal[
+    "received_question",
+    "generating_cypher",
+    "querying_tugraph",
+    "submitted_for_evaluation",
+    "completed",
+]
+EvaluationState = Literal[
+    "received_golden_only",
+    "received_submission_only",
+    "waiting_for_golden",
+    "ready_to_evaluate",
+    "issue_ticket_created",
+    "passed",
+]
+RepairPlanState = Literal[
+    "received_ticket",
+    "analyzing",
+    "counterfactual_checking",
+    "repair_plan_created",
+    "dispatched",
+]
+DispatchStatus = Literal["sent", "stored_for_later"]
+
+
+class QAQuestionRequest(BaseModel):
+    id: str = Field(..., description="Globally unique identifier for the QA item.")
+    question: str
+
+
+class QAGoldenRequest(BaseModel):
+    id: str
+    cypher: str
+    answer: Any
+    difficulty: Difficulty
+
+
+class KnowledgeContext(BaseModel):
+    package_id: str
+    version: str
+    graph_name: str
+    summary: str
+    loaded_knowledge_tags: List[str] = Field(default_factory=list)
+
+
+class KnowledgePackage(BaseModel):
+    package_id: str
+    version: str
+    graph_name: str
+    summary: str
+    schema_facts: Dict[str, Any]
+    business_terms: Dict[str, List[str]]
+    query_patterns: Dict[str, str]
+    constraints: Dict[str, List[str]]
+    knowledge_tags: List[str]
+
+
+class GenerationContext(BaseModel):
+    id: str
+    question: str
+    schema_hint: Optional[str] = None
+    attempt: int = Field(default=1, ge=1)
+    prior_feedback: List[str] = Field(default_factory=list)
+    knowledge_context: Optional[KnowledgeContext] = None
+
+
+class CypherGenerationRequest(BaseModel):
+    context: GenerationContext
+
+
+class GeneratedCypher(BaseModel):
+    cypher: str
+    model: str
+    reasoning_summary: str
+    prompt_version: str = "v1"
+
+
+class TuGraphExecutionResult(BaseModel):
+    success: bool
+    rows: List[Dict[str, Any]] = Field(default_factory=list)
+    row_count: int = 0
+    error_message: Optional[str] = None
+    elapsed_ms: int = 0
+
+
+class EvaluationSubmissionRequest(BaseModel):
+    id: str
+    question: str
+    generated_cypher: str
+    execution: TuGraphExecutionResult
+    knowledge_context: KnowledgeContext
+
+
+class EvaluationDimensions(BaseModel):
+    syntax_validity: DimensionStatus
+    schema_alignment: DimensionStatus
+    result_correctness: DimensionStatus
+    question_alignment: DimensionStatus
+
+
+class EvaluationSummary(BaseModel):
+    verdict: Verdict
+    dimensions: EvaluationDimensions
+    symptom: str
+    evidence: List[str] = Field(default_factory=list)
+
+
+class ExpectedAnswer(BaseModel):
+    cypher: str
+    answer: Any
+
+
+class ActualAnswer(BaseModel):
+    generated_cypher: str
+    execution: TuGraphExecutionResult
+
+
+class IssueTicket(BaseModel):
+    ticket_id: str = Field(default_factory=lambda: str(uuid4()))
+    id: str
+    difficulty: Difficulty
+    question: str
+    expected: ExpectedAnswer
+    actual: ActualAnswer
+    knowledge_context: KnowledgeContext
+    evaluation: EvaluationSummary
+
+
+class RepairAction(BaseModel):
+    target_service: ActionTarget
+    action_type: ActionType
+    instruction: str
+    evidence: List[str] = Field(default_factory=list)
+    dispatch_status: Optional[DispatchStatus] = None
+
+
+class RepairPlan(BaseModel):
+    plan_id: str = Field(default_factory=lambda: str(uuid4()))
+    ticket_id: str
+    id: str
+    root_cause: RootCauseType
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    actions: List[RepairAction] = Field(default_factory=list)
+    state: RepairPlanState = "repair_plan_created"
+    analysis_summary: str = ""
+    counterfactuals: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class QueryQuestionResponse(BaseModel):
+    id: str
+    status: QuestionRecordStatus
+    question: str
+    generated_cypher: str
+    execution: TuGraphExecutionResult
+    knowledge_context: KnowledgeContext
+    evaluation_status: EvaluationState
+
+
+class QAGoldenResponse(BaseModel):
+    id: str
+    status: EvaluationState
+    issue_ticket_id: Optional[str] = None
+    verdict: Optional[Verdict] = None
+
+
+class EvaluationSubmissionResponse(BaseModel):
+    id: str
+    status: EvaluationState
+    issue_ticket_id: Optional[str] = None
+    verdict: Optional[Verdict] = None
+
+
+class RepairPlanEnvelope(BaseModel):
+    status: str
+    plan: RepairPlan
+
+
+class QueryGeneratorRepairReceipt(BaseModel):
+    status: str
+    plan_id: str
+    id: str
