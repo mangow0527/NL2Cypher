@@ -41,29 +41,56 @@
 
 ## Data Sample Notes
 
-我还额外验证了一条真实查询：
+验证查询：
 
 ```cypher
 MATCH (n) RETURN n LIMIT 1
 ```
 
-返回样本节点是：
+返回样本节点：
 - label: `NetworkElement`
 - name: `NetworkElement_001`
 - ip: `10.0.0.1`
 
-## 当前生成器的启发式映射
+## 在系统中的使用方式
 
-查询语句生成服务已经开始用这份 schema 画像做轻量启发式生成：
+Schema 画像被多个模块引用：
 
-- 问“设备/网络设备/router” -> `NetworkElement`
-- 问“端口/接口” -> `Port`
-- 问“隧道” -> `Tunnel`
-- 问“服务/业务” -> `Service`
-- 问“协议” -> `Protocol`
-- 问“光纤” -> `Fiber`
-- 问“链路” -> `Link`
-- 问“设备及其端口” -> `HAS_PORT`
-- 问“服务使用哪些隧道” -> `SERVICE_USES_TUNNEL`
-- 问“隧道使用什么协议” -> `TUNNEL_PROTO`
-- 问“隧道经过哪些设备” -> `PATH_THROUGH`
+### shared/schema_profile.py
+定义 `NETWORK_SCHEMA_V10_CONTEXT`（完整 schema 字符串）和 `NETWORK_SCHEMA_V10_HINTS`（实体关键词映射）。
+
+### shared/knowledge.py
+基于 schema 画像构建默认知识包 `DEFAULT_KNOWLEDGE_PACKAGE`：
+- 包含标签（tags）如 `network_element`, `port`, `tunnel`, `service`, `protocol`, `fiber`, `link`
+- 每个标签关联业务术语、查询模式、约束
+- `select_knowledge_tags(question)` 根据问题关键词选择相关标签
+- `build_schema_hint_from_tags(tags)` 从标签构建 schema hint
+- `build_knowledge_context(tags)` 生成完整的 `KnowledgeContext`
+
+### shared/evaluation.py
+评测引擎使用 schema 中的合法 label 和 edge 集合：
+- `VALID_LABELS` = `{NetworkElement, Protocol, Tunnel, Service, Port, Fiber, Link}`
+- `VALID_RELATIONS` = `{HAS_PORT, FIBER_SRC, FIBER_DST, LINK_SRC, LINK_DST, TUNNEL_SRC, TUNNEL_DST, TUNNEL_PROTO, PATH_THROUGH, SERVICE_USES_TUNNEL}`
+- `schema_alignment` 维度检查生成的 Cypher 是否使用了合法的 label 和 edge
+
+### 查询语句生成服务
+- 启发式生成器（`HeuristicCypherGenerator`）使用 `NETWORK_SCHEMA_V10_HINTS` 做关键词到 label/edge 的映射
+- LLM 生成器在 prompt 中注入 `NETWORK_SCHEMA_V10_CONTEXT`
+
+## 启发式映射表
+
+查询语句生成服务的启发式规则映射：
+
+| 关键词 | 映射目标 |
+|---|---|
+| 设备 / 网络设备 / router | `NetworkElement` |
+| 端口 / 接口 | `Port` |
+| 隧道 | `Tunnel` |
+| 服务 / 业务 | `Service` |
+| 协议 | `Protocol` |
+| 光纤 | `Fiber` |
+| 链路 | `Link` |
+| 设备及其端口 | `HAS_PORT` |
+| 服务使用哪些隧道 | `SERVICE_USES_TUNNEL` |
+| 隧道使用什么协议 | `TUNNEL_PROTO` |
+| 隧道经过哪些设备 | `PATH_THROUGH` |

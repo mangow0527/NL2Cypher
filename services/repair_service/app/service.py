@@ -320,7 +320,7 @@ class RepairService:
 
     def get_service_status(self) -> Dict[str, object]:
         return {
-            "storage": settings.db_path,
+            "storage": settings.data_dir,
             "query_generator_service_url": settings.query_generator_service_url,
             "llm_enabled": settings.llm_enabled,
             "llm_model": settings.llm_model_name,
@@ -357,7 +357,7 @@ if settings.llm_enabled and settings.llm_base_url and settings.llm_api_key and s
     )
 
 repair_service = RepairService(
-    repository=RepairRepository(db_path=settings.db_path),
+    repository=RepairRepository(data_dir=settings.data_dir),
     generator_client=QwenGeneratorClient(
         heuristic_generator=HeuristicCypherGenerator(model_name=settings.qwen_model_name),
         llm_generator=llm_generator,

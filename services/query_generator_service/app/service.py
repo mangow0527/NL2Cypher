@@ -90,7 +90,7 @@ class QueryWorkflowService:
         return QueryGeneratorRepairReceipt(status="accepted", plan_id=plan.plan_id, id=plan.id)
 
 
-repository = QueryGeneratorRepository(db_path=settings.db_path)
+repository = QueryGeneratorRepository(data_dir=settings.data_dir)
 llm_generator = None
 if (
     settings.llm_enabled
@@ -152,6 +152,6 @@ def get_generator_status() -> dict:
         ),
         "active_mode": "llm" if llm_generator is not None else "heuristic_fallback",
         "tugraph_graph": settings.tugraph_graph,
-        "storage": settings.db_path,
+        "storage": settings.data_dir,
         "knowledge_package": "default-network-schema:v1",
     }

@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     app_name: str = "query-generator-service"
     host: str = "0.0.0.0"
     port: int = 8000
-    db_path: str = "data/query_generator_service.db"
+    data_dir: str = "data/query_generator_service"
     testing_service_url: str = "http://127.0.0.1:8001"
     service_public_base_url: str = "http://127.0.0.1:8000"
     tugraph_url: str = "http://127.0.0.1:7070"

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Dict, List, Optional, Tuple
 
 import httpx
 
 from shared.models import CypherGenerationRequest, EvaluationSubmissionRequest, EvaluationSubmissionResponse, GeneratedCypher
 from shared.schema_profile import NETWORK_SCHEMA_V10_CONTEXT, NETWORK_SCHEMA_V10_HINTS
+
+logger = logging.getLogger("query_generator")
 
 
 class HeuristicCypherGenerator:
@@ -199,8 +202,12 @@ class QwenGeneratorClient:
     async def generate(self, request: CypherGenerationRequest) -> GeneratedCypher:
         if self.llm_generator is not None:
             try:
-                return await self.llm_generator.generate(request)
+                logger.info("LLM call started for id=%s", request.context.id)
+                result = await self.llm_generator.generate(request)
+                logger.info("LLM call succeeded for id=%s, cypher=%s", request.context.id, result.cypher)
+                return result
             except Exception as exc:
+                logger.warning("LLM call failed for id=%s: %s: %s", request.context.id, type(exc).__name__, exc)
                 fallback = self.heuristic_generator.generate(request)
                 fallback.reasoning_summary = (
                     f"[fallback-after-llm-error] {fallback.reasoning_summary} "
