@@ -6,7 +6,7 @@ from typing import Dict, List, Optional, Tuple
 
 import httpx
 
-from shared.models import EvaluationSubmissionRequest, EvaluationSubmissionResponse, PromptFetchResponse
+from shared.models import EvaluationSubmissionRequest, EvaluationSubmissionResponse
 from shared.schema_profile import NETWORK_SCHEMA_V10_CONTEXT, NETWORK_SCHEMA_V10_HINTS
 
 logger = logging.getLogger("query_generator")
@@ -189,15 +189,15 @@ class PromptServiceClient:
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
 
-    async def fetch_prompt(self, task_id: str, question_text: str) -> str:
+    async def fetch_prompt(self, id: str, question: str) -> str:
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             response = await client.post(
-                f"{self.base_url}/api/v1/prompt-generation/fetch",
-                json={"task_id": task_id, "question_text": question_text},
+                f"{self.base_url}/api/knowledge/rag/prompt-package",
+                json={"id": id, "question": question},
             )
             response.raise_for_status()
-            payload = PromptFetchResponse.model_validate(response.json())
-            return payload.generation_prompt
+            prompt = response.text
+            return prompt.strip()
 
 
 class TestingServiceClient:

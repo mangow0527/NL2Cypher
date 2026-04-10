@@ -37,7 +37,7 @@ class TestCypherGenerationWorkflow:
 
         result = await svc.ingest_question(QAQuestionRequest(id="qa-001", question="查询设备名称"))
 
-        prompt_client.fetch_prompt.assert_awaited_once_with(task_id="qa-001", question_text="查询设备名称")
+        prompt_client.fetch_prompt.assert_awaited_once_with(id="qa-001", question="查询设备名称")
         generator_client.generate_from_prompt.assert_awaited_once_with(
             task_id="qa-001",
             question_text="查询设备名称",

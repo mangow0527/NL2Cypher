@@ -193,12 +193,8 @@ class QueryQuestionResponse(BaseModel):
 
 
 class PromptFetchRequest(BaseModel):
-    task_id: str
-    question_text: str
-
-
-class PromptFetchResponse(BaseModel):
-    generation_prompt: str
+    id: str
+    question: str
 
 
 class PromptSnapshotResponse(BaseModel):

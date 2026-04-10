@@ -81,14 +81,21 @@ Cypher 生成服务是一个**生成执行服务**。
 
 本服务对外提供一个问题提交入口，供外部服务发送：
 
-- `task_id`（任务标识）
-- `question_text`（问题原文）
+- `id`（任务标识）
+- `question`（问题原文）
 
 这部分入口职责延续此前已设计的模式。
 
 ## 2.2 对知识运营服务的依赖职责
 
 本服务在接收到任务后，应**主动向外部知识运营服务发起提示词查询请求**，获取当前可用的正式生成提示词。
+
+当前明确约定的接口为：
+
+- 方法：`POST`
+- 路径：`/api/knowledge/rag/prompt-package`
+- 请求体：`{id, question}`
+- 响应体：一个 `string` 类型的提示词原文
 
 边界原则：
 - 本服务负责“获取提示词”
@@ -165,10 +172,10 @@ Cypher 生成服务是一个**生成执行服务**。
 
 ### 字段定义
 
-- `task_id`（任务标识）
+- `id`（任务标识）
   - 业务含义：本次问答或生成任务的唯一 ID
 
-- `question_text`（问题原文）
+- `question`（问题原文）
   - 业务含义：用户提出的自然语言问题
   - 说明：本服务接收并传递该问题，但不负责完整业务语义解释
 
@@ -184,40 +191,33 @@ Cypher 生成服务是一个**生成执行服务**。
 - 任务标识
 - 问题原文
 
-## 4.2 对知识运营服务的内部请求对象
+## 4.2 对知识运营服务的接口请求体
 
-建议内部请求对象命名为：
+知识运营服务接口请求体字段固定为：
 
-`PromptFetchRequest`（提示词获取请求）
-
-### 字段定义
-
-- `task_id`（任务标识）
+- `id`（任务标识）
   - 业务含义：对应当前生成任务
 
-- `question_text`（问题原文）
+- `question`（问题原文）
   - 业务含义：用于请求知识运营服务返回当前可用提示词
 
-## 4.3 来自知识运营服务的内部响应对象
+## 4.3 来自知识运营服务的接口响应体
 
-建议内部响应对象命名为：
+知识运营服务接口响应体不再定义为 JSON 对象。  
+当前约定响应体就是：
 
-`PromptFetchResponse`（提示词获取响应）
-
-### 最小字段定义
-
-- `generation_prompt`（生成提示词）
-  - 业务含义：当前知识运营服务提供的正式 Prompt
+- `prompt string`（提示词字符串）
+  - 业务含义：当前知识运营服务提供的正式 Prompt 原文
 
 ### 设计说明
 
-当前最小可行设计只要求 `generation_prompt`。  
-未来若要扩展：
+Cypher Generation Service 获取到该字符串后，直接将其作为本轮模型调用使用的 `input_prompt_snapshot`（输入提示词快照）来源。  
+当前接口不要求知识运营服务返回：
 - `prompt_version`（提示词版本）
 - `knowledge_package_id`（知识包标识）
 - `knowledge_revision`（知识修订版本）
 
-必须单独做架构评审。
+如果未来需要扩展为结构化返回，必须单独做架构评审，并先更新本正式定义文档。
 
 ## 4.4 输出对象
 
@@ -227,7 +227,7 @@ Cypher 生成服务是一个**生成执行服务**。
 
 ### 字段定义
 
-- `task_id`（任务标识）
+- `id`（任务标识）
   - 业务含义：对应输入任务 ID
 
 - `generation_run_id`（生成运行标识）
@@ -427,8 +427,8 @@ Cypher 生成服务是一个**生成执行服务**。
 
 ### 请求体
 
-- `task_id`（任务标识）
-- `question_text`（问题原文）
+- `id`（任务标识）
+- `question`（问题原文）
 
 ### 响应体
 
@@ -509,40 +509,39 @@ curl http://127.0.0.1:8000/api/v1/questions/qa-001/prompt
 
 ## 6.2 对知识运营服务的内部调用接口
 
-建议由知识运营服务提供如下内部接口：
+建议由知识运营服务提供如下接口：
 
-`POST /api/v1/prompt-generation/fetch`
+`POST /api/knowledge/rag/prompt-package`
 
 ### 请求体
-- `task_id`（任务标识）
-- `question_text`（问题原文）
+- `id`（任务标识，string）
+- `question`（问题原文，string）
 
 ### 响应体
-- `generation_prompt`（生成提示词）
+- 一个 `string` 类型的提示词原文
 
 ### 设计原则
 - 获取由 Cypher Generation Service 主动发起
 - 提供由知识运营服务负责
 - 内容责任归属知识运营服务
 - 调用责任归属 Cypher Generation Service
+- Cypher Generation Service 不对返回体做二次语义解释，只直接读取该提示词字符串
 
 ### 请求示例
 
 ```bash
-curl -X POST http://127.0.0.1:8003/api/v1/prompt-generation/fetch \
+curl -X POST http://127.0.0.1:8003/api/knowledge/rag/prompt-package \
   -H "Content-Type: application/json" \
   -d '{
-    "task_id": "qa-001",
-    "question_text": "查询网络设备名称"
+    "id": "qa-001",
+    "question": "查询网络设备名称"
   }'
 ```
 
 ### 响应示例
 
-```json
-{
-  "generation_prompt": "请仅返回 JSON，其中包含 cypher 字段。问题：查询网络设备名称"
-}
+```text
+请仅返回 JSON，其中包含 cypher 字段。问题：查询网络设备名称
 ```
 
 ## 6.3 向测试服务的提交对象
@@ -553,9 +552,9 @@ curl -X POST http://127.0.0.1:8003/api/v1/prompt-generation/fetch \
 
 ### 建议字段
 
-- `task_id`（任务标识）
+- `id`（任务标识）
 - `generation_run_id`（生成运行标识）
-- `question_text`（问题原文）
+- `question`（问题原文）
 - `generated_cypher`（生成的 Cypher）
 - `input_prompt_snapshot`（输入提示词快照）
 - `parse_summary`（解析摘要）
@@ -570,9 +569,9 @@ curl -X POST http://127.0.0.1:8003/api/v1/prompt-generation/fetch \
 
 ```json
 {
-  "task_id": "qa-001",
+  "id": "qa-001",
   "generation_run_id": "run-001",
-  "question_text": "查询网络设备名称",
+  "question": "查询网络设备名称",
   "generated_cypher": "MATCH (n:NetworkElement) RETURN n.name AS name LIMIT 5",
   "input_prompt_snapshot": "请仅返回 JSON，其中包含 cypher 字段。问题：查询网络设备名称",
   "parse_summary": "parsed_json",
@@ -592,10 +591,13 @@ curl -X POST http://127.0.0.1:8003/api/v1/prompt-generation/fetch \
 - 问题原文
 
 ### B. `PromptFetchRequest`（提示词获取请求）
-表示 Cypher 生成服务向知识运营服务发出的提示词请求。
+表示 Cypher 生成服务向知识运营服务发出的 HTTP 请求体。  
+字段固定为：
+- `id`
+- `question`
 
 ### C. `PromptFetchResponse`（提示词获取响应）
-表示知识运营服务返回的正式提示词。
+表示知识运营服务返回的正式提示词字符串，而不是 JSON 对象。
 
 ### D. `ReceivedTask`（已接收任务）
 表示已通过最初始接收校验的任务。
@@ -670,7 +672,7 @@ curl -X POST http://127.0.0.1:8003/api/v1/prompt-generation/fetch \
 - 守住输入输出字段与业务含义
 
 重点断言：
-- 对外输入只包含 `task_id`（任务标识）和 `question_text`（问题原文）
+- 对外输入只包含 `id`（任务标识）和 `question`（问题原文）
 - 输出必须包含：
   - 任务标识
   - 生成运行标识
@@ -753,6 +755,7 @@ curl -X POST http://127.0.0.1:8003/api/v1/prompt-generation/fetch \
 
 - 对外主入口保持为“任务标识 + 问题原文”。
 - 提示词由 Cypher Generation Service 主动向知识运营服务获取。
+- 知识运营服务接口固定为 `POST /api/knowledge/rag/prompt-package`，请求体为 `{id, question}`，响应体为 `string prompt`。
 - 获取提示词是本服务职责，设计提示词不是本服务职责。
 - 本服务输出的是生成阶段处理状态，不是业务评测结果。
 - 测试服务负责执行 TuGraph 并完成最终评测。

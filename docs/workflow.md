@@ -74,13 +74,13 @@
 ### 数据流 B：提示词获取
 
 - 生成服务 -> 知识运营服务
-- `POST /api/v1/prompt-generation/fetch`
+- `POST /api/knowledge/rag/prompt-package`
 - 请求体：
 
 ```json
 {
-  "task_id": "qa-001",
-  "question_text": "查询网络设备及其端口信息"
+  "id": "qa-001",
+  "question": "查询网络设备及其端口信息"
 }
 ```
 
@@ -126,8 +126,8 @@ sequenceDiagram
 
     QA->>CG: POST /api/v1/qa/questions {id, question}
     QA->>TS: POST /api/v1/qa/goldens {id, cypher, answer, difficulty}
-    CG->>KO: POST /api/v1/prompt-generation/fetch {task_id, question_text}
-    KO-->>CG: {generation_prompt}
+    CG->>KO: POST /api/knowledge/rag/prompt-package {id, question}
+    KO-->>CG: prompt string
     CG->>CG: 调用模型 / 解析 / 最小守门
     CG->>TS: POST /api/v1/evaluations/submissions
     TS->>TG: 执行 generated_cypher

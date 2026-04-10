@@ -127,7 +127,7 @@ class QueryWorkflowService:
         generation_run_id: str,
     ) -> Tuple[QueryQuestionResponse | None, str]:
         try:
-            prompt = await self.prompt_client.fetch_prompt(task_id=request.id, question_text=request.question)
+            prompt = await self.prompt_client.fetch_prompt(id=request.id, question=request.question)
         except Exception as exc:
             return (
                 self._build_response(
