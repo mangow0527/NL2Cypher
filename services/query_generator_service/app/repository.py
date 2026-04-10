@@ -4,8 +4,9 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
+from uuid import uuid4
 
-from shared.models import KnowledgeContext, QueryQuestionResponse, RepairPlan, TuGraphExecutionResult
+from shared.models import QueryQuestionResponse, RepairPlan
 
 
 class QueryGeneratorRepository:
@@ -31,6 +32,9 @@ class QueryGeneratorRepository:
         record = {"id": id, "question": question, "status": status, "received_at": now, "updated_at": now}
         path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def next_generation_run_id(self) -> str:
+        return str(uuid4())
+
     def get_question(self, id: str) -> Optional[Dict[str, Any]]:
         path = self._questions_dir / f"{id}.json"
         if not path.exists():
@@ -41,19 +45,27 @@ class QueryGeneratorRepository:
         self,
         *,
         id: str,
-        question: str,
+        generation_run_id: str,
+        generation_status: str,
         generated_cypher: str,
-        execution: TuGraphExecutionResult,
-        knowledge_context: KnowledgeContext,
-        evaluation_status: str,
+        parse_summary: str,
+        guardrail_summary: str,
+        raw_output_snapshot: str,
+        failure_stage: str | None,
+        failure_reason_summary: str | None,
+        input_prompt_snapshot: str,
     ) -> None:
         record = {
             "id": id,
-            "question": question,
+            "generation_run_id": generation_run_id,
+            "generation_status": generation_status,
             "generated_cypher": generated_cypher,
-            "execution": execution.model_dump(),
-            "knowledge_context": knowledge_context.model_dump(),
-            "evaluation_status": evaluation_status,
+            "parse_summary": parse_summary,
+            "guardrail_summary": guardrail_summary,
+            "raw_output_snapshot": raw_output_snapshot,
+            "failure_stage": failure_stage,
+            "failure_reason_summary": failure_reason_summary,
+            "input_prompt_snapshot": input_prompt_snapshot,
             "finished_at": _utc_now(),
         }
         path = self._runs_dir / f"{id}.json"
@@ -65,16 +77,28 @@ class QueryGeneratorRepository:
         if not run_path.exists() or not question_path.exists():
             return None
         run = json.loads(run_path.read_text(encoding="utf-8"))
-        question = json.loads(question_path.read_text(encoding="utf-8"))
         return QueryQuestionResponse(
             id=id,
-            status=question["status"],
-            question=run["question"],
+            generation_run_id=run["generation_run_id"],
+            generation_status=run["generation_status"],
             generated_cypher=run["generated_cypher"],
-            execution=TuGraphExecutionResult.model_validate(run["execution"]),
-            knowledge_context=KnowledgeContext.model_validate(run["knowledge_context"]),
-            evaluation_status=run["evaluation_status"],
+            parse_summary=run.get("parse_summary", ""),
+            guardrail_summary=run.get("guardrail_summary", ""),
+            raw_output_snapshot=run.get("raw_output_snapshot", ""),
+            failure_stage=run.get("failure_stage"),
+            failure_reason_summary=run.get("failure_reason_summary"),
+            input_prompt_snapshot=run.get("input_prompt_snapshot", ""),
         )
+
+    def get_generation_prompt_snapshot(self, id: str) -> Optional[Dict[str, str]]:
+        run_path = self._runs_dir / f"{id}.json"
+        if not run_path.exists():
+            return None
+        run = json.loads(run_path.read_text(encoding="utf-8"))
+        return {
+            "id": id,
+            "input_prompt_snapshot": run.get("input_prompt_snapshot", ""),
+        }
 
     def update_question_status(self, id: str, status: str) -> None:
         path = self._questions_dir / f"{id}.json"

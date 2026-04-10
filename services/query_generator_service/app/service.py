@@ -1,20 +1,21 @@
 from __future__ import annotations
 
-from shared.knowledge import build_knowledge_context, build_schema_hint_from_tags, select_knowledge_tags
+import json
+from typing import Dict, Tuple
+
 from shared.models import (
-    CypherGenerationRequest,
     EvaluationSubmissionRequest,
-    GenerationContext,
+    PromptSnapshotResponse,
     QAQuestionRequest,
     QueryGeneratorRepairReceipt,
     QueryQuestionResponse,
     RepairPlan,
 )
-from shared.tugraph import TuGraphClient
 
 from .clients import (
     HeuristicCypherGenerator,
     OpenAICompatibleCypherGenerator,
+    PromptServiceClient,
     QwenGeneratorClient,
     TestingServiceClient,
 )
@@ -25,69 +26,328 @@ from .repository import QueryGeneratorRepository
 class QueryWorkflowService:
     def __init__(
         self,
+        prompt_client: PromptServiceClient,
         generator_client: QwenGeneratorClient,
         testing_client: TestingServiceClient,
-        tugraph_client: TuGraphClient,
         repository: QueryGeneratorRepository,
     ) -> None:
+        self.prompt_client = prompt_client
         self.generator_client = generator_client
         self.testing_client = testing_client
-        self.tugraph_client = tugraph_client
         self.repository = repository
 
     async def ingest_question(self, request: QAQuestionRequest) -> QueryQuestionResponse:
-        self.repository.upsert_question(id=request.id, question=request.question, status="received_question")
-        self.repository.update_question_status(request.id, "generating_cypher")
+        generation_run_id = self.repository.next_generation_run_id()
+        self.repository.upsert_question(id=request.id, question=request.question, status="received")
 
-        knowledge_tags = select_knowledge_tags(request.question)
-        knowledge_context = build_knowledge_context(knowledge_tags)
-        generation = await self.generator_client.generate(
-            CypherGenerationRequest(
-                context=GenerationContext(
-                    id=request.id,
-                    question=request.question,
-                    schema_hint=build_schema_hint_from_tags(knowledge_tags),
-                    attempt=1,
-                    knowledge_context=knowledge_context,
-                )
-            )
+        prompt_response, generation_prompt = await self._fetch_prompt(request=request, generation_run_id=generation_run_id)
+        if prompt_response is not None:
+            return self._persist_and_return(request=request, response=prompt_response)
+
+        readiness_response = self._validate_prompt_readiness(
+            request=request,
+            generation_run_id=generation_run_id,
+            generation_prompt=generation_prompt,
         )
+        if readiness_response is not None:
+            return self._persist_and_return(request=request, response=readiness_response)
 
-        self.repository.update_question_status(request.id, "querying_tugraph")
-        execution = await self.tugraph_client.execute(generation.cypher)
+        self.repository.update_question_status(request.id, "prompt_ready")
 
-        self.repository.update_question_status(request.id, "submitted_for_evaluation")
-        submission_response = await self.testing_client.submit(
+        invocation_response, raw_output = await self._invoke_model(
+            request=request,
+            generation_run_id=generation_run_id,
+            generation_prompt=generation_prompt,
+        )
+        if invocation_response is not None:
+            return self._persist_and_return(request=request, response=invocation_response)
+
+        parsing_response, generated_cypher, parse_summary = self._parse_generation_output(
+            request=request,
+            generation_run_id=generation_run_id,
+            generation_prompt=generation_prompt,
+            raw_output=raw_output,
+        )
+        if parsing_response is not None:
+            return self._persist_and_return(request=request, response=parsing_response)
+
+        guardrail_response, guardrail_summary = self._check_guardrail(
+            request=request,
+            generation_run_id=generation_run_id,
+            generation_prompt=generation_prompt,
+            generated_cypher=generated_cypher,
+            parse_summary=parse_summary,
+            raw_output=raw_output,
+        )
+        if guardrail_response is not None:
+            return self._persist_and_return(request=request, response=guardrail_response)
+
+        await self.testing_client.submit(
             payload=EvaluationSubmissionRequest(
                 id=request.id,
                 question=request.question,
-                generated_cypher=generation.cypher,
-                execution=execution,
-                knowledge_context=knowledge_context,
+                generation_run_id=generation_run_id,
+                generated_cypher=generated_cypher,
+                parse_summary=parse_summary,
+                guardrail_summary=guardrail_summary,
+                raw_output_snapshot=raw_output,
+                input_prompt_snapshot=generation_prompt,
             )
         )
 
-        final_status = "completed"
-        self.repository.update_question_status(request.id, final_status)
-        self.repository.save_generation_run(
+        response = self._build_response(
             id=request.id,
-            question=request.question,
-            generated_cypher=generation.cypher,
-            execution=execution,
-            knowledge_context=knowledge_context,
-            evaluation_status=submission_response.status,
+            generation_run_id=generation_run_id,
+            generation_status="submitted_to_testing",
+            generated_cypher=generated_cypher,
+            parse_summary=parse_summary,
+            guardrail_summary=guardrail_summary,
+            raw_output_snapshot=raw_output,
+            input_prompt_snapshot=generation_prompt,
         )
-        run = self.repository.get_generation_run(request.id)
-        if run is None:
-            raise RuntimeError(f"Failed to persist generation run for id={request.id}")
-        return run
+        return self._persist_and_return(request=request, response=response)
 
     def get_run(self, id: str) -> QueryQuestionResponse | None:
         return self.repository.get_generation_run(id)
 
+    def get_prompt_snapshot(self, id: str) -> PromptSnapshotResponse | None:
+        snapshot = self.repository.get_generation_prompt_snapshot(id)
+        if snapshot is None:
+            return None
+        return PromptSnapshotResponse.model_validate(snapshot)
+
     def accept_repair_plan(self, plan: RepairPlan) -> QueryGeneratorRepairReceipt:
         self.repository.save_repair_plan_receipt(plan)
         return QueryGeneratorRepairReceipt(status="accepted", plan_id=plan.plan_id, id=plan.id)
+
+    async def _fetch_prompt(
+        self,
+        *,
+        request: QAQuestionRequest,
+        generation_run_id: str,
+    ) -> Tuple[QueryQuestionResponse | None, str]:
+        try:
+            prompt = await self.prompt_client.fetch_prompt(task_id=request.id, question_text=request.question)
+        except Exception as exc:
+            return (
+                self._build_response(
+                    id=request.id,
+                    generation_run_id=generation_run_id,
+                    generation_status="prompt_fetch_failed",
+                    generated_cypher="",
+                    parse_summary="prompt_not_fetched",
+                    guardrail_summary="prompt_fetch_failed",
+                    raw_output_snapshot="",
+                    failure_stage="prompt_fetch",
+                    failure_reason_summary=str(exc),
+                    input_prompt_snapshot="",
+                ),
+                "",
+            )
+        return None, prompt
+
+    def _validate_prompt_readiness(
+        self,
+        *,
+        request: QAQuestionRequest,
+        generation_run_id: str,
+        generation_prompt: str,
+    ) -> QueryQuestionResponse | None:
+        if generation_prompt.strip():
+            return None
+        return self._build_response(
+            id=request.id,
+            generation_run_id=generation_run_id,
+            generation_status="failed",
+            generated_cypher="",
+            parse_summary="prompt_empty",
+            guardrail_summary="prompt_not_ready",
+            raw_output_snapshot="",
+            failure_stage="prompt_readiness_check",
+            failure_reason_summary="Generation prompt is empty.",
+            input_prompt_snapshot=generation_prompt,
+        )
+
+    async def _invoke_model(
+        self,
+        *,
+        request: QAQuestionRequest,
+        generation_run_id: str,
+        generation_prompt: str,
+    ) -> Tuple[QueryQuestionResponse | None, str]:
+        try:
+            raw_generation = await self.generator_client.generate_from_prompt(
+                task_id=request.id,
+                question_text=request.question,
+                generation_prompt=generation_prompt,
+            )
+        except Exception as exc:
+            return (
+                self._build_response(
+                    id=request.id,
+                    generation_run_id=generation_run_id,
+                    generation_status="model_invocation_failed",
+                    generated_cypher="",
+                    parse_summary="model_invocation_failed",
+                    guardrail_summary="not_checked",
+                    raw_output_snapshot="",
+                    failure_stage="model_invocation",
+                    failure_reason_summary=str(exc),
+                    input_prompt_snapshot=generation_prompt,
+                ),
+                "",
+            )
+        return None, raw_generation.get("raw_output", "")
+
+    def _parse_generation_output(
+        self,
+        *,
+        request: QAQuestionRequest,
+        generation_run_id: str,
+        generation_prompt: str,
+        raw_output: str,
+    ) -> Tuple[QueryQuestionResponse | None, str, str]:
+        generated_cypher, parse_summary = _extract_cypher(raw_output)
+        if generated_cypher:
+            return None, generated_cypher, parse_summary
+        return (
+            self._build_response(
+                id=request.id,
+                generation_run_id=generation_run_id,
+                generation_status="output_parsing_failed",
+                generated_cypher="",
+                parse_summary=parse_summary,
+                guardrail_summary="not_checked",
+                raw_output_snapshot=raw_output,
+                failure_stage="output_parsing",
+                failure_reason_summary="Unable to parse Cypher from model output.",
+                input_prompt_snapshot=generation_prompt,
+            ),
+            "",
+            parse_summary,
+        )
+
+    def _check_guardrail(
+        self,
+        *,
+        request: QAQuestionRequest,
+        generation_run_id: str,
+        generation_prompt: str,
+        generated_cypher: str,
+        parse_summary: str,
+        raw_output: str,
+    ) -> Tuple[QueryQuestionResponse | None, str]:
+        guardrail_summary, guardrail_error = _run_minimal_guardrail(generated_cypher)
+        if guardrail_error is None:
+            return None, guardrail_summary
+        return (
+            self._build_response(
+                id=request.id,
+                generation_run_id=generation_run_id,
+                generation_status="guardrail_rejected",
+                generated_cypher=generated_cypher,
+                parse_summary=parse_summary,
+                guardrail_summary=guardrail_summary,
+                raw_output_snapshot=raw_output,
+                failure_stage="guardrail_check",
+                failure_reason_summary=guardrail_error,
+                input_prompt_snapshot=generation_prompt,
+            ),
+            guardrail_summary,
+        )
+
+    def _build_response(
+        self,
+        *,
+        id: str,
+        generation_run_id: str,
+        generation_status: str,
+        generated_cypher: str,
+        parse_summary: str,
+        guardrail_summary: str,
+        raw_output_snapshot: str,
+        failure_stage: str | None = None,
+        failure_reason_summary: str | None = None,
+        input_prompt_snapshot: str,
+    ) -> QueryQuestionResponse:
+        return QueryQuestionResponse(
+            id=id,
+            generation_run_id=generation_run_id,
+            generation_status=generation_status,
+            generated_cypher=generated_cypher,
+            parse_summary=parse_summary,
+            guardrail_summary=guardrail_summary,
+            raw_output_snapshot=raw_output_snapshot,
+            failure_stage=failure_stage,
+            failure_reason_summary=failure_reason_summary,
+            input_prompt_snapshot=input_prompt_snapshot,
+        )
+
+    def _persist_and_return(self, *, request: QAQuestionRequest, response: QueryQuestionResponse) -> QueryQuestionResponse:
+        self._persist(request, response)
+        return response
+
+    def _persist(self, request: QAQuestionRequest, response: QueryQuestionResponse) -> None:
+        self.repository.update_question_status(request.id, response.generation_status)
+        self.repository.save_generation_run(
+            id=request.id,
+            generation_run_id=response.generation_run_id,
+            generation_status=response.generation_status,
+            generated_cypher=response.generated_cypher,
+            parse_summary=response.parse_summary,
+            guardrail_summary=response.guardrail_summary,
+            raw_output_snapshot=response.raw_output_snapshot,
+            failure_stage=response.failure_stage,
+            failure_reason_summary=response.failure_reason_summary,
+            input_prompt_snapshot=response.input_prompt_snapshot,
+        )
+
+
+def _extract_cypher(content: str) -> tuple[str, str]:
+    cleaned = content.strip()
+    if not cleaned:
+        return "", "raw_output_empty"
+
+    fenced = _strip_fence(cleaned)
+    if fenced != cleaned:
+        cleaned = fenced
+
+    try:
+        parsed = json.loads(cleaned)
+        cypher = str(parsed.get("cypher", "")).strip()
+        if cypher:
+            return cypher, "parsed_json"
+    except json.JSONDecodeError:
+        pass
+
+    if cleaned.upper().startswith(("MATCH", "WITH", "CALL")):
+        return cleaned, "parsed_plain_text"
+
+    for line in cleaned.splitlines():
+        stripped = line.strip()
+        if stripped.upper().startswith(("MATCH", "WITH", "CALL")):
+            return stripped, "parsed_first_query_line"
+
+    return "", "parse_failed"
+
+
+def _strip_fence(content: str) -> str:
+    if not content.startswith("```"):
+        return content
+    stripped = content.strip("`")
+    if stripped.startswith("json"):
+        return stripped[4:].strip()
+    if stripped.startswith("cypher"):
+        return stripped[6:].strip()
+    return stripped.strip()
+
+
+def _run_minimal_guardrail(generated_cypher: str) -> tuple[str, str | None]:
+    if not generated_cypher.strip():
+        return "empty_cypher", "Generated Cypher is empty."
+    if not generated_cypher.lstrip().upper().startswith(("MATCH", "WITH", "CALL")):
+        return "invalid_cypher_start", "Generated Cypher does not start with a supported clause."
+    return "accepted", None
 
 
 repository = QueryGeneratorRepository(data_dir=settings.data_dir)
@@ -108,6 +368,10 @@ if (
     )
 
 workflow_service = QueryWorkflowService(
+    prompt_client=PromptServiceClient(
+        base_url=settings.knowledge_ops_service_url,
+        timeout_seconds=settings.request_timeout_seconds,
+    ),
     generator_client=QwenGeneratorClient(
         heuristic_generator=HeuristicCypherGenerator(model_name=settings.qwen_model_name),
         llm_generator=llm_generator,
@@ -116,29 +380,18 @@ workflow_service = QueryWorkflowService(
         base_url=settings.testing_service_url,
         timeout_seconds=settings.request_timeout_seconds,
     ),
-    tugraph_client=TuGraphClient(
-        base_url=settings.tugraph_url,
-        username=settings.tugraph_username,
-        password=settings.tugraph_password,
-        graph=settings.tugraph_graph,
-        mock_mode=settings.mock_tugraph,
-    ),
     repository=repository,
 )
 
 
 async def test_tugraph_connection() -> dict:
-    execution = await workflow_service.tugraph_client.test_connection()
     return {
-        "mode": "mock" if workflow_service.tugraph_client.mock_mode else "real",
-        "graph": workflow_service.tugraph_client.graph,
-        "base_url": workflow_service.tugraph_client.base_url,
-        "success": execution.success,
-        "execution": execution.model_dump(),
+        "supported": False,
+        "detail": "Cypher Generation Service no longer executes TuGraph queries directly.",
     }
 
 
-def get_generator_status() -> dict:
+def get_generator_status() -> Dict[str, object]:
     return {
         "llm_enabled": settings.llm_enabled,
         "llm_provider": settings.llm_provider,
@@ -151,7 +404,6 @@ def get_generator_status() -> dict:
             and settings.llm_model
         ),
         "active_mode": "llm" if llm_generator is not None else "heuristic_fallback",
-        "tugraph_graph": settings.tugraph_graph,
         "storage": settings.data_dir,
-        "knowledge_package": "default-network-schema:v1",
+        "prompt_source": settings.knowledge_ops_service_url,
     }

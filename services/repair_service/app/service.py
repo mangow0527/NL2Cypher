@@ -78,7 +78,7 @@ class RepairService:
         ambiguous = any(token in ticket.question.lower() for token in ["随便", "看看", "情况", "这个", "那个", "帮我看看"])
         expected_labels = set(extract_labels(ticket.expected.cypher))
         expected_relations = set(extract_relations(ticket.expected.cypher))
-        loaded_tags = set(ticket.knowledge_context.loaded_knowledge_tags)
+        loaded_tags = set(ticket.knowledge_context.loaded_knowledge_tags if ticket.knowledge_context else [])
         expected_tag_map = {
             "NetworkElement": "network_element",
             "Port": "port",
@@ -181,12 +181,12 @@ class RepairService:
         experiments: List[Dict[str, object]] = []
         label_names = extract_labels(ticket.expected.cypher)
         experiment_inputs = [
-            ("A_same_knowledge", ticket.question, ticket.knowledge_context.loaded_knowledge_tags),
+            ("A_same_knowledge", ticket.question, ticket.knowledge_context.loaded_knowledge_tags if ticket.knowledge_context else []),
             ("B_expanded_knowledge", ticket.question, DEFAULT_KNOWLEDGE_PACKAGE.knowledge_tags),
             (
                 "C_clarified_question",
                 f"{ticket.question}。请明确返回与{'、'.join(label_names) or '目标实体'}相关的数据。",
-                ticket.knowledge_context.loaded_knowledge_tags,
+                ticket.knowledge_context.loaded_knowledge_tags if ticket.knowledge_context else [],
             ),
         ]
         for name, question, tags in experiment_inputs:

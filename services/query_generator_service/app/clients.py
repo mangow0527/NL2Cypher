@@ -6,7 +6,7 @@ from typing import Dict, List, Optional, Tuple
 
 import httpx
 
-from shared.models import CypherGenerationRequest, EvaluationSubmissionRequest, EvaluationSubmissionResponse, GeneratedCypher
+from shared.models import EvaluationSubmissionRequest, EvaluationSubmissionResponse, PromptFetchResponse
 from shared.schema_profile import NETWORK_SCHEMA_V10_CONTEXT, NETWORK_SCHEMA_V10_HINTS
 
 logger = logging.getLogger("query_generator")
@@ -16,9 +16,8 @@ class HeuristicCypherGenerator:
     def __init__(self, model_name: str) -> None:
         self.model_name = model_name
 
-    def generate(self, request: CypherGenerationRequest) -> GeneratedCypher:
-        context = request.context
-        question = context.question.lower()
+    def generate_from_prompt(self, task_id: str, question_text: str, generation_prompt: str) -> Dict[str, str]:
+        question = question_text.lower()
 
         if any(token in question for token in ["这个", "那个", "随便", "怎么弄"]):
             cypher = "MATCH (n:NetworkElement) RETURN n.id AS id, n.name AS name LIMIT 10"
@@ -26,11 +25,16 @@ class HeuristicCypherGenerator:
         else:
             cypher, summary = self._generate_network_schema_v10_query(question)
 
-        return GeneratedCypher(
-            cypher=cypher,
-            model=self.model_name,
-            reasoning_summary=f"[heuristic] {summary} Schema context: {NETWORK_SCHEMA_V10_CONTEXT}",
-        )
+        return {
+            "raw_output": json.dumps(
+                {
+                    "cypher": cypher,
+                    "notes": f"[heuristic] {summary} Schema context: {NETWORK_SCHEMA_V10_CONTEXT}",
+                },
+                ensure_ascii=False,
+            ),
+            "model_name": self.model_name,
+        }
 
     def _generate_network_schema_v10_query(self, question: str) -> Tuple[str, str]:
         wants_count = any(token in question for token in ["数量", "多少", "count", "总数", "几个"])
@@ -114,8 +118,7 @@ class OpenAICompatibleCypherGenerator:
         self.timeout_seconds = timeout_seconds
         self.temperature = temperature
 
-    async def generate(self, request: CypherGenerationRequest) -> GeneratedCypher:
-        prompt = self._build_messages(request)
+    async def generate_from_prompt(self, task_id: str, question_text: str, generation_prompt: str) -> Dict[str, str]:
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             response = await client.post(
                 f"{self.base_url}/chat/completions",
@@ -126,68 +129,17 @@ class OpenAICompatibleCypherGenerator:
                 json={
                     "model": self.model,
                     "temperature": self.temperature,
-                    "messages": prompt,
+                    "messages": [{"role": "user", "content": generation_prompt}],
                 },
             )
             response.raise_for_status()
             payload = response.json()
 
         content = payload["choices"][0]["message"]["content"]
-        cypher = self._extract_cypher(content)
-        return GeneratedCypher(
-            cypher=cypher,
-            model=self.model,
-            reasoning_summary="[llm] Generated Cypher using schema-aware and knowledge-aware prompt over network_schema_v10.",
-        )
-
-    def _build_messages(self, request: CypherGenerationRequest) -> List[Dict[str, str]]:
-        context = request.context
-        system_prompt = (
-            "You are a Cypher generation engine for TuGraph. "
-            "Generate a single valid Cypher query for graph network_schema_v10. "
-            "Only use labels, properties, and edge directions that appear in the schema context and knowledge hint. "
-            "Return JSON only in the shape {\"cypher\":\"...\",\"notes\":\"...\"}."
-        )
-        user_prompt = (
-            f"Question ID: {context.id}\n"
-            f"Question: {context.question}\n"
-            f"Knowledge context: {context.knowledge_context.model_dump_json() if context.knowledge_context else 'none'}\n"
-            f"Knowledge/schema hint:\n{context.schema_hint or 'none'}\n\n"
-            f"Schema context:\n{NETWORK_SCHEMA_V10_CONTEXT}\n"
-        )
-        return [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ]
-
-    def _extract_cypher(self, content: str) -> str:
-        cleaned = content.strip()
-        if cleaned.startswith("```"):
-            cleaned = cleaned.strip("`")
-            if cleaned.startswith("json"):
-                cleaned = cleaned[4:].strip()
-            elif cleaned.startswith("cypher"):
-                cleaned = cleaned[6:].strip()
-
-        try:
-            parsed = json.loads(cleaned)
-            cypher = parsed.get("cypher", "").strip()
-            if cypher:
-                return cypher
-        except json.JSONDecodeError:
-            pass
-
-        if "```cypher" in content:
-            fragment = content.split("```cypher", 1)[1].split("```", 1)[0].strip()
-            if fragment:
-                return fragment
-
-        if "```" in content:
-            fragment = content.split("```", 1)[1].split("```", 1)[0].strip()
-            if fragment:
-                return fragment
-
-        return cleaned
+        return {
+            "raw_output": content,
+            "model_name": self.model,
+        }
 
 
 class QwenGeneratorClient:
@@ -199,25 +151,53 @@ class QwenGeneratorClient:
         self.heuristic_generator = heuristic_generator
         self.llm_generator = llm_generator
 
-    async def generate(self, request: CypherGenerationRequest) -> GeneratedCypher:
+    async def generate_from_prompt(self, task_id: str, question_text: str, generation_prompt: str) -> Dict[str, str]:
         if self.llm_generator is not None:
             try:
-                logger.info("LLM call started for id=%s", request.context.id)
-                result = await self.llm_generator.generate(request)
-                logger.info("LLM call succeeded for id=%s, cypher=%s", request.context.id, result.cypher)
+                logger.info("LLM call started for id=%s", task_id)
+                result = await self.llm_generator.generate_from_prompt(task_id, question_text, generation_prompt)
+                logger.info("LLM call succeeded for id=%s", task_id)
                 return result
             except Exception as exc:
-                logger.warning("LLM call failed for id=%s: %s: %s", request.context.id, type(exc).__name__, exc)
-                fallback = self.heuristic_generator.generate(request)
-                fallback.reasoning_summary = (
-                    f"[fallback-after-llm-error] {fallback.reasoning_summary} "
-                    f"LLM error: {type(exc).__name__}: {exc}"
+                logger.warning("LLM call failed for id=%s: %s: %s", task_id, type(exc).__name__, exc)
+                fallback = self.heuristic_generator.generate_from_prompt(task_id, question_text, generation_prompt)
+                fallback["raw_output"] = json.dumps(
+                    {
+                        "cypher": json.loads(fallback["raw_output"]).get("cypher", ""),
+                        "notes": (
+                            f"[fallback-after-llm-error] {json.loads(fallback['raw_output']).get('notes', '')} "
+                            f"LLM error: {type(exc).__name__}: {exc}"
+                        ),
+                    },
+                    ensure_ascii=False,
                 )
                 return fallback
 
-        fallback = self.heuristic_generator.generate(request)
-        fallback.reasoning_summary = f"[fallback-no-llm-config] {fallback.reasoning_summary}"
+        fallback = self.heuristic_generator.generate_from_prompt(task_id, question_text, generation_prompt)
+        fallback["raw_output"] = json.dumps(
+            {
+                "cypher": json.loads(fallback["raw_output"]).get("cypher", ""),
+                "notes": f"[fallback-no-llm-config] {json.loads(fallback['raw_output']).get('notes', '')}",
+            },
+            ensure_ascii=False,
+        )
         return fallback
+
+
+class PromptServiceClient:
+    def __init__(self, base_url: str, timeout_seconds: float) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.timeout_seconds = timeout_seconds
+
+    async def fetch_prompt(self, task_id: str, question_text: str) -> str:
+        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+            response = await client.post(
+                f"{self.base_url}/api/v1/prompt-generation/fetch",
+                json={"task_id": task_id, "question_text": question_text},
+            )
+            response.raise_for_status()
+            payload = PromptFetchResponse.model_validate(response.json())
+            return payload.generation_prompt
 
 
 class TestingServiceClient:

@@ -151,10 +151,12 @@ class TestLLMReEvaluate:
         self.repo = MagicMock()
         self.repair_client = AsyncMock()
         self.llm_client = AsyncMock(spec=LLMEvaluationClient)
+        self.tugraph_client = AsyncMock()
         self.svc = EvaluationService(
             repository=self.repo,
             repair_client=self.repair_client,
             llm_client=self.llm_client,
+            tugraph_client=self.tugraph_client,
         )
 
     @pytest.mark.asyncio
@@ -251,10 +253,12 @@ class TestEvaluateReadyPairWithLLM:
         self.repo = MagicMock()
         self.repair_client = AsyncMock()
         self.llm_client = AsyncMock(spec=LLMEvaluationClient)
+        self.tugraph_client = AsyncMock()
         self.svc = EvaluationService(
             repository=self.repo,
             repair_client=self.repair_client,
             llm_client=self.llm_client,
+            tugraph_client=self.tugraph_client,
         )
 
         self.golden = {
@@ -267,22 +271,20 @@ class TestEvaluateReadyPairWithLLM:
             "id": "test-001",
             "question": "查看设备",
             "generated_cypher": "MATCH (n:NetworkElement) RETURN n.name AS name LIMIT 5",
-            "execution_json": json.dumps({
-                "success": True,
-                "rows": [{"name": "router-1"}],
-                "row_count": 1,
-                "error_message": None,
-                "elapsed_ms": 50,
-            }),
-            "knowledge_context_json": json.dumps({
-                "package_id": "pkg-1",
-                "version": "1.0",
-                "graph_name": "network_schema_v10",
-                "summary": "test",
-                "loaded_knowledge_tags": ["network_element"],
-            }),
+            "generation_run_id": "run-001",
+            "parse_summary": "parsed_json",
+            "guardrail_summary": "accepted",
+            "raw_output_snapshot": '{"cypher":"MATCH (n:NetworkElement) RETURN n.name AS name LIMIT 5"}',
+            "input_prompt_snapshot": "请生成 Cypher",
             "status": "ready_to_evaluate",
         }
+        self.tugraph_client.execute.return_value = TuGraphExecutionResult(
+            success=True,
+            rows=[{"name": "router-1"}],
+            row_count=1,
+            error_message=None,
+            elapsed_ms=50,
+        )
 
     @pytest.mark.asyncio
     async def test_rule_pass_skips_llm(self):
@@ -292,6 +294,7 @@ class TestEvaluateReadyPairWithLLM:
 
         result = await self.svc._evaluate_ready_pair("test-001")
 
+        self.tugraph_client.execute.assert_awaited_once_with(self.submission["generated_cypher"])
         self.llm_client.evaluate.assert_not_called()
         assert result.verdict == "pass"
 
@@ -340,6 +343,7 @@ class TestEvaluateReadyPairWithLLM:
             repository=self.repo,
             repair_client=self.repair_client,
             llm_client=None,
+            tugraph_client=self.tugraph_client,
         )
         self.golden["golden_answer_json"] = json.dumps([{"name": "different"}])
         self.repo.get_golden.return_value = self.golden

@@ -6,7 +6,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 
-from .schemas import QAQuestionRequest, QueryGeneratorRepairReceipt, QueryQuestionResponse, RepairPlan
+from .schemas import PromptSnapshotResponse, QAQuestionRequest, QueryGeneratorRepairReceipt, QueryQuestionResponse, RepairPlan
 from .config import settings
 from .service import get_generator_status, test_tugraph_connection, workflow_service
 
@@ -41,6 +41,14 @@ async def get_question_run(id: str) -> QueryQuestionResponse:
     if run is None:
         raise HTTPException(status_code=404, detail=f"No generation run found for id={id}")
     return run
+
+
+@app.get("/api/v1/questions/{id}/prompt", response_model=PromptSnapshotResponse)
+async def get_prompt_snapshot(id: str) -> PromptSnapshotResponse:
+    snapshot = workflow_service.get_prompt_snapshot(id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail=f"No prompt snapshot found for id={id}")
+    return snapshot
 
 
 @app.post("/api/v1/qa/questions", response_model=QueryQuestionResponse)

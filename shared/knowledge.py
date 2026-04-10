@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+"""Repair-only knowledge helpers.
+
+The current Cypher Generation Service no longer imports this module in its main
+request path. These helpers remain for repair-side counterfactual experiments
+and for documentation of the built-in network schema package.
+"""
+
 from typing import List
 
 from .models import KnowledgeContext, KnowledgePackage

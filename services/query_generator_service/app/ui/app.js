@@ -31,9 +31,9 @@ document.getElementById('fill-ambiguous').addEventListener('click', () => {
 function renderMeta(data) {
   const rows = [
     ['ID', data.id || '-'],
-    ['状态', data.status || '-'],
-    ['评测状态', data.evaluation_status || '-'],
-    ['图谱', data.knowledge_context?.graph_name || '-'],
+    ['生成运行标识', data.generation_run_id || '-'],
+    ['生成状态', data.generation_status || '-'],
+    ['失败阶段', data.failure_stage || '-'],
   ];
 
   metaGrid.innerHTML = rows.map(([label, value]) => `
@@ -45,22 +45,24 @@ function renderMeta(data) {
 }
 
 function renderSummary(data) {
-  const tags = data.knowledge_context?.loaded_knowledge_tags || [];
   const items = [
     {
       title: '输入问题',
-      body: data.question || '-',
+      body: form.question.value.trim() || '-',
       tags: [`id: ${data.id || '-'}`],
     },
     {
-      title: '知识包',
-      body: data.knowledge_context?.summary || '-',
-      tags: tags.map((tag) => `tag: ${tag}`),
+      title: '提示词快照',
+      body: data.input_prompt_snapshot || '-',
+      tags: ['prompt_fetch: success'],
     },
     {
-      title: '提交测试服务',
-      body: `evaluation_status: ${data.evaluation_status || '-'}`,
-      tags: [`execution_success: ${data.execution?.success}`],
+      title: '生成状态',
+      body: data.generation_status || '-',
+      tags: [
+        `parse_summary: ${data.parse_summary || '-'}`,
+        `guardrail_summary: ${data.guardrail_summary || '-'}`,
+      ],
     },
   ];
 
@@ -93,9 +95,13 @@ form.addEventListener('submit', async (event) => {
       throw new Error(data.detail ? JSON.stringify(data.detail) : '请求失败');
     }
 
-    statusStrip.textContent = `${data.status} / ${data.evaluation_status}`;
+    statusStrip.textContent = data.generation_status || '已处理';
     generatedCypher.textContent = data.generated_cypher || '尚未生成';
-    executionView.textContent = JSON.stringify(data.execution, null, 2);
+    executionView.textContent = JSON.stringify({
+      input_prompt_snapshot: data.input_prompt_snapshot || '',
+      raw_output_snapshot: data.raw_output_snapshot || '',
+      failure_reason_summary: data.failure_reason_summary || '',
+    }, null, 2);
     rawView.textContent = JSON.stringify(data, null, 2);
     renderMeta(data);
     renderSummary(data);

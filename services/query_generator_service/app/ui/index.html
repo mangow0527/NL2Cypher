@@ -13,9 +13,9 @@
       <div>
         <p class="eyebrow">Query Generator Service</p>
         <h1>Q 接入与生成执行控制台</h1>
-        <p class="lead">模拟 QA 生成服务向查询语句生成服务发送 `id + question`。服务会加载知识包、生成 Cypher、执行 TuGraph，并把结果提交给测试服务。</p>
+        <p class="lead">模拟外部服务向 Cypher 生成服务发送 `id + question`。服务会主动获取提示词、生成 Cypher，并把生成结果提交给测试服务。</p>
       </div>
-      <div class="hero-badge">Q -> Cypher -> TuGraph -> Testing</div>
+      <div class="hero-badge">Q -> Prompt Fetch -> Cypher -> Testing</div>
     </section>
 
     <section class="grid">
@@ -44,9 +44,9 @@
         <div class="status-strip" id="status-strip">等待执行</div>
         <div class="meta-grid" id="meta-grid">
           <div><span>ID</span><strong>-</strong></div>
-          <div><span>状态</span><strong>-</strong></div>
-          <div><span>评测状态</span><strong>-</strong></div>
-          <div><span>图谱</span><strong>-</strong></div>
+          <div><span>生成运行标识</span><strong>-</strong></div>
+          <div><span>生成状态</span><strong>-</strong></div>
+          <div><span>失败阶段</span><strong>-</strong></div>
         </div>
         <div class="code-block">
           <div class="code-title">Generated Cypher</div>
@@ -59,12 +59,12 @@
       <div class="section-title">详细响应</div>
       <div class="tabs">
         <button class="tab active" data-tab="summary">摘要</button>
-        <button class="tab" data-tab="execution">执行结果</button>
+        <button class="tab" data-tab="execution">提示词与快照</button>
         <button class="tab" data-tab="raw">原始 JSON</button>
       </div>
       <div class="tab-content active" id="tab-summary">
         <div class="timeline" id="summary-view">
-          <p class="empty">运行后这里会展示生成与执行摘要。</p>
+          <p class="empty">运行后这里会展示生成摘要。</p>
         </div>
       </div>
       <div class="tab-content" id="tab-execution">

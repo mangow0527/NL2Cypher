@@ -9,12 +9,8 @@ class Settings(BaseSettings):
     port: int = 8000
     data_dir: str = "data/query_generator_service"
     testing_service_url: str = "http://127.0.0.1:8001"
+    knowledge_ops_service_url: str = "http://127.0.0.1:8003"
     service_public_base_url: str = "http://127.0.0.1:8000"
-    tugraph_url: str = "http://127.0.0.1:7070"
-    tugraph_username: str = "admin"
-    tugraph_password: str = "admin"
-    tugraph_graph: str = "default"
-    mock_tugraph: bool = True
     qwen_model_name: str = "qwen-32b"
     request_timeout_seconds: float = 30.0
     llm_enabled: bool = False

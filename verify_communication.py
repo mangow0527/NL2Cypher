@@ -20,6 +20,27 @@ class ServiceCommunicationTester:
         }
         self.timeout = 30.0
 
+    def build_submission_payload(
+        self,
+        *,
+        task_id: str,
+        question_text: str,
+        generated_cypher: str,
+        generation_run_id: str,
+        input_prompt_snapshot: str,
+    ) -> Dict[str, Any]:
+        """构造当前测试服务要求的 submission 契约。"""
+        return {
+            "id": task_id,
+            "question": question_text,
+            "generation_run_id": generation_run_id,
+            "generated_cypher": generated_cypher,
+            "parse_summary": "communication_test_payload",
+            "guardrail_summary": "accepted",
+            "raw_output_snapshot": "",
+            "input_prompt_snapshot": input_prompt_snapshot,
+        }
+
     async def test_service_health(self) -> Dict[str, bool]:
         """测试各服务健康状态"""
         results = {}
@@ -90,31 +111,22 @@ class ServiceCommunicationTester:
                 return {"success": False, "error": str(e)}
 
     async def test_submission_to_testing(self) -> Dict[str, Any]:
-        """测试向测试服务提交查询结果"""
+        """测试向测试服务提交生成结果，由测试服务负责执行 TuGraph。"""
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             try:
                 # 先确保标准答案存在
                 await self.test_testing_service_golden()
-                
-                payload = {
-                    "id": "comm-test-001",
-                    "question": "查询网络设备及其端口",
-                    "generated_cypher": "MATCH (ne:NetworkElement)-[:HAS_PORT]->(p:Port) RETURN ne.name AS device_name, p.name AS port_name LIMIT 10",
-                    "execution": {
-                        "success": True,
-                        "rows": [{"device_name": "test-device", "port_name": "test-port"}],
-                        "row_count": 1,
-                        "error_message": None,
-                        "elapsed_ms": 15
-                    },
-                    "knowledge_context": {
-                        "package_id": "default-network-schema",
-                        "version": "v1",
-                        "graph_name": "network_schema_v10",
-                        "summary": "Default knowledge package",
-                        "loaded_knowledge_tags": ["network_element", "port"]
-                    }
-                }
+
+                payload = self.build_submission_payload(
+                    task_id="comm-test-001",
+                    question_text="查询网络设备及其端口",
+                    generated_cypher=(
+                        "MATCH (ne:NetworkElement)-[:HAS_PORT]->(p:Port) "
+                        "RETURN ne.name AS device_name, p.name AS port_name LIMIT 10"
+                    ),
+                    generation_run_id="comm-run-001",
+                    input_prompt_snapshot="请根据 network_schema_v10 生成一个合法 Cypher，只返回 cypher 字段。",
+                )
                 
                 response = await client.post(
                     f"{self.services['testing']}/api/v1/evaluations/submissions",
@@ -204,8 +216,8 @@ class ServiceCommunicationTester:
         print("\n3. 测试测试服务")
         golden_result = await self.test_testing_service_golden()
         
-        # 4. 测试查询结果提交
-        print("\n4. 测试查询结果提交")
+        # 4. 测试生成结果提交
+        print("\n4. 测试生成结果提交")
         submission_result = await self.test_submission_to_testing()
         
         ticket_id = None
@@ -222,7 +234,7 @@ class ServiceCommunicationTester:
             ("服务健康检查", all(health_results.values())),
             ("查询语句生成", query_result.get("success", False)),
             ("标准答案提交", golden_result.get("success", False)),
-            ("查询结果提交", submission_result.get("success", False)),
+            ("生成结果提交", submission_result.get("success", False)),
             ("修复服务处理", repair_result.get("success", False))
         ]
         

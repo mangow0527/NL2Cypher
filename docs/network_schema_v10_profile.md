@@ -60,7 +60,8 @@ Schema 画像被多个模块引用：
 定义 `NETWORK_SCHEMA_V10_CONTEXT`（完整 schema 字符串）和 `NETWORK_SCHEMA_V10_HINTS`（实体关键词映射）。
 
 ### shared/knowledge.py
-基于 schema 画像构建默认知识包 `DEFAULT_KNOWLEDGE_PACKAGE`：
+该模块当前主要保留给修复服务的对照实验使用，不再属于 Cypher 生成服务主链路。  
+它基于 schema 画像构建默认知识包 `DEFAULT_KNOWLEDGE_PACKAGE`：
 - 包含标签（tags）如 `network_element`, `port`, `tunnel`, `service`, `protocol`, `fiber`, `link`
 - 每个标签关联业务术语、查询模式、约束
 - `select_knowledge_tags(question)` 根据问题关键词选择相关标签
@@ -76,6 +77,7 @@ Schema 画像被多个模块引用：
 ### 查询语句生成服务
 - 启发式生成器（`HeuristicCypherGenerator`）使用 `NETWORK_SCHEMA_V10_HINTS` 做关键词到 label/edge 的映射
 - LLM 生成器在 prompt 中注入 `NETWORK_SCHEMA_V10_CONTEXT`
+- 主链路不再在服务内选择知识标签，也不再在服务内组装 `KnowledgeContext`
 
 ## 启发式映射表
 

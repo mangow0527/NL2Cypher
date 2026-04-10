@@ -1,6 +1,7 @@
-from shared.models import QAQuestionRequest, QueryGeneratorRepairReceipt, QueryQuestionResponse, RepairPlan
+from shared.models import PromptSnapshotResponse, QAQuestionRequest, QueryGeneratorRepairReceipt, QueryQuestionResponse, RepairPlan
 
 __all__ = [
+    "PromptSnapshotResponse",
     "QAQuestionRequest",
     "QueryGeneratorRepairReceipt",
     "QueryQuestionResponse",

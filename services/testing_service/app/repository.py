@@ -45,15 +45,13 @@ class TestingRepository:
     def save_submission(self, request: EvaluationSubmissionRequest, status: str) -> None:
         path = self._submissions_dir / f"{request.id}.json"
         now = _utc_now()
-        execution_json = request.execution.model_dump_json()
-        knowledge_json = request.knowledge_context.model_dump_json()
         if path.exists():
             existing = json.loads(path.read_text(encoding="utf-8"))
             if (
                 existing["question"] != request.question
                 or existing["generated_cypher"] != request.generated_cypher
-                or existing["execution_json"] != execution_json
-                or existing["knowledge_context_json"] != knowledge_json
+                or existing["generation_run_id"] != request.generation_run_id
+                or existing["input_prompt_snapshot"] != request.input_prompt_snapshot
             ):
                 raise ValueError(f"Submission conflict for id={request.id}")
             existing["status"] = status
@@ -63,13 +61,26 @@ class TestingRepository:
         record = {
             "id": request.id,
             "question": request.question,
+            "generation_run_id": request.generation_run_id,
             "generated_cypher": request.generated_cypher,
-            "execution_json": execution_json,
-            "knowledge_context_json": knowledge_json,
+            "parse_summary": request.parse_summary,
+            "guardrail_summary": request.guardrail_summary,
+            "raw_output_snapshot": request.raw_output_snapshot,
+            "input_prompt_snapshot": request.input_prompt_snapshot,
+            "execution_json": None,
             "status": status,
             "received_at": now,
             "updated_at": now,
         }
+        path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def save_submission_execution(self, id: str, execution_json: str) -> None:
+        path = self._submissions_dir / f"{id}.json"
+        if not path.exists():
+            return
+        record = json.loads(path.read_text(encoding="utf-8"))
+        record["execution_json"] = execution_json
+        record["updated_at"] = _utc_now()
         path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def get_golden(self, id: str) -> Optional[Dict[str, Any]]:

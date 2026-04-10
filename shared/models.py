@@ -18,12 +18,15 @@ RootCauseType = Literal[
 ]
 ActionTarget = Literal["query_generator_service", "knowledge_ops_service", "qa_generation_service"]
 ActionType = Literal["prompt_adjustment", "knowledge_enrichment", "question_rewrite", "manual_review"]
-QuestionRecordStatus = Literal[
-    "received_question",
-    "generating_cypher",
-    "querying_tugraph",
-    "submitted_for_evaluation",
-    "completed",
+GenerationProcessingStatus = Literal[
+    "received",
+    "prompt_fetch_failed",
+    "prompt_ready",
+    "model_invocation_failed",
+    "output_parsing_failed",
+    "guardrail_rejected",
+    "submitted_to_testing",
+    "failed",
 ]
 EvaluationState = Literal[
     "received_golden_only",
@@ -55,6 +58,7 @@ class QAGoldenRequest(BaseModel):
     difficulty: Difficulty
 
 
+# Legacy repair analysis context kept for issue tickets and counterfactual experiments.
 class KnowledgeContext(BaseModel):
     package_id: str
     version: str
@@ -63,6 +67,7 @@ class KnowledgeContext(BaseModel):
     loaded_knowledge_tags: List[str] = Field(default_factory=list)
 
 
+# Repair-only experimental knowledge package contract.
 class KnowledgePackage(BaseModel):
     package_id: str
     version: str
@@ -75,6 +80,7 @@ class KnowledgePackage(BaseModel):
     knowledge_tags: List[str]
 
 
+# Repair-only legacy generation context. Not part of the Cypher Generation Service main contract.
 class GenerationContext(BaseModel):
     id: str
     question: str
@@ -84,10 +90,12 @@ class GenerationContext(BaseModel):
     knowledge_context: Optional[KnowledgeContext] = None
 
 
+# Repair-only counterfactual generation request.
 class CypherGenerationRequest(BaseModel):
     context: GenerationContext
 
 
+# Repair-only generated result shape used by counterfactual experiments.
 class GeneratedCypher(BaseModel):
     cypher: str
     model: str
@@ -103,12 +111,16 @@ class TuGraphExecutionResult(BaseModel):
     elapsed_ms: int = 0
 
 
+# Current runtime contract between Cypher Generation Service and Testing Service.
 class EvaluationSubmissionRequest(BaseModel):
     id: str
     question: str
+    generation_run_id: str
     generated_cypher: str
-    execution: TuGraphExecutionResult
-    knowledge_context: KnowledgeContext
+    parse_summary: str
+    guardrail_summary: str
+    raw_output_snapshot: str
+    input_prompt_snapshot: str
 
 
 class EvaluationDimensions(BaseModel):
@@ -142,8 +154,9 @@ class IssueTicket(BaseModel):
     question: str
     expected: ExpectedAnswer
     actual: ActualAnswer
-    knowledge_context: KnowledgeContext
+    knowledge_context: Optional[KnowledgeContext] = None
     evaluation: EvaluationSummary
+    input_prompt_snapshot: str = ""
 
 
 class RepairAction(BaseModel):
@@ -168,12 +181,29 @@ class RepairPlan(BaseModel):
 
 class QueryQuestionResponse(BaseModel):
     id: str
-    status: QuestionRecordStatus
-    question: str
-    generated_cypher: str
-    execution: TuGraphExecutionResult
-    knowledge_context: KnowledgeContext
-    evaluation_status: EvaluationState
+    generation_run_id: str
+    generation_status: GenerationProcessingStatus
+    generated_cypher: str = ""
+    parse_summary: str = ""
+    guardrail_summary: str = ""
+    raw_output_snapshot: str = ""
+    failure_stage: Optional[str] = None
+    failure_reason_summary: Optional[str] = None
+    input_prompt_snapshot: str = ""
+
+
+class PromptFetchRequest(BaseModel):
+    task_id: str
+    question_text: str
+
+
+class PromptFetchResponse(BaseModel):
+    generation_prompt: str
+
+
+class PromptSnapshotResponse(BaseModel):
+    id: str
+    input_prompt_snapshot: str
 
 
 class QAGoldenResponse(BaseModel):

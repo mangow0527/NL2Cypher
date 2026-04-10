@@ -14,6 +14,7 @@ from shared.models import (
     QAGoldenRequest,
     QAGoldenResponse,
 )
+from shared.tugraph import TuGraphClient
 
 from .clients import LLMEvaluationClient, RepairServiceClient
 from .config import settings
@@ -27,10 +28,12 @@ class EvaluationService:
         self,
         repository: TestingRepository,
         repair_client: RepairServiceClient,
+        tugraph_client: TuGraphClient,
         llm_client: Optional[LLMEvaluationClient] = None,
     ) -> None:
         self.repository = repository
         self.repair_client = repair_client
+        self.tugraph_client = tugraph_client
         self.llm_client = llm_client
 
     async def ingest_golden(self, request: QAGoldenRequest) -> QAGoldenResponse:
@@ -54,9 +57,9 @@ class EvaluationService:
         if not golden or not submission:
             raise RuntimeError(f"Expected both golden and submission before evaluating id={id}")
 
-        execution = _parse_execution(submission["execution_json"])
+        execution = await self.tugraph_client.execute(submission["generated_cypher"])
+        self.repository.save_submission_execution(id, execution.model_dump_json())
         expected_answer = json.loads(golden["golden_answer_json"])
-        knowledge_tags = json.loads(submission["knowledge_context_json"])["loaded_knowledge_tags"]
 
         evaluation = evaluate_submission(
             question=submission["question"],
@@ -64,7 +67,7 @@ class EvaluationService:
             expected_answer=expected_answer,
             actual_cypher=submission["generated_cypher"],
             execution=execution,
-            loaded_knowledge_tags=knowledge_tags,
+            loaded_knowledge_tags=[],
         )
 
         if evaluation.verdict != "pass" and self.llm_client is not None:
@@ -90,8 +93,8 @@ class EvaluationService:
                 generated_cypher=submission["generated_cypher"],
                 execution=execution,
             ),
-            knowledge_context=json.loads(submission["knowledge_context_json"]),
             evaluation=evaluation,
+            input_prompt_snapshot=submission.get("input_prompt_snapshot", ""),
         )
         self.repository.save_issue_ticket(ticket)
         await self.repair_client.submit_issue_ticket(ticket)
@@ -200,11 +203,12 @@ validation_service = EvaluationService(
         base_url=settings.repair_service_url,
         timeout_seconds=settings.request_timeout_seconds,
     ),
+    tugraph_client=TuGraphClient(
+        base_url=settings.tugraph_url,
+        username=settings.tugraph_username,
+        password=settings.tugraph_password,
+        graph=settings.tugraph_graph,
+        mock_mode=settings.mock_tugraph,
+    ),
     llm_client=llm_client,
 )
-
-
-def _parse_execution(payload: str):
-    from shared.models import TuGraphExecutionResult
-
-    return TuGraphExecutionResult.model_validate_json(payload)
