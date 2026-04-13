@@ -9,9 +9,10 @@ import pytest
 from shared.models import (
     EvaluationDimensions,
     EvaluationSummary,
+    KnowledgeRepairSuggestionRequest,
     TuGraphExecutionResult,
 )
-from services.testing_service.app.clients import LLMEvaluationClient
+from services.testing_service.app.clients import LLMEvaluationClient, RepairServiceClient
 from services.testing_service.app.service import EvaluationService
 
 
@@ -353,6 +354,45 @@ class TestEvaluateReadyPairWithLLM:
         result = await svc_no_llm._evaluate_ready_pair("test-001")
 
         assert result.status == "issue_ticket_created"
+
+
+class TestRepairServiceClientContract:
+    @pytest.mark.asyncio
+    async def test_submit_issue_ticket_parses_krss_response(self):
+        client = RepairServiceClient(base_url="http://repair-service", timeout_seconds=10)
+        ticket = MagicMock()
+        ticket.model_dump.return_value = {"id": "q-001"}
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_response = MagicMock()
+            mock_response.raise_for_status = MagicMock()
+            mock_response.json.return_value = {
+                "status": "applied",
+                "analysis_id": "analysis-q-001",
+                "id": "q-001",
+                "knowledge_repair_request": {
+                    "id": "q-001",
+                    "suggestion": "Add protocol mapping guidance",
+                    "knowledge_types": ["business_knowledge", "few-shot"],
+                },
+                "applied": True,
+            }
+            mock_ctx = AsyncMock()
+            mock_ctx.post.return_value = mock_response
+            mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
+            mock_ctx.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_ctx
+
+            result = await client.submit_issue_ticket(ticket)
+
+        assert result.status == "applied"
+        assert result.id == "q-001"
+        assert result.applied is True
+        assert result.knowledge_repair_request == KnowledgeRepairSuggestionRequest(
+            id="q-001",
+            suggestion="Add protocol mapping guidance",
+            knowledge_types=["business_knowledge", "few-shot"],
+        )
 
 
 class TestRuleBasedEvaluation:

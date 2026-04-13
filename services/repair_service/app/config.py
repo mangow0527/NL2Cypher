@@ -10,6 +10,9 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8002
     data_dir: str = "data/repair_service"
+    cgs_base_url: str = "http://127.0.0.1:8000"
+    knowledge_ops_repairs_apply_url: str = "http://127.0.0.1:8003/api/knowledge/repairs/apply"
+    knowledge_ops_repairs_apply_capture_dir: Optional[str] = None
     query_generator_service_url: str = "http://127.0.0.1:8000"
     knowledge_ops_feedback_url: Optional[str] = None
     qa_generation_feedback_url: Optional[str] = None

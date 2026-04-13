@@ -1,3 +1,11 @@
-from shared.models import IssueTicket, RepairPlan, RepairPlanEnvelope
+from __future__ import annotations
 
-__all__ = ["IssueTicket", "RepairPlan", "RepairPlanEnvelope"]
+from shared.models import IssueTicket, KRSSAnalysisRecord, KRSSIssueTicketResponse, KnowledgeRepairSuggestionRequest
+
+
+__all__ = [
+    "IssueTicket",
+    "KRSSIssueTicketResponse",
+    "KRSSAnalysisRecord",
+    "KnowledgeRepairSuggestionRequest",
+]

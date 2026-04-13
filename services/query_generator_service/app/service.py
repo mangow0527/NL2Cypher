@@ -82,6 +82,19 @@ class QueryWorkflowService:
         if guardrail_response is not None:
             return self._persist_and_return(request=request, response=guardrail_response)
 
+        self.repository.save_generation_run(
+            id=request.id,
+            generation_run_id=generation_run_id,
+            generation_status="generated",
+            generated_cypher=generated_cypher,
+            parse_summary=parse_summary,
+            guardrail_summary=guardrail_summary,
+            raw_output_snapshot=raw_output,
+            failure_stage=None,
+            failure_reason_summary=None,
+            input_prompt_snapshot=generation_prompt,
+        )
+
         await self.testing_client.submit(
             payload=EvaluationSubmissionRequest(
                 id=request.id,

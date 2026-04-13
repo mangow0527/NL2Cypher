@@ -56,6 +56,39 @@ class TestCypherGenerationWorkflow:
         assert "MATCH (n:NetworkElement)" in result.raw_output_snapshot
 
     @pytest.mark.asyncio
+    async def test_prompt_snapshot_is_persisted_before_submit(self):
+        prompt_client = AsyncMock()
+        prompt_client.fetch_prompt.return_value = "请生成一个 Cypher JSON"
+
+        generator_client = AsyncMock()
+        generator_client.generate_from_prompt.return_value = {
+            "raw_output": '{"cypher":"MATCH (n:NetworkElement) RETURN n.name AS name LIMIT 5"}',
+            "model_name": "test-model",
+        }
+
+        repository = MagicMock()
+        repository.next_generation_run_id.return_value = "run-004"
+        repository.get_generation_run.return_value = None
+
+        async def _submit(*, payload):
+            assert repository.save_generation_run.call_count >= 1
+            return {"status": "ok"}
+
+        testing_client = AsyncMock()
+        testing_client.submit.side_effect = _submit
+
+        svc = QueryWorkflowService(
+            prompt_client=prompt_client,
+            generator_client=generator_client,
+            testing_client=testing_client,
+            repository=repository,
+        )
+
+        result = await svc.ingest_question(QAQuestionRequest(id="qa-004", question="查询设备名称"))
+
+        assert result.generation_status == "submitted_to_testing"
+
+    @pytest.mark.asyncio
     async def test_prompt_fetch_failure_returns_processing_failure(self):
         prompt_client = AsyncMock()
         prompt_client.fetch_prompt.side_effect = RuntimeError("knowledge ops offline")

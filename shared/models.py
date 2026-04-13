@@ -44,6 +44,7 @@ RepairPlanState = Literal[
     "dispatched",
 ]
 DispatchStatus = Literal["sent", "stored_for_later"]
+KnowledgeType = Literal["schema", "cypher_syntax", "few-shot", "system_prompt", "business_knowledge"]
 
 
 class QAQuestionRequest(BaseModel):
@@ -200,6 +201,35 @@ class PromptFetchRequest(BaseModel):
 class PromptSnapshotResponse(BaseModel):
     id: str
     input_prompt_snapshot: str
+
+
+class KnowledgeRepairSuggestionRequest(BaseModel):
+    id: str
+    suggestion: str
+    knowledge_types: List[KnowledgeType]
+
+
+class KRSSIssueTicketResponse(BaseModel):
+    status: Literal["applied"] = "applied"
+    analysis_id: str
+    id: str
+    knowledge_repair_request: KnowledgeRepairSuggestionRequest
+    applied: bool = True
+
+
+class KRSSAnalysisRecord(BaseModel):
+    analysis_id: str
+    ticket_id: str
+    id: str
+    status: Literal["applied"] = "applied"
+    prompt_snapshot: str
+    knowledge_repair_request: KnowledgeRepairSuggestionRequest
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    rationale: str = ""
+    used_experiments: bool = False
+    applied: bool = True
+    created_at: str
+    applied_at: str
 
 
 class QAGoldenResponse(BaseModel):

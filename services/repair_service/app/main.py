@@ -6,11 +6,12 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 
+from shared.models import IssueTicket, KRSSAnalysisRecord, KRSSIssueTicketResponse
+
 from .config import settings
-from .schemas import IssueTicket, RepairPlan, RepairPlanEnvelope
 from .service import repair_service
 
-app = FastAPI(title="Repair Service", version="1.0.0")
+app = FastAPI(title="Knowledge Repair Suggestion Service", version="1.0.0")
 ui_dir = Path(__file__).parent / "ui"
 app.mount("/ui", StaticFiles(directory=ui_dir), name="repair-ui")
 
@@ -27,7 +28,7 @@ async def console() -> FileResponse:
 
 @app.get("/health")
 async def healthcheck() -> Dict[str, str]:
-    return {"status": "ok", "service": "repair_service"}
+    return {"status": "ok", "service": "knowledge_repair_suggestion_service"}
 
 
 @app.get("/api/v1/status")
@@ -35,17 +36,17 @@ async def service_status() -> Dict[str, object]:
     return repair_service.get_service_status()
 
 
-@app.post("/api/v1/issue-tickets", response_model=RepairPlanEnvelope)
-async def create_repair_plan(issue_ticket: IssueTicket) -> RepairPlanEnvelope:
-    return await repair_service.create_plan(issue_ticket)
+@app.post("/api/v1/issue-tickets", response_model=KRSSIssueTicketResponse)
+async def create_issue_ticket_response(issue_ticket: IssueTicket) -> KRSSIssueTicketResponse:
+    return await repair_service.create_issue_ticket_response(issue_ticket)
 
 
-@app.get("/api/v1/repair-plans/{plan_id}", response_model=RepairPlan)
-async def get_repair_plan(plan_id: str) -> RepairPlan:
-    plan = repair_service.get_plan(plan_id)
-    if plan is None:
-        raise HTTPException(status_code=404, detail=f"No repair plan found for plan_id={plan_id}")
-    return plan
+@app.get("/api/v1/krss-analyses/{analysis_id}", response_model=KRSSAnalysisRecord)
+async def get_krss_analysis(analysis_id: str) -> KRSSAnalysisRecord:
+    analysis = repair_service.get_analysis(analysis_id)
+    if analysis is None:
+        raise HTTPException(status_code=404, detail=f"No KRSS analysis found for analysis_id={analysis_id}")
+    return analysis
 
 
 if __name__ == "__main__":
