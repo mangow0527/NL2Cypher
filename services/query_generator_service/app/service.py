@@ -38,6 +38,7 @@ class QueryWorkflowService:
 
     async def ingest_question(self, request: QAQuestionRequest) -> QueryQuestionResponse:
         existing_run = self.repository.get_generation_run(request.id)
+
         if existing_run is not None and existing_run.generation_status == "submitted_to_testing":
             return existing_run
 
@@ -65,6 +66,17 @@ class QueryWorkflowService:
                 input_prompt_snapshot=existing_run.input_prompt_snapshot,
             )
             return self._persist_and_return(request=request, response=response)
+
+        _RETRYABLE_STATUSES = {
+            "prompt_fetch_failed",
+            "prompt_not_ready",
+            "invocation_failed",
+            "parse_failed",
+            "guardrail_rejected",
+            "testing_submit_failed",
+        }
+        if existing_run is not None and existing_run.generation_status in _RETRYABLE_STATUSES:
+            pass
 
         generation_run_id = self.repository.next_generation_run_id()
         self.repository.upsert_question(id=request.id, question=request.question, status="received")

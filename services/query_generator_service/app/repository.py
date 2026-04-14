@@ -23,8 +23,10 @@ class QueryGeneratorRepository:
         now = _utc_now()
         if path.exists():
             existing = json.loads(path.read_text(encoding="utf-8"))
-            if existing["question"] != question:
+            old_question = existing.get("question", "")
+            if old_question and old_question != question:
                 raise ValueError(f"Question conflict for id={id}")
+            existing["question"] = question
             existing["status"] = status
             existing["updated_at"] = now
             path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
