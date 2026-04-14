@@ -19,26 +19,22 @@ if [ ! -d "data" ]; then
     mkdir -p data
 fi
 
+PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
+
 # 启动查询语句生成服务 (端口 8000)
 echo "🔧 启动查询语句生成服务 (端口 8000)..."
-cd services/query_generator_service
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 &
+python -m uvicorn services.query_generator_service.app.main:app --host 0.0.0.0 --port 8000 &
 QUERY_PID=$!
-cd ../..
 
 # 启动测试服务 (端口 8001)
 echo "🔧 启动测试服务 (端口 8001)..."
-cd services/testing_service
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8001 &
+python -m uvicorn services.testing_service.app.main:app --host 0.0.0.0 --port 8001 &
 TEST_PID=$!
-cd ../..
 
 # 启动修复服务 (端口 8002)
 echo "🔧 启动修复服务 (端口 8002)..."
-cd services/repair_service
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8002 &
+python -m uvicorn services.repair_service.app.main:app --host 0.0.0.0 --port 8002 &
 REPAIR_PID=$!
-cd ../..
 
 echo "✅ 所有服务启动完成！"
 echo ""
