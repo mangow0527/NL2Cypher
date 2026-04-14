@@ -1,0 +1,16 @@
+{
+  "id": "qa-console-failure",
+  "question": "查询一个会触发失败闭环的设备名称",
+  "generation_run_id": "console-qa-console-failure",
+  "generated_cypher": "MATCH (n:Device) RETURN n.id AS id, n.name AS name LIMIT 20",
+  "parse_summary": "console_fallback_generation",
+  "guardrail_summary": "passed",
+  "raw_output_snapshot": "{\"cypher\": \"MATCH (n:Device) RETURN n.id AS id, n.name AS name LIMIT 20\"}",
+  "input_prompt_snapshot": "Console runtime fallback prompt snapshot.",
+  "execution_json": "{\"success\":false,\"rows\":[],\"row_count\":0,\"error_message\":\"Schema error: requested label does not exist in network_schema_v10.\",\"elapsed_ms\":12}",
+  "issue_ticket_id": null,
+  "krss_response": null,
+  "status": "ready_to_evaluate",
+  "received_at": "2026-04-14T01:40:46.253113+00:00",
+  "updated_at": "2026-04-14T01:40:46.253751+00:00"
+}

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Dict, Optional, Protocol
 
-from shared.models import IssueTicket, KRSSAnalysisRecord, KRSSIssueTicketResponse, KnowledgeRepairSuggestionRequest, KnowledgeType, PromptSnapshotResponse
+from shared.models import IssueTicket, KRSSAnalysisRecord, KRSSIssueTicketResponse, KnowledgeRepairSuggestionRequest, PromptSnapshotResponse
 
 from .analysis import KRSSAnalysisResult, KRSSAnalyzer
 from .clients import CGSPromptSnapshotClient, KnowledgeOpsRepairApplyClient, OpenAICompatibleKRSSAnalyzer
@@ -16,7 +16,7 @@ class PromptSnapshotFetcher(Protocol):
 
 
 class KnowledgeRepairApplier(Protocol):
-    async def apply(self, payload: KnowledgeRepairSuggestionRequest) -> None:
+    async def apply(self, payload: KnowledgeRepairSuggestionRequest) -> Dict[str, object] | None:
         ...
 
 
@@ -37,19 +37,19 @@ class _DeterministicKRSSDiagnosisClient:
 
         if dimensions.schema_alignment == "fail":
             return {
-                "knowledge_types": ["schema", "system_prompt"],
+                "knowledge_types": ["business_knowledge", "system_prompt"],
                 "confidence": 0.88,
-                "suggestion": "Add schema constraints and prompt rules that only allow graph-valid labels, relations, and properties.",
-                "rationale": "The generated Cypher violates schema expectations, so KRSS should route a schema-focused repair suggestion.",
+                "suggestion": "Add business-knowledge constraints and prompt rules that only allow graph-valid labels, relations, and properties.",
+                "rationale": "The generated Cypher violates schema expectations, so KRSS should route a business-knowledge-focused repair suggestion.",
                 "need_experiments": False,
                 "candidate_patch_types": [],
             }
 
         if dimensions.question_alignment == "fail" or dimensions.result_correctness == "fail":
             return {
-                "knowledge_types": ["business_knowledge", "few-shot"],
+                "knowledge_types": ["business_knowledge", "few_shot"],
                 "confidence": 0.85,
-                "suggestion": "Add business-term mapping guidance and a few-shot example that matches the failed question pattern.",
+                "suggestion": "Add business-term mapping guidance and a few_shot example that matches the failed question pattern.",
                 "rationale": "The query missed the intended semantics, which usually points to missing business context or missing examples.",
                 "need_experiments": False,
                 "candidate_patch_types": [],
@@ -79,10 +79,19 @@ class RepairService:
         self.apply_client = apply_client
 
     async def create_issue_ticket_response(self, issue_ticket: IssueTicket) -> KRSSIssueTicketResponse:
+        existing = self.repository.get_analysis(self._analysis_id_for_ticket(issue_ticket.ticket_id))
+        if existing is not None:
+            return KRSSIssueTicketResponse(
+                analysis_id=existing.analysis_id,
+                id=existing.id,
+                knowledge_repair_request=existing.knowledge_repair_request,
+                knowledge_ops_response=existing.knowledge_ops_response,
+                applied=existing.applied,
+            )
         prompt_snapshot_response = await self.prompt_snapshot_client.fetch(issue_ticket.id)
         analysis = await self.analyzer.analyze(issue_ticket, prompt_snapshot_response.input_prompt_snapshot)
         request = analysis.to_request()
-        await self.apply_client.apply(request)
+        knowledge_ops_response = await self.apply_client.apply(request)
 
         record = KRSSAnalysisRecord(
             analysis_id=self._analysis_id_for_ticket(issue_ticket.ticket_id),
@@ -90,6 +99,7 @@ class RepairService:
             id=issue_ticket.id,
             prompt_snapshot=prompt_snapshot_response.input_prompt_snapshot,
             knowledge_repair_request=request,
+            knowledge_ops_response=knowledge_ops_response,
             confidence=analysis.confidence,
             rationale=analysis.rationale,
             used_experiments=analysis.used_experiments,
@@ -101,6 +111,7 @@ class RepairService:
             analysis_id=record.analysis_id,
             id=record.id,
             knowledge_repair_request=record.knowledge_repair_request,
+            knowledge_ops_response=record.knowledge_ops_response,
             applied=record.applied,
         )
 

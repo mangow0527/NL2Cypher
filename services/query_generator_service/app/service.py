@@ -37,6 +37,35 @@ class QueryWorkflowService:
         self.repository = repository
 
     async def ingest_question(self, request: QAQuestionRequest) -> QueryQuestionResponse:
+        existing_run = self.repository.get_generation_run(request.id)
+        if existing_run is not None and existing_run.generation_status == "submitted_to_testing":
+            return existing_run
+
+        if existing_run is not None and existing_run.generation_status == "generated":
+            await self.testing_client.submit(
+                payload=EvaluationSubmissionRequest(
+                    id=existing_run.id,
+                    question=request.question,
+                    generation_run_id=existing_run.generation_run_id,
+                    generated_cypher=existing_run.generated_cypher,
+                    parse_summary=existing_run.parse_summary,
+                    guardrail_summary=existing_run.guardrail_summary,
+                    raw_output_snapshot=existing_run.raw_output_snapshot,
+                    input_prompt_snapshot=existing_run.input_prompt_snapshot,
+                )
+            )
+            response = self._build_response(
+                id=existing_run.id,
+                generation_run_id=existing_run.generation_run_id,
+                generation_status="submitted_to_testing",
+                generated_cypher=existing_run.generated_cypher,
+                parse_summary=existing_run.parse_summary,
+                guardrail_summary=existing_run.guardrail_summary,
+                raw_output_snapshot=existing_run.raw_output_snapshot,
+                input_prompt_snapshot=existing_run.input_prompt_snapshot,
+            )
+            return self._persist_and_return(request=request, response=response)
+
         generation_run_id = self.repository.next_generation_run_id()
         self.repository.upsert_question(id=request.id, question=request.question, status="received")
 

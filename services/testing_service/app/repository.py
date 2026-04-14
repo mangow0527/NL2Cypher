@@ -68,6 +68,8 @@ class TestingRepository:
             "raw_output_snapshot": request.raw_output_snapshot,
             "input_prompt_snapshot": request.input_prompt_snapshot,
             "execution_json": None,
+            "issue_ticket_id": None,
+            "krss_response": None,
             "status": status,
             "received_at": now,
             "updated_at": now,
@@ -95,6 +97,28 @@ class TestingRepository:
             return None
         return json.loads(path.read_text(encoding="utf-8"))
 
+    def get_submission_snapshot(self, id: str) -> Optional[Dict[str, Any]]:
+        return self.get_submission(id)
+
+    def clear_console_run(self, id: str) -> None:
+        submission_path = self._submissions_dir / f"{id}.json"
+        ticket_ids: list[str] = []
+        if submission_path.exists():
+            try:
+                existing = json.loads(submission_path.read_text(encoding="utf-8"))
+                ticket_id = existing.get("issue_ticket_id")
+                if ticket_id:
+                    ticket_ids.append(str(ticket_id))
+            except Exception:
+                pass
+            submission_path.unlink()
+
+        ticket_ids.append(f"ticket-{id}")
+        for ticket_id in set(ticket_ids):
+            ticket_path = self._tickets_dir / f"{ticket_id}.json"
+            if ticket_path.exists():
+                ticket_path.unlink()
+
     def save_issue_ticket(self, ticket: IssueTicket) -> None:
         record = {
             "ticket_id": ticket.ticket_id,
@@ -104,7 +128,7 @@ class TestingRepository:
         }
         path = self._tickets_dir / f"{ticket.ticket_id}.json"
         path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
-        self.mark_submission_status(ticket.id, "issue_ticket_created")
+        self.mark_submission_issue_ticket_created(ticket.id, ticket.ticket_id)
 
     def mark_submission_status(self, id: str, status: str) -> None:
         path = self._submissions_dir / f"{id}.json"
@@ -115,12 +139,44 @@ class TestingRepository:
         record["updated_at"] = _utc_now()
         path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def mark_submission_issue_ticket_created(self, id: str, ticket_id: str) -> None:
+        path = self._submissions_dir / f"{id}.json"
+        if not path.exists():
+            return
+        record = json.loads(path.read_text(encoding="utf-8"))
+        record["status"] = "issue_ticket_created"
+        record["issue_ticket_id"] = ticket_id
+        record["updated_at"] = _utc_now()
+        path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def save_submission_krss_response(self, id: str, response: Dict[str, Any]) -> None:
+        path = self._submissions_dir / f"{id}.json"
+        if not path.exists():
+            return
+        record = json.loads(path.read_text(encoding="utf-8"))
+        record["krss_response"] = response
+        record["updated_at"] = _utc_now()
+        path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+
     def get_issue_ticket(self, ticket_id: str) -> Optional[IssueTicket]:
         path = self._tickets_dir / f"{ticket_id}.json"
         if not path.exists():
             return None
         record = json.loads(path.read_text(encoding="utf-8"))
         return IssueTicket.model_validate_json(record["ticket_json"])
+
+    def get_issue_snapshot_by_submission_id(self, id: str) -> Optional[Dict[str, Any]]:
+        submission = self.get_submission(id)
+        if submission is None or not submission.get("issue_ticket_id"):
+            return None
+        ticket = self.get_issue_ticket(submission["issue_ticket_id"])
+        return None if ticket is None else ticket.model_dump(mode="json")
+
+    def get_krss_snapshot_by_submission_id(self, id: str) -> Optional[Dict[str, Any]]:
+        submission = self.get_submission(id)
+        if submission is None:
+            return None
+        return submission.get("krss_response")
 
 
 def _utc_now() -> str:

@@ -34,12 +34,12 @@ class _LowConfidenceDiagnosisClient:
         assert ticket.id == "q-krss-2"
         assert prompt_snapshot == "PROMPT SNAPSHOT"
         return {
-            "knowledge_types": ["schema", "business_knowledge", "few-shot"],
+            "knowledge_types": ["business_knowledge", "few_shot"],
             "confidence": 0.41,
             "suggestion": "Strengthen graph traversal guidance for Link, Protocol, and Service reasoning.",
             "rationale": "The failure could come from several missing knowledge layers.",
             "need_experiments": True,
-            "candidate_patch_types": ["schema", "business_knowledge", "few-shot"],
+            "candidate_patch_types": ["business_knowledge", "few_shot"],
         }
 
 
@@ -52,9 +52,9 @@ async def test_krss_analyzer_narrows_knowledge_types_using_minimal_patch_experim
         assert prompt_snapshot == "PROMPT SNAPSHOT"
         assert diagnosis["confidence"] == 0.41
         experiment_calls.append(patch_type)
-        if patch_type == "schema":
-            return {"improved": True, "confidence": 0.78}
-        if patch_type == "few-shot":
+        if patch_type == "business_knowledge":
+            return {"improved": True, "confidence": 0.88}
+        if patch_type == "few_shot":
             return {"improved": True, "confidence": 0.66}
         return {"improved": False, "confidence": 0.2}
 
@@ -68,16 +68,16 @@ async def test_krss_analyzer_narrows_knowledge_types_using_minimal_patch_experim
 
     assert result.id == "q-krss-2"
     assert result.used_experiments is True
-    assert result.knowledge_types == ["schema"]
+    assert result.knowledge_types == ["business_knowledge"]
     assert result.suggestion == "Strengthen graph traversal guidance for Link, Protocol, and Service reasoning."
-    assert result.confidence == pytest.approx(0.78)
+    assert result.confidence == pytest.approx(0.88)
     assert result.rationale == "The failure could come from several missing knowledge layers."
     assert result.to_request().model_dump() == {
         "id": "q-krss-2",
         "suggestion": "Strengthen graph traversal guidance for Link, Protocol, and Service reasoning.",
-        "knowledge_types": ["schema"],
+        "knowledge_types": ["business_knowledge"],
     }
-    assert experiment_calls == ["schema", "business_knowledge", "few-shot"]
+    assert experiment_calls == ["business_knowledge", "few_shot"]
 
 
 @pytest.mark.asyncio
@@ -86,9 +86,7 @@ async def test_krss_analyzer_prefers_only_the_best_improved_patch_type():
         assert ticket.id == "q-krss-2"
         assert prompt_snapshot == "PROMPT SNAPSHOT"
         assert diagnosis["confidence"] == 0.41
-        if patch_type == "schema":
-            return {"improved": True, "confidence": 0.72}
-        if patch_type == "few-shot":
+        if patch_type == "few_shot":
             return {"improved": True, "confidence": 0.89}
         return {"improved": False, "confidence": 0.1}
 
@@ -101,5 +99,5 @@ async def test_krss_analyzer_prefers_only_the_best_improved_patch_type():
     result = await analyzer.analyze(_make_ticket(), "PROMPT SNAPSHOT")
 
     assert result.used_experiments is True
-    assert result.knowledge_types == ["few-shot"]
+    assert result.knowledge_types == ["few_shot"]
     assert result.confidence == pytest.approx(0.89)

@@ -1,0 +1,7 @@
+{
+  "id": "qa-console-failure",
+  "question": "查询一个会触发失败闭环的设备名称",
+  "status": "output_parsing_failed",
+  "received_at": "2026-04-14T01:40:36.205521+00:00",
+  "updated_at": "2026-04-14T01:42:28.177207+00:00"
+}

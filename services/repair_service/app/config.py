@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     query_generator_service_url: str = "http://127.0.0.1:8000"
     knowledge_ops_feedback_url: Optional[str] = None
     qa_generation_feedback_url: Optional[str] = None
-    request_timeout_seconds: float = 60.0
+    request_timeout_seconds: float = 120.0
 
     tugraph_url: str = "http://127.0.0.1:7070"
     tugraph_username: str = "admin"

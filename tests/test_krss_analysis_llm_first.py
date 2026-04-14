@@ -37,12 +37,12 @@ class _HighConfidenceDiagnosisClient:
     async def diagnose(self, ticket: IssueTicket, prompt_snapshot: str) -> Dict[str, Any]:
         self.calls.append({"ticket_id": ticket.id, "prompt_snapshot": prompt_snapshot})
         return {
-            "knowledge_types": ["schema", "few-shot"],
+            "knowledge_types": ["business_knowledge", "few_shot"],
             "confidence": 0.93,
-            "suggestion": "Add a schema-grounded example showing how Service connects to Tunnel.",
+            "suggestion": "Add business mapping and a few_shot example showing how Service connects to Tunnel.",
             "rationale": "The prompt missed a key relation pattern.",
             "need_experiments": True,
-            "candidate_patch_types": ["schema", "few-shot"],
+            "candidate_patch_types": ["business_knowledge", "few_shot"],
         }
 
 
@@ -64,15 +64,15 @@ async def test_krss_analyzer_returns_direct_result_for_high_confidence_llm_diagn
     result = await analyzer.analyze(_make_ticket(), "PROMPT SNAPSHOT")
 
     assert result.id == "q-krss-1"
-    assert result.knowledge_types == ["schema", "few-shot"]
-    assert result.suggestion == "Add a schema-grounded example showing how Service connects to Tunnel."
+    assert result.knowledge_types == ["business_knowledge", "few_shot"]
+    assert result.suggestion == "Add business mapping and a few_shot example showing how Service connects to Tunnel."
     assert result.confidence == pytest.approx(0.93)
     assert result.rationale == "The prompt missed a key relation pattern."
     assert result.used_experiments is False
     assert result.to_request().model_dump() == {
         "id": "q-krss-1",
-        "suggestion": "Add a schema-grounded example showing how Service connects to Tunnel.",
-        "knowledge_types": ["schema", "few-shot"],
+        "suggestion": "Add business mapping and a few_shot example showing how Service connects to Tunnel.",
+        "knowledge_types": ["business_knowledge", "few_shot"],
     }
     assert client.calls == [{"ticket_id": "q-krss-1", "prompt_snapshot": "PROMPT SNAPSHOT"}]
     assert experiment_calls == []
@@ -83,9 +83,9 @@ class _MalformedConfidenceDiagnosisClient:
         assert ticket.id == "q-krss-1"
         assert prompt_snapshot == "PROMPT SNAPSHOT"
         return {
-            "knowledge_types": ["schema"],
+            "knowledge_types": [],
             "confidence": float("nan"),
-            "suggestion": "Keep the schema hint focused on the tunnel relation.",
+            "suggestion": "Keep the repair guidance focused on the tunnel relation.",
             "rationale": "Bad confidence payload should not leak through.",
             "need_experiments": False,
         }
@@ -102,5 +102,6 @@ async def test_krss_analyzer_clamps_and_sanitizes_malformed_confidence_values():
 
     assert math.isfinite(result.confidence)
     assert result.confidence == pytest.approx(0.0)
-    assert result.knowledge_types == ["schema"]
-    assert result.suggestion == "Keep the schema hint focused on the tunnel relation."
+    assert result.knowledge_types == ["system_prompt"]
+    assert result.suggestion == "Keep the repair guidance focused on the tunnel relation."
+    assert result.to_request().model_dump()["knowledge_types"] == ["system_prompt"]

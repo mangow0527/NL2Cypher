@@ -35,6 +35,22 @@ async def service_status() -> Dict[str, object]:
     return validation_service.get_service_status()
 
 
+@app.get("/api/v1/runtime/architecture")
+async def runtime_architecture() -> Dict[str, object]:
+    return await validation_service.get_runtime_architecture()
+
+
+@app.post("/api/v1/runtime/console-runs")
+async def run_console_flow(request: Dict[str, str]) -> Dict[str, object]:
+    try:
+        return await validation_service.run_console_flow(
+            id=request["id"],
+            question=request["question"],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @app.post("/api/v1/qa/goldens", response_model=QAGoldenResponse)
 async def ingest_golden(request: QAGoldenRequest) -> QAGoldenResponse:
     try:

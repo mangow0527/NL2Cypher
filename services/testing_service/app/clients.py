@@ -2,15 +2,45 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any, Dict, Optional
 
 import httpx
 
 from shared.models import IssueTicket
-
 from shared.models import KRSSIssueTicketResponse
+from shared.models import QueryQuestionResponse
 
 logger = logging.getLogger("testing_service")
+
+
+class QueryGeneratorConsoleClient:
+    def __init__(self, base_url: str, timeout_seconds: float) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.timeout_seconds = timeout_seconds
+
+    async def submit_question(self, *, id: str, question: str) -> QueryQuestionResponse:
+        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+            response = await client.post(
+                f"{self.base_url}/api/v1/qa/questions",
+                json={"id": id, "question": question},
+            )
+            response.raise_for_status()
+            return QueryQuestionResponse.model_validate(response.json())
+
+    async def get_question_run(self, id: str) -> QueryQuestionResponse:
+        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+            response = await client.get(f"{self.base_url}/api/v1/questions/{id}")
+            response.raise_for_status()
+            return QueryQuestionResponse.model_validate(response.json())
+
+
+class ServiceHealthClient:
+    async def read_health(self, base_url: str, timeout_seconds: float) -> Dict[str, Any]:
+        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+            response = await client.get(f"{base_url.rstrip('/')}/health")
+            response.raise_for_status()
+            return response.json()
 
 
 class RepairServiceClient:
@@ -19,12 +49,38 @@ class RepairServiceClient:
         self.timeout_seconds = timeout_seconds
 
     async def submit_issue_ticket(self, ticket: IssueTicket) -> KRSSIssueTicketResponse:
+        started = time.monotonic()
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-            response = await client.post(
-                f"{self.base_url}/api/v1/issue-tickets",
-                json=ticket.model_dump(),
-            )
+            try:
+                response = await client.post(
+                    f"{self.base_url}/api/v1/issue-tickets",
+                    json=ticket.model_dump(),
+                )
+            except Exception as exc:
+                elapsed_ms = int((time.monotonic() - started) * 1000)
+                logger.warning(
+                    "outbound_call_failed",
+                    extra={
+                        "target": "krss.issue_tickets",
+                        "qa_id": ticket.id,
+                        "ticket_id": ticket.ticket_id,
+                        "elapsed_ms": elapsed_ms,
+                        "error": str(exc),
+                    },
+                )
+                raise
             response.raise_for_status()
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            logger.info(
+                "outbound_call_ok",
+                extra={
+                    "target": "krss.issue_tickets",
+                    "qa_id": ticket.id,
+                    "ticket_id": ticket.ticket_id,
+                    "status_code": response.status_code,
+                    "elapsed_ms": elapsed_ms,
+                },
+            )
             return KRSSIssueTicketResponse.model_validate(response.json())
 
 

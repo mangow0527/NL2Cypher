@@ -1,0 +1,16 @@
+{
+  "id": "qa-console-fail",
+  "question": "查询失败样例",
+  "generation_run_id": "console-qa-console-fail",
+  "generated_cypher": "MATCH (n:Device) RETURN n.id AS id, n.name AS name LIMIT 20",
+  "parse_summary": "console_fallback_generation",
+  "guardrail_summary": "passed",
+  "raw_output_snapshot": "{\"cypher\":\"MATCH (n:Device) RETURN n.id AS id, n.name AS name LIMIT 20\"}",
+  "input_prompt_snapshot": "Console runtime fallback prompt snapshot.",
+  "execution_json": "{\"success\":false,\"rows\":[],\"row_count\":0,\"error_message\":\"Schema error: requested label does not exist in network_schema_v10.\",\"elapsed_ms\":12}",
+  "issue_ticket_id": "ticket-qa-console-fail",
+  "krss_response": null,
+  "status": "issue_ticket_created",
+  "received_at": "2026-04-14T01:52:23.782598+00:00",
+  "updated_at": "2026-04-14T01:52:23.782927+00:00"
+}

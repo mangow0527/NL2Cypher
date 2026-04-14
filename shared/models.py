@@ -22,6 +22,7 @@ GenerationProcessingStatus = Literal[
     "received",
     "prompt_fetch_failed",
     "prompt_ready",
+    "generated",
     "model_invocation_failed",
     "output_parsing_failed",
     "guardrail_rejected",
@@ -44,7 +45,7 @@ RepairPlanState = Literal[
     "dispatched",
 ]
 DispatchStatus = Literal["sent", "stored_for_later"]
-KnowledgeType = Literal["schema", "cypher_syntax", "few-shot", "system_prompt", "business_knowledge"]
+KnowledgeType = Literal["cypher_syntax", "few_shot", "system_prompt", "business_knowledge"]
 
 
 class QAQuestionRequest(BaseModel):
@@ -214,6 +215,7 @@ class KRSSIssueTicketResponse(BaseModel):
     analysis_id: str
     id: str
     knowledge_repair_request: KnowledgeRepairSuggestionRequest
+    knowledge_ops_response: Optional[Dict[str, Any]] = None
     applied: bool = True
 
 
@@ -224,6 +226,7 @@ class KRSSAnalysisRecord(BaseModel):
     status: Literal["applied"] = "applied"
     prompt_snapshot: str
     knowledge_repair_request: KnowledgeRepairSuggestionRequest
+    knowledge_ops_response: Optional[Dict[str, Any]] = None
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     rationale: str = ""
     used_experiments: bool = False

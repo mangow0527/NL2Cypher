@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Dict, List, Optional, Tuple
 
 import httpx
@@ -190,14 +191,47 @@ class PromptServiceClient:
         self.timeout_seconds = timeout_seconds
 
     async def fetch_prompt(self, id: str, question: str) -> str:
+        started = time.monotonic()
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-            response = await client.post(
-                f"{self.base_url}/api/knowledge/rag/prompt-package",
-                json={"id": id, "question": question},
-            )
+            try:
+                response = await client.post(
+                    f"{self.base_url}/api/knowledge/rag/prompt-package",
+                    json={"id": id, "question": question},
+                )
+            except Exception as exc:
+                elapsed_ms = int((time.monotonic() - started) * 1000)
+                logger.warning(
+                    "outbound_call_failed",
+                    extra={
+                        "target": "knowledge_ops.prompt_package",
+                        "qa_id": id,
+                        "elapsed_ms": elapsed_ms,
+                        "error": str(exc),
+                    },
+                )
+                raise
             response.raise_for_status()
-            prompt = response.text
-            return prompt.strip()
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            logger.info(
+                "outbound_call_ok",
+                extra={
+                    "target": "knowledge_ops.prompt_package",
+                    "qa_id": id,
+                    "status_code": response.status_code,
+                    "elapsed_ms": elapsed_ms,
+                },
+            )
+            headers = getattr(response, "headers", {}) or {}
+            content_type = str(headers.get("content-type", "")).lower()
+            if "application/json" in content_type:
+                try:
+                    payload = response.json()
+                    prompt = payload.get("prompt")
+                    if isinstance(prompt, str):
+                        return prompt.strip()
+                except Exception:
+                    pass
+            return response.text.strip()
 
 
 class TestingServiceClient:
@@ -206,10 +240,34 @@ class TestingServiceClient:
         self.timeout_seconds = timeout_seconds
 
     async def submit(self, payload: EvaluationSubmissionRequest) -> EvaluationSubmissionResponse:
+        started = time.monotonic()
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-            response = await client.post(
-                f"{self.base_url}/api/v1/evaluations/submissions",
-                json=payload.model_dump(),
-            )
+            try:
+                response = await client.post(
+                    f"{self.base_url}/api/v1/evaluations/submissions",
+                    json=payload.model_dump(),
+                )
+            except Exception as exc:
+                elapsed_ms = int((time.monotonic() - started) * 1000)
+                logger.warning(
+                    "outbound_call_failed",
+                    extra={
+                        "target": "testing.submission",
+                        "qa_id": payload.id,
+                        "elapsed_ms": elapsed_ms,
+                        "error": str(exc),
+                    },
+                )
+                raise
             response.raise_for_status()
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            logger.info(
+                "outbound_call_ok",
+                extra={
+                    "target": "testing.submission",
+                    "qa_id": payload.id,
+                    "status_code": response.status_code,
+                    "elapsed_ms": elapsed_ms,
+                },
+            )
             return EvaluationSubmissionResponse.model_validate(response.json())

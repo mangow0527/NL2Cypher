@@ -2,63 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import time
 from pathlib import Path
-from typing import Awaitable, Callable
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, Optional
 
 import httpx
 
-from shared.models import IssueTicket, KnowledgeRepairSuggestionRequest, PromptSnapshotResponse, RepairPlan
+from shared.models import IssueTicket, KnowledgeRepairSuggestionRequest, PromptSnapshotResponse
 
-
-class OpenAICompatibleRepairPlanner:
-    def __init__(self, base_url: str, api_key: str, model: str, timeout_seconds: float, temperature: float) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.api_key = api_key
-        self.model = model
-        self.timeout_seconds = timeout_seconds
-        self.temperature = temperature
-
-    async def refine(self, issue_ticket: IssueTicket, candidate_plan: RepairPlan) -> Optional[Dict[str, Any]]:
-        system_prompt = (
-            "You are a repair planner for a Text2Cypher system. "
-            "Refine the candidate repair plan but keep it grounded in the given issue ticket and counterfactual evidence. "
-            "Return JSON only with keys root_cause, confidence, analysis_summary, actions."
-        )
-        user_prompt = (
-            f"IssueTicket: {issue_ticket.model_dump_json()}\n"
-            f"CandidatePlan: {candidate_plan.model_dump_json()}\n"
-            "Actions must keep target_service within query_generator_service, knowledge_ops_service, qa_generation_service."
-        )
-        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-            response = await client.post(
-                f"{self.base_url}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": self.model,
-                    "temperature": self.temperature,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                },
-            )
-            response.raise_for_status()
-            payload = response.json()
-
-        content = payload["choices"][0]["message"]["content"].strip()
-        if content.startswith("```"):
-            content = content.strip("`")
-            if content.startswith("json"):
-                content = content[4:].strip()
-
-        try:
-            return json.loads(content)
-        except json.JSONDecodeError:
-            return None
+logger = logging.getLogger("repair_service")
 
 
 class OpenAICompatibleKRSSAnalyzer:
@@ -78,8 +31,8 @@ class OpenAICompatibleKRSSAnalyzer:
         user_prompt = (
             f"IssueTicket: {ticket.model_dump_json()}\n"
             f"PromptSnapshot: {prompt_snapshot}\n"
-            "knowledge_types and candidate_patch_types must use only: "
-            "schema, cypher_syntax, few-shot, system_prompt, business_knowledge."
+            "knowledge_types and candidate_patch_types must use only these formal knowledge types: "
+            "cypher_syntax, few_shot, system_prompt, business_knowledge."
         )
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             response = await client.post(
@@ -112,26 +65,39 @@ class OpenAICompatibleKRSSAnalyzer:
             raise ValueError("KRSS diagnosis response must be a JSON object")
         return parsed
 
-
-class DispatchClient:
-    def __init__(self, timeout_seconds: float) -> None:
-        self.timeout_seconds = timeout_seconds
-
-    async def post_json(self, url: str, payload: dict) -> None:
-        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-            response = await client.post(url, json=payload)
-            response.raise_for_status()
-
-
 class CGSPromptSnapshotClient:
     def __init__(self, base_url: str, timeout_seconds: float) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
 
     async def fetch(self, id: str) -> PromptSnapshotResponse:
+        started = time.monotonic()
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-            response = await client.get(f"{self.base_url}/api/v1/questions/{id}/prompt")
+            try:
+                response = await client.get(f"{self.base_url}/api/v1/questions/{id}/prompt")
+            except Exception as exc:
+                elapsed_ms = int((time.monotonic() - started) * 1000)
+                logger.warning(
+                    "outbound_call_failed",
+                    extra={
+                        "target": "cgs.prompt_snapshot",
+                        "qa_id": id,
+                        "elapsed_ms": elapsed_ms,
+                        "error": str(exc),
+                    },
+                )
+                raise
             response.raise_for_status()
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            logger.info(
+                "outbound_call_ok",
+                extra={
+                    "target": "cgs.prompt_snapshot",
+                    "qa_id": id,
+                    "status_code": response.status_code,
+                    "elapsed_ms": elapsed_ms,
+                },
+            )
             return PromptSnapshotResponse.model_validate(response.json())
 
 
@@ -150,18 +116,75 @@ class KnowledgeOpsRepairApplyClient:
         self.sleep_fn = sleep_fn
         self.retry_delay_seconds = retry_delay_seconds
 
-    async def apply(self, payload: KnowledgeRepairSuggestionRequest) -> None:
+    async def apply(self, payload: KnowledgeRepairSuggestionRequest) -> Dict[str, Any] | None:
         self._capture_payload(payload)
+        started = time.monotonic()
+        attempts = 0
+        request_payload = payload.model_dump(mode="json")
+        knowledge_types = request_payload.get("knowledge_types", []) or []
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             while True:
+                attempts += 1
                 try:
-                    response = await client.post(self.apply_url, json=payload.model_dump())
+                    response = await client.post(self.apply_url, json=request_payload)
                 except httpx.RequestError:
+                    elapsed_ms = int((time.monotonic() - started) * 1000)
+                    logger.warning(
+                        "outbound_call_failed",
+                        extra={
+                            "target": "knowledge_ops.repairs_apply",
+                            "analysis_id": payload.id,
+                            "knowledge_types": knowledge_types,
+                            "attempt": attempts,
+                            "elapsed_ms": elapsed_ms,
+                            "error": "transport_error",
+                        },
+                    )
                     # Transport failures are retried the same way as non-200 responses.
                     await self.sleep_fn(self.retry_delay_seconds)
                     continue
                 if response.status_code == 200:
-                    return None
+                    elapsed_ms = int((time.monotonic() - started) * 1000)
+                    logger.info(
+                        "outbound_call_ok",
+                        extra={
+                            "target": "knowledge_ops.repairs_apply",
+                            "analysis_id": payload.id,
+                            "knowledge_types": knowledge_types,
+                            "attempts": attempts,
+                            "status_code": response.status_code,
+                            "elapsed_ms": elapsed_ms,
+                        },
+                    )
+                    try:
+                        return response.json()
+                    except Exception:
+                        return {"raw": response.text}
+                if 400 <= response.status_code < 500:
+                    elapsed_ms = int((time.monotonic() - started) * 1000)
+                    logger.warning(
+                        "outbound_call_failed",
+                        extra={
+                            "target": "knowledge_ops.repairs_apply",
+                            "analysis_id": payload.id,
+                            "knowledge_types": knowledge_types,
+                            "attempts": attempts,
+                            "status_code": response.status_code,
+                            "elapsed_ms": elapsed_ms,
+                            "error": "non_retryable_4xx",
+                        },
+                    )
+                    response.raise_for_status()
+                logger.warning(
+                    "outbound_call_retry",
+                    extra={
+                        "target": "knowledge_ops.repairs_apply",
+                        "analysis_id": payload.id,
+                        "knowledge_types": knowledge_types,
+                        "attempt": attempts,
+                        "status_code": response.status_code,
+                    },
+                )
                 await self.sleep_fn(self.retry_delay_seconds)
 
     def _capture_payload(self, payload: KnowledgeRepairSuggestionRequest) -> None:

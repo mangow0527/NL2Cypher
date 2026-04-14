@@ -1,0 +1,1 @@
+{'id': 'qa_demo_001', 'suggestion': 'Add business-term mapping guidance and a few-shot example that matches the failed question pattern.', 'knowledge_types': ['business_knowledge', 'few-shot']}

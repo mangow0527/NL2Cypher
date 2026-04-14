@@ -373,7 +373,7 @@ class TestRepairServiceClientContract:
                 "knowledge_repair_request": {
                     "id": "q-001",
                     "suggestion": "Add protocol mapping guidance",
-                    "knowledge_types": ["business_knowledge", "few-shot"],
+                    "knowledge_types": ["business_knowledge", "few_shot"],
                 },
                 "applied": True,
             }
@@ -391,7 +391,7 @@ class TestRepairServiceClientContract:
         assert result.knowledge_repair_request == KnowledgeRepairSuggestionRequest(
             id="q-001",
             suggestion="Add protocol mapping guidance",
-            knowledge_types=["business_knowledge", "few-shot"],
+            knowledge_types=["business_knowledge", "few_shot"],
         )
 
 

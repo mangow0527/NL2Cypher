@@ -1,0 +1,6 @@
+{
+  "ticket_id": "ticket-qa_demo_001",
+  "id": "qa_demo_001",
+  "ticket_json": "{\"ticket_id\":\"ticket-qa_demo_001\",\"id\":\"qa_demo_001\",\"difficulty\":\"L3\",\"question\":\"查询所有网络设备的名称\",\"expected\":{\"cypher\":\"MATCH (n:NetworkElement) RETURN n.name AS name LIMIT 1\",\"answer\":[{\"name\":\"router-1\"}]},\"actual\":{\"generated_cypher\":\"MATCH (n:NetworkElement) RETURN n.id AS id, n.name AS name, n.ip_address AS ip_address, n.location AS location LIMIT 20\",\"execution\":{\"success\":true,\"rows\":[{\"id\":\"ne-1\",\"name\":\"edge-router-1\"}],\"row_count\":1,\"error_message\":null,\"elapsed_ms\":15}},\"knowledge_context\":null,\"evaluation\":{\"verdict\":\"partial_fail\",\"dimensions\":{\"syntax_validity\":\"pass\",\"schema_alignment\":\"pass\",\"result_correctness\":\"fail\",\"question_alignment\":\"pass\"},\"symptom\":\"Generated Cypher is plausible but returned data inconsistent with the golden answer.\",\"evidence\":[\"Result mismatch: expected_rows=[{\\\"name\\\": \\\"router-1\\\"}]; actual_rows=[{\\\"id\\\": \\\"ne-1\\\", \\\"name\\\": \\\"edge-router-1\\\"}]\"]},\"input_prompt_snapshot\":\"\\\"请只返回 JSON，且必须包含 cypher 字段。\\\"\"}",
+  "created_at": "2026-04-13T12:48:04.825184+00:00"
+}

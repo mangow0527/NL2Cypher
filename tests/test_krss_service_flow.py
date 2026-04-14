@@ -17,8 +17,9 @@ from shared.models import (
     PromptSnapshotResponse,
     TuGraphExecutionResult,
 )
+from services.repair_service.app.analysis import KRSSAnalyzer
 from services.repair_service.app.main import app
-from services.repair_service.app.service import RepairService
+from services.repair_service.app.service import RepairService, _DeterministicKRSSDiagnosisClient
 
 
 def _make_issue_ticket() -> IssueTicket:
@@ -68,8 +69,8 @@ def test_issue_ticket_flow_fetches_prompt_analyzes_applies_and_returns_krss_resp
         to_request=MagicMock(
             return_value=KnowledgeRepairSuggestionRequest(
                 id=ticket.id,
-                suggestion="Add business mapping and a matching few-shot example",
-                knowledge_types=["business_knowledge", "few-shot"],
+                suggestion="Add business mapping and a matching few_shot example",
+                knowledge_types=["business_knowledge", "few_shot"],
             )
         ),
     )
@@ -83,8 +84,8 @@ def test_issue_ticket_flow_fetches_prompt_analyzes_applies_and_returns_krss_resp
             id=ticket.id,
             knowledge_repair_request=KnowledgeRepairSuggestionRequest(
                 id=ticket.id,
-                suggestion="Add business mapping and a matching few-shot example",
-                knowledge_types=["business_knowledge", "few-shot"],
+                suggestion="Add business mapping and a matching few_shot example",
+                knowledge_types=["business_knowledge", "few_shot"],
             ),
             applied=True,
         )
@@ -103,9 +104,10 @@ def test_issue_ticket_flow_fetches_prompt_analyzes_applies_and_returns_krss_resp
         "id": "q-001",
         "knowledge_repair_request": {
             "id": "q-001",
-            "suggestion": "Add business mapping and a matching few-shot example",
-            "knowledge_types": ["business_knowledge", "few-shot"],
+            "suggestion": "Add business mapping and a matching few_shot example",
+            "knowledge_types": ["business_knowledge", "few_shot"],
         },
+        "knowledge_ops_response": None,
         "applied": True,
     }
 
@@ -125,13 +127,15 @@ async def test_repair_service_orchestrates_krss_apply_flow():
     analysis_result.used_experiments = False
     analysis_result.to_request.return_value = KnowledgeRepairSuggestionRequest(
         id=ticket.id,
-        suggestion="Add business mapping and a matching few-shot example",
-        knowledge_types=["business_knowledge", "few-shot"],
+        suggestion="Add business mapping and a matching few_shot example",
+        knowledge_types=["business_knowledge", "few_shot"],
     )
     analyzer = AsyncMock()
     analyzer.analyze.return_value = analysis_result
     apply_client = AsyncMock()
+    apply_client.apply.return_value = {"ok": True}
     repository = MagicMock()
+    repository.get_analysis.return_value = None
 
     service = RepairService(
         repository=repository,
@@ -147,8 +151,8 @@ async def test_repair_service_orchestrates_krss_apply_flow():
     apply_client.apply.assert_awaited_once_with(
         KnowledgeRepairSuggestionRequest(
             id=ticket.id,
-            suggestion="Add business mapping and a matching few-shot example",
-            knowledge_types=["business_knowledge", "few-shot"],
+            suggestion="Add business mapping and a matching few_shot example",
+            knowledge_types=["business_knowledge", "few_shot"],
         )
     )
     repository.save_analysis.assert_called_once()
@@ -158,9 +162,79 @@ async def test_repair_service_orchestrates_krss_apply_flow():
         id=ticket.id,
         knowledge_repair_request=KnowledgeRepairSuggestionRequest(
             id=ticket.id,
-            suggestion="Add business mapping and a matching few-shot example",
-            knowledge_types=["business_knowledge", "few-shot"],
+            suggestion="Add business mapping and a matching few_shot example",
+            knowledge_types=["business_knowledge", "few_shot"],
         ),
+        knowledge_ops_response={"ok": True},
+        applied=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_repair_service_is_idempotent_when_analysis_exists():
+    ticket = _make_issue_ticket()
+    existing = KRSSAnalysisRecord(
+        analysis_id="analysis-ticket-001",
+        ticket_id="ticket-001",
+        id=ticket.id,
+        status="applied",
+        prompt_snapshot="cached prompt",
+        knowledge_repair_request=KnowledgeRepairSuggestionRequest(
+            id=ticket.id,
+            suggestion="cached suggestion",
+            knowledge_types=["system_prompt"],
+        ),
+        knowledge_ops_response={"ok": True},
+        confidence=0.9,
+        rationale="cached",
+        used_experiments=False,
+        applied=True,
+        created_at="2026-01-01T00:00:00Z",
+        applied_at="2026-01-01T00:00:00Z",
+    )
+
+    prompt_client = AsyncMock()
+    prompt_client.fetch.return_value = PromptSnapshotResponse(
+        id=ticket.id,
+        input_prompt_snapshot="should-not-be-used",
+    )
+    analyzer = AsyncMock()
+    analyzer.analyze.return_value = MagicMock(
+        id=ticket.id,
+        confidence=0.5,
+        rationale="should-not-be-used",
+        used_experiments=False,
+        to_request=MagicMock(
+            return_value=KnowledgeRepairSuggestionRequest(
+                id=ticket.id,
+                suggestion="should-not-be-used",
+                knowledge_types=["system_prompt"],
+            )
+        ),
+    )
+    apply_client = AsyncMock()
+    apply_client.apply.return_value = {"ok": True}
+    repository = MagicMock()
+    repository.get_analysis.return_value = existing
+
+    service = RepairService(
+        repository=repository,
+        prompt_snapshot_client=prompt_client,
+        analyzer=analyzer,
+        apply_client=apply_client,
+    )
+
+    response = await service.create_issue_ticket_response(ticket)
+
+    prompt_client.fetch.assert_not_called()
+    analyzer.analyze.assert_not_called()
+    apply_client.apply.assert_not_called()
+    assert response == KRSSIssueTicketResponse(
+        status="applied",
+        analysis_id=existing.analysis_id,
+        id=existing.id,
+        knowledge_repair_request=existing.knowledge_repair_request,
+        knowledge_ops_response=existing.knowledge_ops_response,
         applied=True,
     )
 
@@ -183,13 +257,15 @@ async def test_repair_service_uses_ticket_scoped_analysis_id_uniqueness():
     analysis_result.used_experiments = False
     analysis_result.to_request.return_value = KnowledgeRepairSuggestionRequest(
         id=first_ticket.id,
-        suggestion="Add business mapping and a matching few-shot example",
-        knowledge_types=["business_knowledge", "few-shot"],
+        suggestion="Add business mapping and a matching few_shot example",
+        knowledge_types=["business_knowledge", "few_shot"],
     )
     analyzer = AsyncMock()
     analyzer.analyze.return_value = analysis_result
     apply_client = AsyncMock()
+    apply_client.apply.return_value = {"ok": True}
     repository = MagicMock()
+    repository.get_analysis.return_value = None
 
     service = RepairService(
         repository=repository,
@@ -215,8 +291,8 @@ def test_get_krss_analysis_endpoint_returns_record(monkeypatch):
         prompt_snapshot="Original CGS prompt snapshot",
         knowledge_repair_request=KnowledgeRepairSuggestionRequest(
             id="q-001",
-            suggestion="Add business mapping and a matching few-shot example",
-            knowledge_types=["business_knowledge", "few-shot"],
+            suggestion="Add business mapping and a matching few_shot example",
+            knowledge_types=["business_knowledge", "few_shot"],
         ),
         confidence=0.91,
         rationale="Prompt misses protocol-version mapping guidance",
@@ -236,6 +312,34 @@ def test_get_krss_analysis_endpoint_returns_record(monkeypatch):
     assert response.status_code == 200
     assert response.json()["analysis_id"] == "analysis-ticket-001"
     assert response.json()["ticket_id"] == "ticket-001"
+
+
+@pytest.mark.asyncio
+async def test_repair_service_deterministic_diagnosis_uses_formal_contract_types_only():
+    ticket = _make_issue_ticket()
+    prompt_client = AsyncMock()
+    prompt_client.fetch.return_value = PromptSnapshotResponse(
+        id=ticket.id,
+        input_prompt_snapshot="Original CGS prompt snapshot",
+    )
+    repository = MagicMock()
+    repository.get_analysis.return_value = None
+    apply_client = AsyncMock()
+    apply_client.apply.return_value = {"ok": True}
+
+    service = RepairService(
+        repository=repository,
+        prompt_snapshot_client=prompt_client,
+        analyzer=KRSSAnalyzer(diagnosis_client=_DeterministicKRSSDiagnosisClient()),
+        apply_client=apply_client,
+    )
+
+    response = await service.create_issue_ticket_response(ticket)
+
+    apply_client.apply.assert_awaited_once()
+    request = apply_client.apply.await_args.args[0]
+    assert request.knowledge_types == ["business_knowledge", "few_shot"]
+    assert response.knowledge_repair_request.knowledge_types == ["business_knowledge", "few_shot"]
 
 
 def test_legacy_repair_plan_read_path_is_not_exposed():

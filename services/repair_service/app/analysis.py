@@ -14,6 +14,9 @@ class KRSSDiagnosisClient(Protocol):
 
 ExperimentRunner = Callable[[IssueTicket, str, KnowledgeType, Dict[str, Any]], Awaitable[Dict[str, Any]]]
 
+_DEFAULT_KNOWLEDGE_TYPES: List[KnowledgeType] = ["system_prompt"]
+_ALLOWED_KNOWLEDGE_TYPES = frozenset({"cypher_syntax", "few_shot", "system_prompt", "business_knowledge"})
+
 
 @dataclass(slots=True)
 class KRSSAnalysisResult:
@@ -28,7 +31,7 @@ class KRSSAnalysisResult:
         return KnowledgeRepairSuggestionRequest(
             id=self.id,
             suggestion=self.suggestion,
-            knowledge_types=self.knowledge_types,
+            knowledge_types=self.knowledge_types or list(_DEFAULT_KNOWLEDGE_TYPES),
         )
 
 
@@ -47,12 +50,15 @@ class KRSSAnalyzer:
     async def analyze(self, ticket: IssueTicket, prompt_snapshot: str) -> KRSSAnalysisResult:
         diagnosis = await self.diagnosis_client.diagnose(ticket, prompt_snapshot)
 
-        initial_knowledge_types = self._coerce_knowledge_types(diagnosis.get("knowledge_types"))
+        initial_knowledge_types = self._coerce_knowledge_types(
+            diagnosis.get("knowledge_types"),
+            default_to_system_prompt=True,
+        )
         suggestion = str(diagnosis.get("suggestion") or diagnosis.get("rationale") or "Review and repair the missing knowledge.")
         rationale = str(diagnosis.get("rationale") or "")
         confidence = self._coerce_confidence(diagnosis.get("confidence"))
-        need_experiments = bool(diagnosis.get("need_experiments"))
         candidate_patch_types = self._coerce_knowledge_types(diagnosis.get("candidate_patch_types"))
+        need_experiments = bool(diagnosis.get("need_experiments"))
 
         if confidence >= self.min_confidence_for_direct_return or not need_experiments:
             return KRSSAnalysisResult(
@@ -103,16 +109,17 @@ class KRSSAnalyzer:
             used_experiments=bool(candidate_patch_types),
         )
 
-    def _coerce_knowledge_types(self, raw_value: Any) -> List[KnowledgeType]:
+    def _coerce_knowledge_types(self, raw_value: Any, *, default_to_system_prompt: bool = False) -> List[KnowledgeType]:
         if not isinstance(raw_value, list):
-            return []
+            return list(_DEFAULT_KNOWLEDGE_TYPES) if default_to_system_prompt else []
 
-        allowed = {"schema", "cypher_syntax", "few-shot", "system_prompt", "business_knowledge"}
         knowledge_types: List[KnowledgeType] = []
         for item in raw_value:
-            if isinstance(item, str) and item in allowed and item not in knowledge_types:
+            if isinstance(item, str) and item in _ALLOWED_KNOWLEDGE_TYPES and item not in knowledge_types:
                 knowledge_types.append(cast(KnowledgeType, item))
-        return knowledge_types
+        if knowledge_types or not default_to_system_prompt:
+            return knowledge_types
+        return list(_DEFAULT_KNOWLEDGE_TYPES)
 
     def _coerce_confidence(self, raw_value: Any, *, fallback: float = 0.0) -> float:
         try:

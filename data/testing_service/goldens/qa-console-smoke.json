@@ -1,0 +1,8 @@
+{
+  "id": "qa-console-smoke",
+  "golden_cypher": "MATCH (n:NetworkElement) RETURN n.id AS id, n.name AS name LIMIT 20",
+  "golden_answer_json": "[{\"id\": \"non-matching-id\", \"name\": \"golden-only-device\"}]",
+  "difficulty": "L3",
+  "received_at": "2026-04-14T01:37:14.722322+00:00",
+  "updated_at": "2026-04-14T01:37:14.722322+00:00"
+}

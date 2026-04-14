@@ -1,0 +1,8 @@
+{
+  "id": "ko_e2e_001",
+  "golden_cypher": "MATCH (n:NetworkElement) RETURN n.name AS name LIMIT 1",
+  "golden_answer_json": "[{\"name\": \"router-1\"}]",
+  "difficulty": "L3",
+  "received_at": "2026-04-13T13:02:56.079773+00:00",
+  "updated_at": "2026-04-13T13:02:56.079773+00:00"
+}

@@ -1,0 +1,24 @@
+{
+  "analysis_id": "analysis-ticket-qa_demo_001",
+  "ticket_id": "ticket-qa_demo_001",
+  "id": "qa_demo_001",
+  "status": "applied",
+  "prompt_snapshot": "\"请只返回 JSON，且必须包含 cypher 字段。\"",
+  "knowledge_repair_request": {
+    "id": "qa_demo_001",
+    "suggestion": "Add business-term mapping guidance and a few-shot example that matches the failed question pattern.",
+    "knowledge_types": [
+      "business_knowledge",
+      "few-shot"
+    ]
+  },
+  "knowledge_ops_response": {
+    "ok": true
+  },
+  "confidence": 0.85,
+  "rationale": "The query missed the intended semantics, which usually points to missing business context or missing examples.",
+  "used_experiments": false,
+  "applied": true,
+  "created_at": "2026-04-13T12:48:04.880405+00:00",
+  "applied_at": "2026-04-13T12:48:04.880411+00:00"
+}
