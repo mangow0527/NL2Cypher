@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from functools import lru_cache
 from typing import Dict, Tuple
 
 from shared.models import (
@@ -19,7 +20,7 @@ from .clients import (
     QwenGeneratorClient,
     TestingServiceClient,
 )
-from .config import settings
+from .config import Settings, get_settings
 from .repository import QueryGeneratorRepository
 
 
@@ -37,57 +38,22 @@ class QueryWorkflowService:
         self.repository = repository
 
     async def ingest_question(self, request: QAQuestionRequest) -> QueryQuestionResponse:
-        existing_run = self.repository.get_generation_run(request.id)
-
-        if existing_run is not None and existing_run.generation_status == "submitted_to_testing":
-            return existing_run
-
-        if existing_run is not None and existing_run.generation_status == "generated":
-            await self.testing_client.submit(
-                payload=EvaluationSubmissionRequest(
-                    id=existing_run.id,
-                    question=request.question,
-                    generation_run_id=existing_run.generation_run_id,
-                    generated_cypher=existing_run.generated_cypher,
-                    parse_summary=existing_run.parse_summary,
-                    guardrail_summary=existing_run.guardrail_summary,
-                    raw_output_snapshot=existing_run.raw_output_snapshot,
-                    input_prompt_snapshot=existing_run.input_prompt_snapshot,
-                )
-            )
-            response = self._build_response(
-                id=existing_run.id,
-                generation_run_id=existing_run.generation_run_id,
-                generation_status="submitted_to_testing",
-                generated_cypher=existing_run.generated_cypher,
-                parse_summary=existing_run.parse_summary,
-                guardrail_summary=existing_run.guardrail_summary,
-                raw_output_snapshot=existing_run.raw_output_snapshot,
-                input_prompt_snapshot=existing_run.input_prompt_snapshot,
-            )
-            return self._persist_and_return(request=request, response=response)
-
-        _RETRYABLE_STATUSES = {
-            "prompt_fetch_failed",
-            "prompt_not_ready",
-            "invocation_failed",
-            "parse_failed",
-            "guardrail_rejected",
-            "testing_submit_failed",
-        }
-        if existing_run is not None and existing_run.generation_status in _RETRYABLE_STATUSES:
-            pass
-
         generation_run_id = self.repository.next_generation_run_id()
+        attempt_no = self.repository.next_attempt_no(request.id)
         self.repository.upsert_question(id=request.id, question=request.question, status="received")
 
-        prompt_response, generation_prompt = await self._fetch_prompt(request=request, generation_run_id=generation_run_id)
+        prompt_response, generation_prompt = await self._fetch_prompt(
+            request=request,
+            generation_run_id=generation_run_id,
+            attempt_no=attempt_no,
+        )
         if prompt_response is not None:
             return self._persist_and_return(request=request, response=prompt_response)
 
         readiness_response = self._validate_prompt_readiness(
             request=request,
             generation_run_id=generation_run_id,
+            attempt_no=attempt_no,
             generation_prompt=generation_prompt,
         )
         if readiness_response is not None:
@@ -98,6 +64,7 @@ class QueryWorkflowService:
         invocation_response, raw_output = await self._invoke_model(
             request=request,
             generation_run_id=generation_run_id,
+            attempt_no=attempt_no,
             generation_prompt=generation_prompt,
         )
         if invocation_response is not None:
@@ -106,6 +73,7 @@ class QueryWorkflowService:
         parsing_response, generated_cypher, parse_summary = self._parse_generation_output(
             request=request,
             generation_run_id=generation_run_id,
+            attempt_no=attempt_no,
             generation_prompt=generation_prompt,
             raw_output=raw_output,
         )
@@ -115,6 +83,7 @@ class QueryWorkflowService:
         guardrail_response, guardrail_summary = self._check_guardrail(
             request=request,
             generation_run_id=generation_run_id,
+            attempt_no=attempt_no,
             generation_prompt=generation_prompt,
             generated_cypher=generated_cypher,
             parse_summary=parse_summary,
@@ -126,6 +95,7 @@ class QueryWorkflowService:
         self.repository.save_generation_run(
             id=request.id,
             generation_run_id=generation_run_id,
+            attempt_no=attempt_no,
             generation_status="generated",
             generated_cypher=generated_cypher,
             parse_summary=parse_summary,
@@ -141,6 +111,7 @@ class QueryWorkflowService:
                 id=request.id,
                 question=request.question,
                 generation_run_id=generation_run_id,
+                attempt_no=attempt_no,
                 generated_cypher=generated_cypher,
                 parse_summary=parse_summary,
                 guardrail_summary=guardrail_summary,
@@ -152,6 +123,7 @@ class QueryWorkflowService:
         response = self._build_response(
             id=request.id,
             generation_run_id=generation_run_id,
+            attempt_no=attempt_no,
             generation_status="submitted_to_testing",
             generated_cypher=generated_cypher,
             parse_summary=parse_summary,
@@ -179,6 +151,7 @@ class QueryWorkflowService:
         *,
         request: QAQuestionRequest,
         generation_run_id: str,
+        attempt_no: int,
     ) -> Tuple[QueryQuestionResponse | None, str]:
         try:
             prompt = await self.prompt_client.fetch_prompt(id=request.id, question=request.question)
@@ -187,6 +160,7 @@ class QueryWorkflowService:
                 self._build_response(
                     id=request.id,
                     generation_run_id=generation_run_id,
+                    attempt_no=attempt_no,
                     generation_status="prompt_fetch_failed",
                     generated_cypher="",
                     parse_summary="prompt_not_fetched",
@@ -205,6 +179,7 @@ class QueryWorkflowService:
         *,
         request: QAQuestionRequest,
         generation_run_id: str,
+        attempt_no: int,
         generation_prompt: str,
     ) -> QueryQuestionResponse | None:
         if generation_prompt.strip():
@@ -212,6 +187,7 @@ class QueryWorkflowService:
         return self._build_response(
             id=request.id,
             generation_run_id=generation_run_id,
+            attempt_no=attempt_no,
             generation_status="failed",
             generated_cypher="",
             parse_summary="prompt_empty",
@@ -227,6 +203,7 @@ class QueryWorkflowService:
         *,
         request: QAQuestionRequest,
         generation_run_id: str,
+        attempt_no: int,
         generation_prompt: str,
     ) -> Tuple[QueryQuestionResponse | None, str]:
         try:
@@ -240,6 +217,7 @@ class QueryWorkflowService:
                 self._build_response(
                     id=request.id,
                     generation_run_id=generation_run_id,
+                    attempt_no=attempt_no,
                     generation_status="model_invocation_failed",
                     generated_cypher="",
                     parse_summary="model_invocation_failed",
@@ -258,6 +236,7 @@ class QueryWorkflowService:
         *,
         request: QAQuestionRequest,
         generation_run_id: str,
+        attempt_no: int,
         generation_prompt: str,
         raw_output: str,
     ) -> Tuple[QueryQuestionResponse | None, str, str]:
@@ -268,6 +247,7 @@ class QueryWorkflowService:
             self._build_response(
                 id=request.id,
                 generation_run_id=generation_run_id,
+                attempt_no=attempt_no,
                 generation_status="output_parsing_failed",
                 generated_cypher="",
                 parse_summary=parse_summary,
@@ -286,6 +266,7 @@ class QueryWorkflowService:
         *,
         request: QAQuestionRequest,
         generation_run_id: str,
+        attempt_no: int,
         generation_prompt: str,
         generated_cypher: str,
         parse_summary: str,
@@ -298,6 +279,7 @@ class QueryWorkflowService:
             self._build_response(
                 id=request.id,
                 generation_run_id=generation_run_id,
+                attempt_no=attempt_no,
                 generation_status="guardrail_rejected",
                 generated_cypher=generated_cypher,
                 parse_summary=parse_summary,
@@ -315,6 +297,7 @@ class QueryWorkflowService:
         *,
         id: str,
         generation_run_id: str,
+        attempt_no: int,
         generation_status: str,
         generated_cypher: str,
         parse_summary: str,
@@ -327,6 +310,7 @@ class QueryWorkflowService:
         return QueryQuestionResponse(
             id=id,
             generation_run_id=generation_run_id,
+            attempt_no=attempt_no,
             generation_status=generation_status,
             generated_cypher=generated_cypher,
             parse_summary=parse_summary,
@@ -346,6 +330,7 @@ class QueryWorkflowService:
         self.repository.save_generation_run(
             id=request.id,
             generation_run_id=response.generation_run_id,
+            attempt_no=response.attempt_no,
             generation_status=response.generation_status,
             generated_cypher=response.generated_cypher,
             parse_summary=response.parse_summary,
@@ -404,38 +389,33 @@ def _run_minimal_guardrail(generated_cypher: str) -> tuple[str, str | None]:
     return "accepted", None
 
 
-repository = QueryGeneratorRepository(data_dir=settings.data_dir)
-llm_generator = None
-if (
-    settings.llm_enabled
-    and settings.llm_provider == "openai_compatible"
-    and settings.llm_base_url
-    and settings.llm_api_key
-    and settings.llm_model
-):
-    llm_generator = OpenAICompatibleCypherGenerator(
-        base_url=settings.llm_base_url,
-        api_key=settings.llm_api_key,
-        model=settings.llm_model,
-        timeout_seconds=settings.request_timeout_seconds,
-        temperature=settings.llm_temperature,
+def build_workflow_service(settings: Settings) -> QueryWorkflowService:
+    return QueryWorkflowService(
+        prompt_client=PromptServiceClient(
+            base_url=settings.knowledge_ops_service_url,
+            timeout_seconds=settings.request_timeout_seconds,
+        ),
+        generator_client=QwenGeneratorClient(
+            heuristic_generator=HeuristicCypherGenerator(model_name=settings.qwen_model_name),
+            llm_generator=OpenAICompatibleCypherGenerator(
+                base_url=settings.llm_base_url or "",
+                api_key=settings.llm_api_key or "",
+                model=settings.llm_model or "",
+                timeout_seconds=settings.request_timeout_seconds,
+                temperature=settings.llm_temperature,
+            ),
+        ),
+        testing_client=TestingServiceClient(
+            base_url=settings.testing_service_url,
+            timeout_seconds=settings.request_timeout_seconds,
+        ),
+        repository=QueryGeneratorRepository(data_dir=settings.data_dir),
     )
 
-workflow_service = QueryWorkflowService(
-    prompt_client=PromptServiceClient(
-        base_url=settings.knowledge_ops_service_url,
-        timeout_seconds=settings.request_timeout_seconds,
-    ),
-    generator_client=QwenGeneratorClient(
-        heuristic_generator=HeuristicCypherGenerator(model_name=settings.qwen_model_name),
-        llm_generator=llm_generator,
-    ),
-    testing_client=TestingServiceClient(
-        base_url=settings.testing_service_url,
-        timeout_seconds=settings.request_timeout_seconds,
-    ),
-    repository=repository,
-)
+
+@lru_cache(maxsize=1)
+def get_workflow_service() -> QueryWorkflowService:
+    return build_workflow_service(get_settings())
 
 
 async def test_tugraph_connection() -> dict:
@@ -446,18 +426,14 @@ async def test_tugraph_connection() -> dict:
 
 
 def get_generator_status() -> Dict[str, object]:
+    settings = get_settings()
     return {
         "llm_enabled": settings.llm_enabled,
         "llm_provider": settings.llm_provider,
         "llm_base_url": settings.llm_base_url,
         "llm_model": settings.llm_model,
-        "llm_configured": bool(
-            settings.llm_enabled
-            and settings.llm_base_url
-            and settings.llm_api_key
-            and settings.llm_model
-        ),
-        "active_mode": "llm" if llm_generator is not None else "heuristic_fallback",
+        "llm_configured": True,
+        "active_mode": "llm",
         "storage": settings.data_dir,
         "prompt_source": settings.knowledge_ops_service_url,
     }

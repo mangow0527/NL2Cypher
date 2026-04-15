@@ -15,7 +15,7 @@ class ServiceCommunicationTester:
     def __init__(self):
         self.services = {
             "query_generator": "http://localhost:8000",
-            "testing": "http://localhost:8001",
+            "testing": "http://localhost:8003",
             "repair": "http://localhost:8002"
         }
         self.timeout = 30.0
@@ -34,6 +34,7 @@ class ServiceCommunicationTester:
             "id": task_id,
             "question": question_text,
             "generation_run_id": generation_run_id,
+            "attempt_no": 1,
             "generated_cypher": generated_cypher,
             "parse_summary": "communication_test_payload",
             "guardrail_summary": "accepted",

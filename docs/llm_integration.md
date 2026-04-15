@@ -95,9 +95,13 @@ Prompt 中会携带：
 REPAIR_SERVICE_LLM_ENABLED=true
 REPAIR_SERVICE_LLM_BASE_URL=https://your-openai-compatible-endpoint/v1
 REPAIR_SERVICE_LLM_API_KEY=your_api_key
-REPAIR_SERVICE_LLM_MODEL=your_model_name
+REPAIR_SERVICE_LLM_MODEL_NAME=your_model_name
 REPAIR_SERVICE_LLM_TEMPERATURE=0.2
 ```
+
+兼容说明：
+- 当前代码同时兼容旧变量名 `REPAIR_SERVICE_LLM_MODEL`
+- 推荐统一改为 `REPAIR_SERVICE_LLM_MODEL_NAME`
 
 ### Prompt 设计
 
@@ -127,12 +131,12 @@ Prompt 中会携带：
 }
 ```
 
-### 自动回退
+### 启动约束
 
-如果出现以下任一情况，修复服务跳过 LLM 精化，直接使用确定性分析结果：
-- `REPAIR_SERVICE_LLM_ENABLED=false`
-- 缺少 `base_url` / `api_key` / `model`
-- 调用 LLM 接口时报错
+修复服务现在强制要求启用并正确配置 LLM：
+- `REPAIR_SERVICE_LLM_ENABLED` 必须为 `true`
+- 必须完整提供 `base_url` / `api_key` / `model`
+- 缺少任一关键配置时，服务会直接启动失败
 
 ---
 
@@ -142,7 +146,7 @@ Prompt 中会携带：
 
 流程：
 1. 修复服务调用查询语句生成服务的 API（如对照实验端点）
-2. 查询语句生成服务使用自己的 LLM 配置或启发式生成器
+2. 查询语句生成服务使用自己的 LLM 配置生成 Cypher
 3. 修复服务收集实验结果并进行归因
 
 ---
@@ -159,13 +163,12 @@ curl http://127.0.0.1:8000/api/v1/generator/status
 
 ```json
 {
-  "llm_enabled": false,
+  "llm_enabled": true,
   "llm_provider": "openai_compatible",
-  "llm_base_url": null,
-  "llm_model": null,
-  "llm_configured": false,
-  "active_mode": "heuristic_fallback",
-  "schema_context": "network_schema_v10"
+  "llm_base_url": "https://your-openai-compatible-endpoint/v1",
+  "llm_model": "your_model_name",
+  "llm_configured": true,
+  "active_mode": "llm"
 }
 ```
 

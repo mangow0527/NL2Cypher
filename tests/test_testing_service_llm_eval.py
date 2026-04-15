@@ -4,11 +4,13 @@ import json
 from typing import Any, Dict, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from shared.models import (
     EvaluationDimensions,
     EvaluationSummary,
+    ImprovementAssessment,
     KnowledgeRepairSuggestionRequest,
     TuGraphExecutionResult,
 )
@@ -130,7 +132,7 @@ class TestLLMEvaluationClientParseResponse:
         assert result["result_correctness"] == "pass"
 
     @pytest.mark.asyncio
-    async def test_api_error_returns_none(self):
+    async def test_api_error_raises(self):
         with patch("httpx.AsyncClient") as mock_client_cls:
             mock_ctx = AsyncMock()
             mock_ctx.post.side_effect = Exception("connection timeout")
@@ -138,13 +140,120 @@ class TestLLMEvaluationClientParseResponse:
             mock_ctx.__aexit__ = AsyncMock(return_value=False)
             mock_client_cls.return_value = mock_ctx
 
-            result = await self.client.evaluate(
+            with pytest.raises(Exception, match="connection timeout"):
+                await self.client.evaluate(
+                    question="test", expected_cypher="", expected_answer={},
+                    actual_cypher="", actual_result={}, rule_based_verdict="fail",
+                    rule_based_dimensions={},
+                )
+
+    @pytest.mark.asyncio
+    async def test_retries_after_rate_limit_then_succeeds(self):
+        payload = {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps({
+                            "result_correctness": "pass",
+                            "question_alignment": "pass",
+                            "reasoning": "Recovered after retry",
+                            "confidence": 0.91,
+                        })
+                    }
+                }
+            ]
+        }
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            rate_limited = MagicMock()
+            rate_limited.status_code = 429
+            rate_limited.text = '{"error":{"code":"1302","message":"rate limit"}}'
+            rate_limited.headers = {}
+            rate_limited.raise_for_status.side_effect = httpx.HTTPStatusError(
+                "rate limited",
+                request=httpx.Request("POST", "https://fake.api/v1/chat/completions"),
+                response=httpx.Response(429, request=httpx.Request("POST", "https://fake.api/v1/chat/completions")),
+            )
+            success = MagicMock()
+            success.status_code = 200
+            success.raise_for_status = MagicMock()
+            success.json.return_value = payload
+            success.headers = {}
+
+            mock_ctx = AsyncMock()
+            mock_ctx.post.side_effect = [rate_limited, success]
+            mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
+            mock_ctx.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_ctx
+
+            sleep_calls: list[float] = []
+
+            async def fake_sleep(delay: float) -> None:
+                sleep_calls.append(delay)
+
+            client = LLMEvaluationClient(
+                base_url="https://fake.api/v1",
+                api_key="fake-key",
+                model="test-model",
+                timeout_seconds=10,
+                temperature=0.1,
+                sleep_fn=fake_sleep,
+                max_retries=1,
+                retry_base_delay_seconds=0.25,
+            )
+
+            result = await client.evaluate(
                 question="test", expected_cypher="", expected_answer={},
                 actual_cypher="", actual_result={}, rule_based_verdict="fail",
                 rule_based_dimensions={},
             )
 
-        assert result is None
+        assert result["result_correctness"] == "pass"
+        assert mock_ctx.post.await_count == 2
+        assert sleep_calls == [0.25]
+
+    @pytest.mark.asyncio
+    async def test_does_not_retry_non_retryable_400(self):
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            bad_request = MagicMock()
+            bad_request.status_code = 400
+            bad_request.text = '{"error":{"message":"bad request"}}'
+            bad_request.headers = {}
+            bad_request.raise_for_status.side_effect = httpx.HTTPStatusError(
+                "bad request",
+                request=httpx.Request("POST", "https://fake.api/v1/chat/completions"),
+                response=httpx.Response(400, request=httpx.Request("POST", "https://fake.api/v1/chat/completions")),
+            )
+            mock_ctx = AsyncMock()
+            mock_ctx.post.return_value = bad_request
+            mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
+            mock_ctx.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_ctx
+
+            sleep_calls: list[float] = []
+
+            async def fake_sleep(delay: float) -> None:
+                sleep_calls.append(delay)
+
+            client = LLMEvaluationClient(
+                base_url="https://fake.api/v1",
+                api_key="fake-key",
+                model="test-model",
+                timeout_seconds=10,
+                temperature=0.1,
+                sleep_fn=fake_sleep,
+                max_retries=2,
+                retry_base_delay_seconds=0.25,
+            )
+
+            with pytest.raises(httpx.HTTPStatusError):
+                await client.evaluate(
+                    question="test", expected_cypher="", expected_answer={},
+                    actual_cypher="", actual_result={}, rule_based_verdict="fail",
+                    rule_based_dimensions={},
+                )
+
+        assert mock_ctx.post.await_count == 1
+        assert sleep_calls == []
 
 
 class TestLLMReEvaluate:
@@ -261,7 +370,6 @@ class TestEvaluateReadyPairWithLLM:
             llm_client=self.llm_client,
             tugraph_client=self.tugraph_client,
         )
-
         self.golden = {
             "id": "test-001",
             "golden_cypher": "MATCH (n:NetworkElement) RETURN n.name AS name LIMIT 5",
@@ -354,6 +462,104 @@ class TestEvaluateReadyPairWithLLM:
         result = await svc_no_llm._evaluate_ready_pair("test-001")
 
         assert result.status == "issue_ticket_created"
+
+    @pytest.mark.asyncio
+    async def test_repair_timeout_does_not_fail_evaluation_request(self):
+        self.golden["golden_answer_json"] = json.dumps([{"name": "router-999"}])
+        self.repo.get_golden.return_value = self.golden
+        self.repo.get_submission.return_value = self.submission
+        self.repo.save_issue_ticket = MagicMock()
+        self.repo.get_submission_attempt.return_value = {
+            **self.submission,
+            "attempt_no": 1,
+            "issue_ticket_id": "ticket-test-001-attempt-1",
+            "status": "issue_ticket_created",
+        }
+        self.llm_client.evaluate.return_value = {
+            "result_correctness": "fail",
+            "question_alignment": "fail",
+            "reasoning": "Truly different",
+            "confidence": 0.85,
+        }
+        self.repair_client.submit_issue_ticket.side_effect = TimeoutError("krss timeout")
+
+        result = await self.svc._evaluate_ready_pair("test-001")
+
+        assert result.status == "issue_ticket_created"
+        assert result.issue_ticket_id == "ticket-test-001-attempt-1"
+        self.repo.save_submission_krss_response.assert_not_called()
+
+
+def test_improvement_assessment_marks_first_run_when_no_previous_attempt():
+    repo = MagicMock()
+    svc = EvaluationService(repository=repo, repair_client=AsyncMock(), tugraph_client=AsyncMock())
+
+    assessment = svc._build_improvement_assessment(
+        id="qa-1",
+        current_submission={"id": "qa-1", "attempt_no": 1, "status": "passed", "execution_json": '{"success": true}'},
+    )
+
+    assert isinstance(assessment, ImprovementAssessment)
+    assert assessment.status == "first_run"
+    assert assessment.previous_attempt_no is None
+
+
+def test_improvement_assessment_marks_improved_when_verdict_and_semantics_get_better():
+    repo = MagicMock()
+    repo.get_submission_attempt.side_effect = [
+        {
+            "id": "qa-2",
+            "attempt_no": 1,
+            "status": "issue_ticket_created",
+            "execution_json": '{"success": false, "rows": [], "row_count": 0, "error_message": "bad", "elapsed_ms": 1}',
+            "issue_ticket_id": "ticket-qa-2-attempt-1",
+            "krss_response": {"status": "applied"},
+        }
+    ]
+    repo.get_issue_snapshot_by_submission_id.return_value = {
+        "evaluation": {
+            "verdict": "partial_fail",
+            "dimensions": {
+                "syntax_validity": "pass",
+                "schema_alignment": "pass",
+                "result_correctness": "fail",
+                "question_alignment": "pass",
+            },
+            "evidence": ["limit mismatch"],
+        }
+    }
+    repo.get_issue_ticket.return_value = MagicMock(
+        model_dump=MagicMock(
+            return_value={
+                "evaluation": {
+                    "verdict": "fail",
+                    "dimensions": {
+                        "syntax_validity": "fail",
+                        "schema_alignment": "pass",
+                        "result_correctness": "fail",
+                        "question_alignment": "fail",
+                    },
+                    "evidence": ["missing ORDER BY", "limit mismatch", "return shape mismatch"],
+                }
+            }
+        )
+    )
+    svc = EvaluationService(repository=repo, repair_client=AsyncMock(), tugraph_client=AsyncMock())
+
+    assessment = svc._build_improvement_assessment(
+        id="qa-2",
+        current_submission={
+            "id": "qa-2",
+            "attempt_no": 2,
+            "status": "issue_ticket_created",
+            "execution_json": '{"success": true, "rows": [], "row_count": 0, "error_message": null, "elapsed_ms": 1}',
+            "issue_ticket_id": "ticket-qa-2-attempt-2",
+        },
+    )
+
+    assert assessment.status == "improved"
+    assert assessment.dimensions.verdict_change == "improved"
+    assert assessment.dimensions.semantic_change == "improved"
 
 
 class TestRepairServiceClientContract:

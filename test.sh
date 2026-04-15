@@ -9,8 +9,9 @@ echo "🧪 测试 Text2Cypher 闭环系统..."
 BASE_URL="http://localhost"
 SERVICES=(
     "8000:query-generator-service"
-    "8001:testing-service" 
+    "8001:runtime-results-service"
     "8002:repair-service"
+    "8003:testing-service"
 )
 
 # 检查服务是否启动
@@ -46,7 +47,7 @@ sleep 3
 
 # 测试2: 提交标准答案到测试服务
 echo "📝 测试2: 提交标准答案到测试服务"
-curl -X POST "$BASE_URL:8001/api/v1/qa/goldens" \
+curl -X POST "$BASE_URL:8003/api/v1/qa/goldens" \
     -H "Content-Type: application/json" \
     -d '{
         "id": "test-001",
@@ -63,24 +64,24 @@ sleep 5
 
 # 测试3: 查询评测状态
 echo "📝 测试3: 查询评测状态"
-curl -s "$BASE_URL:8001/evaluations/test-001" | python3 -m json.tool || echo "⚠️  查询可能失败"
+curl -s "$BASE_URL:8003/api/v1/evaluations/test-001" | python3 -m json.tool || echo "⚠️  查询可能失败"
 
 echo ""
 echo "🔍 检查是否生成了问题单..."
 sleep 3
 
 # 尝试获取问题单（如果存在）
-TICKET_ID=$(curl -s "$BASE_URL:8001/evaluations/test-001" 2>/dev/null | grep -o '"issue_ticket_id":"[^"]*"' | cut -d'"' -f4 || echo "")
+TICKET_ID=$(curl -s "$BASE_URL:8003/api/v1/evaluations/test-001" 2>/dev/null | grep -o '"issue_ticket_id":"[^"]*"' | cut -d'"' -f4 || echo "")
 
 if [ ! -z "$TICKET_ID" ]; then
     echo "📝 发现问题单: $TICKET_ID"
     echo "📝 测试4: 获取问题单详情"
-    curl -s "$BASE_URL:8001/issues/$TICKET_ID" | python3 -m json.tool || echo "⚠️  获取问题单失败"
+    curl -s "$BASE_URL:8003/api/v1/issues/$TICKET_ID" | python3 -m json.tool || echo "⚠️  获取问题单失败"
     
     echo "📝 测试5: 提交问题单到修复服务"
     curl -X POST "$BASE_URL:8002/api/v1/issue-tickets" \
         -H "Content-Type: application/json" \
-        -d "$(curl -s "$BASE_URL:8001/issues/$TICKET_ID" 2>/dev/null)" | python3 -m json.tool || echo "⚠️  提交问题单失败"
+        -d "$(curl -s "$BASE_URL:8003/api/v1/issues/$TICKET_ID" 2>/dev/null)" | python3 -m json.tool || echo "⚠️  提交问题单失败"
 else
     echo "ℹ️  未发现问题单，可能系统运行正常"
 fi
@@ -90,10 +91,11 @@ echo "🎉 测试完成！"
 echo ""
 echo "📊 服务访问地址："
 echo "  查询语句生成服务: http://localhost:8000"
-echo "  测试服务: http://localhost:8001" 
+echo "  运行结果中心: http://localhost:8001"
 echo "  修复服务: http://localhost:8002"
+echo "  测试服务: http://localhost:8003"
 echo ""
 echo "🌐 Web控制台："
 echo "  查询生成控制台: http://localhost:8000/console"
-echo "  测试服务控制台: http://localhost:8001/console"
+echo "  运行结果中心: http://localhost:8001/console"
 echo "  修复服务控制台: http://localhost:8002/console"

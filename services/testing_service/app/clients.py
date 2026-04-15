@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict
 
 import httpx
 
+from shared.llm_retry import classify_retryable_error, extract_request_id, sleep_with_backoff
 from shared.models import IssueTicket
 from shared.models import KRSSIssueTicketResponse
 from shared.models import QueryQuestionResponse
@@ -92,15 +94,24 @@ class LLMEvaluationClient:
         model: str,
         timeout_seconds: float,
         temperature: float,
+        *,
+        sleep_fn: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        max_retries: int = 2,
+        retry_base_delay_seconds: float = 1.0,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
         self.timeout_seconds = timeout_seconds
         self.temperature = temperature
+        self.sleep_fn = sleep_fn
+        self.max_retries = max_retries
+        self.retry_base_delay_seconds = retry_base_delay_seconds
 
     async def evaluate(
         self,
+        *,
+        qa_id: str | None = None,
         question: str,
         expected_cypher: str,
         expected_answer: Any,
@@ -108,7 +119,7 @@ class LLMEvaluationClient:
         actual_result: Any,
         rule_based_verdict: str,
         rule_based_dimensions: Dict[str, str],
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         system_prompt = (
             "You are a Cypher query evaluation expert for a graph database (TuGraph). "
             "You are given a natural language question, a golden (expected) Cypher query and its expected answer, "
@@ -135,41 +146,134 @@ class LLMEvaluationClient:
             "Provide your semantic evaluation."
         )
 
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-                response = await client.post(
-                    f"{self.base_url}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": self.model,
-                        "temperature": self.temperature,
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_prompt},
-                        ],
-                    },
-                )
-                response.raise_for_status()
-                payload = response.json()
+        started = time.monotonic()
+        logger.warning(
+            "llm_call_started target=%s qa_id=%s model=%s base_url=%s",
+            "testing.llm_evaluation",
+            qa_id,
+            self.model,
+            self.base_url,
+            extra={
+                "target": "testing.llm_evaluation",
+                "qa_id": qa_id,
+                "model": self.model,
+                "base_url": self.base_url,
+            },
+        )
+        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+            for attempt in range(self.max_retries + 1):
+                try:
+                    response = await client.post(
+                        f"{self.base_url}/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {self.api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "model": self.model,
+                            "temperature": self.temperature,
+                            "messages": [
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": user_prompt},
+                            ],
+                        },
+                    )
+                    response.raise_for_status()
+                    payload = response.json()
+                    break
+                except Exception as exc:
+                    elapsed_ms = int((time.monotonic() - started) * 1000)
+                    retry = classify_retryable_error(exc)
+                    is_last_attempt = attempt >= self.max_retries
+                    if retry.should_retry and not is_last_attempt:
+                        delay_seconds = await sleep_with_backoff(
+                            sleep_fn=self.sleep_fn,
+                            base_delay_seconds=self.retry_base_delay_seconds,
+                            attempt_index=attempt,
+                        )
+                        logger.warning(
+                            "llm_call_retry target=%s qa_id=%s model=%s base_url=%s attempt=%s elapsed_ms=%s retry_reason=%s status_code=%s retry_delay_seconds=%s body_preview=%s",
+                            "testing.llm_evaluation",
+                            qa_id,
+                            self.model,
+                            self.base_url,
+                            attempt + 1,
+                            elapsed_ms,
+                            retry.reason,
+                            retry.status_code,
+                            delay_seconds,
+                            retry.body_preview,
+                            extra={
+                                "target": "testing.llm_evaluation",
+                                "qa_id": qa_id,
+                                "model": self.model,
+                                "base_url": self.base_url,
+                                "attempt": attempt + 1,
+                                "elapsed_ms": elapsed_ms,
+                                "retry_reason": retry.reason,
+                                "status_code": retry.status_code,
+                                "retry_delay_seconds": delay_seconds,
+                                "body_preview": retry.body_preview,
+                            },
+                        )
+                        continue
+                    logger.warning(
+                        "llm_call_failed target=%s qa_id=%s model=%s base_url=%s elapsed_ms=%s attempts=%s retry_reason=%s status_code=%s body_preview=%s error=%s",
+                        "testing.llm_evaluation",
+                        qa_id,
+                        self.model,
+                        self.base_url,
+                        elapsed_ms,
+                        attempt + 1,
+                        retry.reason,
+                        retry.status_code,
+                        retry.body_preview,
+                        str(exc),
+                        extra={
+                            "target": "testing.llm_evaluation",
+                            "qa_id": qa_id,
+                            "model": self.model,
+                            "base_url": self.base_url,
+                            "elapsed_ms": elapsed_ms,
+                            "attempts": attempt + 1,
+                            "retry_reason": retry.reason,
+                            "status_code": retry.status_code,
+                            "body_preview": retry.body_preview,
+                            "error": str(exc),
+                        },
+                    )
+                    raise
 
-            content = payload["choices"][0]["message"]["content"].strip()
-            if content.startswith("```"):
-                content = content.strip("`")
-                if content.startswith("json"):
-                    content = content[4:].strip()
+        content = payload["choices"][0]["message"]["content"].strip()
+        if content.startswith("```"):
+            content = content.strip("`")
+            if content.startswith("json"):
+                content = content[4:].strip()
 
-            result = json.loads(content)
-            logger.info(
-                "LLM evaluation: result_correctness=%s, question_alignment=%s, confidence=%s",
-                result.get("result_correctness"),
-                result.get("question_alignment"),
-                result.get("confidence"),
-            )
-            return result
-
-        except Exception as exc:
-            logger.warning("LLM evaluation failed: %s: %s", type(exc).__name__, exc)
-            return None
+        result = json.loads(content)
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        request_id = extract_request_id(getattr(response, "headers", None))
+        logger.warning(
+            "llm_call_succeeded target=%s qa_id=%s model=%s base_url=%s elapsed_ms=%s request_id=%s",
+            "testing.llm_evaluation",
+            qa_id,
+            self.model,
+            self.base_url,
+            elapsed_ms,
+            request_id,
+            extra={
+                "target": "testing.llm_evaluation",
+                "qa_id": qa_id,
+                "model": self.model,
+                "base_url": self.base_url,
+                "elapsed_ms": elapsed_ms,
+                "request_id": request_id,
+            },
+        )
+        logger.info(
+            "LLM evaluation: result_correctness=%s, question_alignment=%s, confidence=%s",
+            result.get("result_correctness"),
+            result.get("question_alignment"),
+            result.get("confidence"),
+        )
+        return result

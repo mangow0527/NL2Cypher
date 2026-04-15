@@ -50,6 +50,7 @@ class TestCypherGenerationWorkflow:
         assert submission_payload.generated_cypher.startswith("MATCH")
         assert submission_payload.input_prompt_snapshot == "请生成一个 Cypher JSON"
         assert result.generation_run_id == "run-001"
+        assert result.attempt_no == 1
         assert result.generation_status == "submitted_to_testing"
         assert result.input_prompt_snapshot == "请生成一个 Cypher JSON"
         assert result.parse_summary == "parsed_json"
@@ -87,6 +88,40 @@ class TestCypherGenerationWorkflow:
         result = await svc.ingest_question(QAQuestionRequest(id="qa-004", question="查询设备名称"))
 
         assert result.generation_status == "submitted_to_testing"
+
+    @pytest.mark.asyncio
+    async def test_same_qa_id_creates_new_attempt_and_refetches_prompt(self):
+        prompt_client = AsyncMock()
+        prompt_client.fetch_prompt.side_effect = ["prompt-v1", "prompt-v2"]
+
+        generator_client = AsyncMock()
+        generator_client.generate_from_prompt.side_effect = [
+            {"raw_output": '{"cypher":"MATCH (n) RETURN n LIMIT 5"}', "model_name": "test-model"},
+            {"raw_output": '{"cypher":"MATCH (n) RETURN n LIMIT 3"}', "model_name": "test-model"},
+        ]
+
+        testing_client = AsyncMock()
+        repository = MagicMock()
+        repository.next_generation_run_id.side_effect = ["run-101", "run-102"]
+        repository.next_attempt_no.side_effect = [1, 2]
+
+        svc = QueryWorkflowService(
+            prompt_client=prompt_client,
+            generator_client=generator_client,
+            testing_client=testing_client,
+            repository=repository,
+        )
+
+        first = await svc.ingest_question(QAQuestionRequest(id="qa-101", question="查询设备"))
+        second = await svc.ingest_question(QAQuestionRequest(id="qa-101", question="查询设备"))
+
+        assert first.attempt_no == 1
+        assert second.attempt_no == 2
+        first_payload = testing_client.submit.await_args_list[0].kwargs["payload"]
+        second_payload = testing_client.submit.await_args_list[1].kwargs["payload"]
+        assert first_payload.attempt_no == 1
+        assert second_payload.attempt_no == 2
+        assert prompt_client.fetch_prompt.await_count == 2
 
     @pytest.mark.asyncio
     async def test_prompt_fetch_failure_returns_processing_failure(self):

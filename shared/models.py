@@ -46,6 +46,8 @@ RepairPlanState = Literal[
 ]
 DispatchStatus = Literal["sent", "stored_for_later"]
 KnowledgeType = Literal["cypher_syntax", "few_shot", "system_prompt", "business_knowledge"]
+ImprovementStatus = Literal["first_run", "improved", "regressed", "unchanged", "not_comparable"]
+ImprovementDimensionStatus = Literal["improved", "regressed", "unchanged", "not_comparable"]
 
 
 class QAQuestionRequest(BaseModel):
@@ -118,6 +120,7 @@ class EvaluationSubmissionRequest(BaseModel):
     id: str
     question: str
     generation_run_id: str
+    attempt_no: int = Field(default=1, ge=1)
     generated_cypher: str
     parse_summary: str
     guardrail_summary: str
@@ -184,6 +187,7 @@ class RepairPlan(BaseModel):
 class QueryQuestionResponse(BaseModel):
     id: str
     generation_run_id: str
+    attempt_no: int = Field(default=1, ge=1)
     generation_status: GenerationProcessingStatus
     generated_cypher: str = ""
     parse_summary: str = ""
@@ -201,7 +205,27 @@ class PromptFetchRequest(BaseModel):
 
 class PromptSnapshotResponse(BaseModel):
     id: str
+    attempt_no: int = Field(default=1, ge=1)
     input_prompt_snapshot: str
+
+
+class ImprovementDimensions(BaseModel):
+    verdict_change: ImprovementDimensionStatus = "not_comparable"
+    execution_change: ImprovementDimensionStatus = "not_comparable"
+    syntax_change: ImprovementDimensionStatus = "not_comparable"
+    semantic_change: ImprovementDimensionStatus = "not_comparable"
+    repair_effectiveness: ImprovementDimensionStatus = "not_comparable"
+
+
+class ImprovementAssessment(BaseModel):
+    qa_id: str
+    current_attempt_no: int = Field(ge=1)
+    previous_attempt_no: Optional[int] = Field(default=None, ge=1)
+    status: ImprovementStatus
+    summary_zh: str
+    dimensions: ImprovementDimensions = Field(default_factory=ImprovementDimensions)
+    highlights: List[str] = Field(default_factory=list)
+    evidence: List[str] = Field(default_factory=list)
 
 
 class KnowledgeRepairSuggestionRequest(BaseModel):

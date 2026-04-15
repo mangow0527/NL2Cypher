@@ -2,15 +2,76 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Literal
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import BaseModel, Field
 
 from services.repair_service.app.clients import KnowledgeOpsRepairApplyClient
-from tools.mock_knowledge_ops.app import app
 from shared.models import KnowledgeRepairSuggestionRequest
+
+
+class _PromptPackageRequest(BaseModel):
+    id: str
+    question: str
+
+
+KnowledgeType = Literal["cypher_syntax", "few_shot", "system_prompt", "business_knowledge"]
+
+
+class _ApplyRepairRequest(BaseModel):
+    id: str = Field(min_length=1)
+    suggestion: str = Field(min_length=1)
+    knowledge_types: list[KnowledgeType]
+
+
+class _RepairChange(BaseModel):
+    doc_type: str
+    section: str
+    before: str
+    after: str
+
+
+class _ApplyRepairResponse(BaseModel):
+    status: str = "ok"
+    changes: list[_RepairChange]
+
+
+app = FastAPI(title="Test Mock Knowledge Ops", version="1.0.0")
+
+
+@app.post("/api/knowledge/rag/prompt-package")
+async def prompt_package(req: _PromptPackageRequest) -> str:
+    del req
+    return "请只返回 JSON，且必须包含 cypher 字段。"
+
+
+@app.post("/api/knowledge/repairs/apply", response_model=_ApplyRepairResponse)
+async def repairs_apply(payload: _ApplyRepairRequest) -> _ApplyRepairResponse:
+    knowledge_types = payload.knowledge_types or []
+    out_dir = Path("data/mock_knowledge_ops")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "last_apply.json").write_text(
+        json.dumps(
+            {
+                "id": payload.id,
+                "suggestion": payload.suggestion,
+                "knowledge_types": list(knowledge_types),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    changes = [
+        _RepairChange(doc_type=knowledge_type, section="mock", before="", after=payload.suggestion)
+        for knowledge_type in knowledge_types
+    ]
+    return _ApplyRepairResponse(changes=changes)
 
 
 class _FakeAsyncClient:

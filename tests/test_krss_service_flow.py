@@ -19,7 +19,52 @@ from shared.models import (
 )
 from services.repair_service.app.analysis import KRSSAnalyzer
 from services.repair_service.app.main import app
-from services.repair_service.app.service import RepairService, _DeterministicKRSSDiagnosisClient
+from services.repair_service.app.service import RepairService
+
+
+class _DeterministicKRSSDiagnosisClient:
+    async def diagnose(self, ticket: IssueTicket, prompt_snapshot: str) -> dict[str, object]:
+        del prompt_snapshot
+
+        dimensions = ticket.evaluation.dimensions
+        if dimensions.syntax_validity == "fail":
+            return {
+                "knowledge_types": ["cypher_syntax", "system_prompt"],
+                "confidence": 0.9,
+                "suggestion": "Add Cypher syntax guardrails and a system prompt rule that rejects malformed query patterns.",
+                "rationale": "The failing ticket shows a syntax-validity error, so the weakest link is syntax guidance rather than business context.",
+                "need_experiments": False,
+                "candidate_patch_types": [],
+            }
+
+        if dimensions.schema_alignment == "fail":
+            return {
+                "knowledge_types": ["business_knowledge", "system_prompt"],
+                "confidence": 0.88,
+                "suggestion": "Add business-knowledge constraints and prompt rules that only allow graph-valid labels, relations, and properties.",
+                "rationale": "The generated Cypher violates schema expectations, so KRSS should route a business-knowledge-focused repair suggestion.",
+                "need_experiments": False,
+                "candidate_patch_types": [],
+            }
+
+        if dimensions.question_alignment == "fail" or dimensions.result_correctness == "fail":
+            return {
+                "knowledge_types": ["business_knowledge", "few_shot"],
+                "confidence": 0.85,
+                "suggestion": "Add business-term mapping guidance and a few_shot example that matches the failed question pattern.",
+                "rationale": "The query missed the intended semantics, which usually points to missing business context or missing examples.",
+                "need_experiments": False,
+                "candidate_patch_types": [],
+            }
+
+        return {
+            "knowledge_types": ["system_prompt"],
+            "confidence": 0.8,
+            "suggestion": "Tighten the system prompt so future generations preserve the expected question intent and output contract.",
+            "rationale": "Fallback deterministic KRSS diagnosis.",
+            "need_experiments": False,
+            "candidate_patch_types": [],
+        }
 
 
 def _make_issue_ticket() -> IssueTicket:
@@ -92,7 +137,7 @@ def test_issue_ticket_flow_fetches_prompt_analyzes_applies_and_returns_krss_resp
     )
     service.get_analysis.return_value = None
 
-    monkeypatch.setattr("services.repair_service.app.main.repair_service", service)
+    monkeypatch.setattr("services.repair_service.app.main.get_repair_service", lambda: service)
 
     with TestClient(app) as client:
         response = client.post("/api/v1/issue-tickets", json=ticket.model_dump(mode="json"))
@@ -304,7 +349,7 @@ def test_get_krss_analysis_endpoint_returns_record(monkeypatch):
     service = MagicMock()
     service.create_issue_ticket_response = AsyncMock()
     service.get_analysis.return_value = analysis
-    monkeypatch.setattr("services.repair_service.app.main.repair_service", service)
+    monkeypatch.setattr("services.repair_service.app.main.get_repair_service", lambda: service)
 
     with TestClient(app) as client:
         response = client.get("/api/v1/krss-analyses/analysis-ticket-001")
@@ -340,6 +385,34 @@ async def test_repair_service_deterministic_diagnosis_uses_formal_contract_types
     request = apply_client.apply.await_args.args[0]
     assert request.knowledge_types == ["business_knowledge", "few_shot"]
     assert response.knowledge_repair_request.knowledge_types == ["business_knowledge", "few_shot"]
+
+
+@pytest.mark.asyncio
+async def test_repair_service_propagates_primary_analyzer_timeout():
+    ticket = _make_issue_ticket()
+    prompt_client = AsyncMock()
+    prompt_client.fetch.return_value = PromptSnapshotResponse(
+        id=ticket.id,
+        input_prompt_snapshot="Original CGS prompt snapshot",
+    )
+    repository = MagicMock()
+    repository.get_analysis.return_value = None
+    apply_client = AsyncMock()
+    apply_client.apply.return_value = {"ok": True}
+    analyzer = AsyncMock()
+    analyzer.analyze.side_effect = TimeoutError("llm timeout")
+
+    service = RepairService(
+        repository=repository,
+        prompt_snapshot_client=prompt_client,
+        analyzer=analyzer,
+        apply_client=apply_client,
+    )
+
+    with pytest.raises(TimeoutError, match="llm timeout"):
+        await service.create_issue_ticket_response(ticket)
+
+    apply_client.apply.assert_not_awaited()
 
 
 def test_legacy_repair_plan_read_path_is_not_exposed():

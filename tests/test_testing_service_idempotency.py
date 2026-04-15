@@ -47,6 +47,7 @@ async def test_issue_ticket_id_is_stable_for_same_qa_id():
     }
     repo.get_submission.return_value = {
         "id": "qa-123",
+        "attempt_no": 2,
         "question": "test question",
         "generation_run_id": "run-1",
         "generated_cypher": "MATCHH (n) RETURN n",
@@ -72,4 +73,4 @@ async def test_issue_ticket_id_is_stable_for_same_qa_id():
         await svc._evaluate_ready_pair("qa-123")
 
     sent_ticket = repair_client.submit_issue_ticket.await_args.args[0]
-    assert sent_ticket.ticket_id == "ticket-qa-123"
+    assert sent_ticket.ticket_id == "ticket-qa-123-attempt-2"

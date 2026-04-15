@@ -8,8 +8,8 @@ import uvicorn
 
 from shared.models import IssueTicket, KRSSAnalysisRecord, KRSSIssueTicketResponse
 
-from .config import settings
-from .service import repair_service
+from .config import get_settings
+from .service import get_repair_service
 
 app = FastAPI(title="Knowledge Repair Suggestion Service", version="1.0.0")
 ui_dir = Path(__file__).parent / "ui"
@@ -33,21 +33,22 @@ async def healthcheck() -> Dict[str, str]:
 
 @app.get("/api/v1/status")
 async def service_status() -> Dict[str, object]:
-    return repair_service.get_service_status()
+    return get_repair_service().get_service_status()
 
 
 @app.post("/api/v1/issue-tickets", response_model=KRSSIssueTicketResponse)
 async def create_issue_ticket_response(issue_ticket: IssueTicket) -> KRSSIssueTicketResponse:
-    return await repair_service.create_issue_ticket_response(issue_ticket)
+    return await get_repair_service().create_issue_ticket_response(issue_ticket)
 
 
 @app.get("/api/v1/krss-analyses/{analysis_id}", response_model=KRSSAnalysisRecord)
 async def get_krss_analysis(analysis_id: str) -> KRSSAnalysisRecord:
-    analysis = repair_service.get_analysis(analysis_id)
+    analysis = get_repair_service().get_analysis(analysis_id)
     if analysis is None:
         raise HTTPException(status_code=404, detail=f"No KRSS analysis found for analysis_id={analysis_id}")
     return analysis
 
 
 if __name__ == "__main__":
+    settings = get_settings()
     uvicorn.run("services.repair_service.app.main:app", host=settings.host, port=settings.port, reload=False)

@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-pids=()
 
 cleanup() {
   for pid in "${pids[@]:-}"; do
@@ -17,7 +16,9 @@ lsof -ti:8000,8001,8002,8010,8020 2>/dev/null | xargs kill -9 2>/dev/null || tru
 sleep 1
 
 set -a
-. .env
+if [ -f ".env" ]; then
+  . .env
+fi
 set +a
 
 export QUERY_GENERATOR_KNOWLEDGE_OPS_SERVICE_URL=http://127.0.0.1:8010
@@ -31,9 +32,15 @@ export TESTING_SERVICE_LLM_ENABLED=true
 export REPAIR_SERVICE_LLM_ENABLED=true
 export REPAIR_SERVICE_GENERATOR_LLM_ENABLED=true
 
-export OPENAI_BASE_URL="${TESTING_SERVICE_LLM_BASE_URL}"
-export OPENAI_API_KEY="${TESTING_SERVICE_LLM_API_KEY}"
-export OPENAI_MODEL="${TESTING_SERVICE_LLM_MODEL}"
+if [ -n "${TESTING_SERVICE_LLM_BASE_URL:-}" ]; then
+  export OPENAI_BASE_URL="${TESTING_SERVICE_LLM_BASE_URL}"
+fi
+if [ -n "${TESTING_SERVICE_LLM_API_KEY:-}" ]; then
+  export OPENAI_API_KEY="${TESTING_SERVICE_LLM_API_KEY}"
+fi
+if [ -n "${TESTING_SERVICE_LLM_MODEL:-}" ]; then
+  export OPENAI_MODEL="${TESTING_SERVICE_LLM_MODEL}"
+fi
 
 ( cd third_party/knowledge-agent/backend && APP_HOST=0.0.0.0 APP_PORT=8010 python run_api.py ) &
 pids+=("$!")
