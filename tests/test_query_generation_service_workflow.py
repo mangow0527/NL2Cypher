@@ -4,9 +4,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from shared.models import QAQuestionRequest
-from services.query_generator_service.app import service as workflow_module
-from services.query_generator_service.app.service import QueryWorkflowService
+from contracts.models import QAQuestionRequest
+from services.query_generator_agent.app import service as workflow_module
+from services.query_generator_agent.app.service import QueryWorkflowService
 
 
 class TestCypherGenerationWorkflow:

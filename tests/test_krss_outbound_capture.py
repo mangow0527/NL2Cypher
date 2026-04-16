@@ -11,8 +11,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import BaseModel, Field
 
-from services.repair_service.app.clients import KnowledgeOpsRepairApplyClient
-from shared.models import KnowledgeRepairSuggestionRequest
+from services.repair_agent.app.clients import KnowledgeOpsRepairApplyClient
+from contracts.models import KnowledgeRepairSuggestionRequest
 
 
 class _PromptPackageRequest(BaseModel):

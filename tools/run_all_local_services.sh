@@ -46,11 +46,11 @@ fi
 pids+=("$!")
 ( cd third_party/qa-agent && APP_HOST=0.0.0.0 APP_PORT=8020 TEST_AGENT_HOST=127.0.0.1 TEST_AGENT_QUESTION_PORT=8000 TEST_AGENT_GOLDEN_PORT=8001 .venv/bin/python run_api.py ) &
 pids+=("$!")
-python -m uvicorn services.repair_service.app.main:app --host 0.0.0.0 --port 8002 &
+python -m uvicorn services.repair_agent.app.main:app --host 0.0.0.0 --port 8002 &
 pids+=("$!")
-python -m uvicorn services.testing_service.app.main:app --host 0.0.0.0 --port 8001 &
+python -m uvicorn services.testing_agent.app.main:app --host 0.0.0.0 --port 8001 &
 pids+=("$!")
-python -m uvicorn services.query_generator_service.app.main:app --host 0.0.0.0 --port 8000 &
+python -m uvicorn services.query_generator_agent.app.main:app --host 0.0.0.0 --port 8000 &
 pids+=("$!")
 
 for _ in $(seq 1 30); do
@@ -67,9 +67,9 @@ for _ in $(seq 1 30); do
 done
 
 echo "running:"
-echo "  query_generator_service  http://127.0.0.1:8000"
-echo "  testing_service          http://127.0.0.1:8001"
-echo "  repair_service(KRSS)     http://127.0.0.1:8002"
+echo "  query-generator-agent    http://127.0.0.1:8000"
+echo "  testing-agent            http://127.0.0.1:8001"
+echo "  repair-agent (KRSS)      http://127.0.0.1:8002"
 echo "  knowledge_ops            http://127.0.0.1:8010"
 echo "  qa_agent                 http://127.0.0.1:8020"
 echo

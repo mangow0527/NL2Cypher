@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 
-from shared.models import EvaluationSubmissionRequest
-from services.query_generator_service.app.repository import QueryGeneratorRepository
-from services.testing_service.app.repository import TestingRepository as TestingRepo
+from contracts.models import EvaluationSubmissionRequest
+from services.query_generator_agent.app.repository import QueryGeneratorRepository
+from services.testing_agent.app.repository import TestingRepository as TestingRepo
 
 QueryGeneratorRepository.__test__ = False
 TestingRepo.__test__ = False

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, Dict, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -7,15 +8,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from shared.models import (
+from contracts.models import (
     EvaluationDimensions,
     EvaluationSummary,
     ImprovementAssessment,
-    KnowledgeRepairSuggestionRequest,
     TuGraphExecutionResult,
 )
-from services.testing_service.app.clients import LLMEvaluationClient, RepairServiceClient
-from services.testing_service.app.service import EvaluationService
+from services.testing_agent.app.clients import LLMEvaluationClient, RepairServiceClient
+from services.testing_agent.app.models import KnowledgeRepairSuggestionRequest
+from services.testing_agent.app.service import EvaluationService
 
 
 @pytest.fixture
@@ -132,6 +133,43 @@ class TestLLMEvaluationClientParseResponse:
         assert result["result_correctness"] == "pass"
 
     @pytest.mark.asyncio
+    async def test_disables_thinking_for_json_evaluation_requests(self):
+        payload = {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps({
+                            "result_correctness": "pass",
+                            "question_alignment": "pass",
+                            "reasoning": "fast response",
+                            "confidence": 0.9,
+                        })
+                    }
+                }
+            ]
+        }
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_resp.raise_for_status = MagicMock()
+            mock_resp.json.return_value = payload
+            mock_resp.headers = {}
+            mock_ctx = AsyncMock()
+            mock_ctx.post.return_value = mock_resp
+            mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
+            mock_ctx.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_ctx
+
+            await self.client.evaluate(
+                question="test", expected_cypher="", expected_answer={},
+                actual_cypher="", actual_result={}, rule_based_verdict="fail",
+                rule_based_dimensions={},
+            )
+
+        request_payload = mock_ctx.post.await_args.kwargs["json"]
+        assert request_payload["enable_thinking"] is False
+
+    @pytest.mark.asyncio
     async def test_api_error_raises(self):
         with patch("httpx.AsyncClient") as mock_client_cls:
             mock_ctx = AsyncMock()
@@ -212,6 +250,76 @@ class TestLLMEvaluationClientParseResponse:
         assert sleep_calls == [0.25]
 
     @pytest.mark.asyncio
+    async def test_retries_after_rate_limit_using_retry_after_header(self):
+        payload = {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps({
+                            "result_correctness": "pass",
+                            "question_alignment": "pass",
+                            "reasoning": "Recovered after server-advised delay",
+                            "confidence": 0.93,
+                        })
+                    }
+                }
+            ]
+        }
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            request = httpx.Request("POST", "https://fake.api/v1/chat/completions")
+            rate_limited = MagicMock()
+            rate_limited.status_code = 429
+            rate_limited.text = '{"error":{"code":"1302","message":"rate limit"}}'
+            rate_limited.headers = {"Retry-After": "3.5"}
+            rate_limited.raise_for_status.side_effect = httpx.HTTPStatusError(
+                "rate limited",
+                request=request,
+                response=httpx.Response(
+                    429,
+                    headers={"Retry-After": "3.5"},
+                    request=request,
+                    text='{"error":{"code":"1302","message":"rate limit"}}',
+                ),
+            )
+            success = MagicMock()
+            success.status_code = 200
+            success.raise_for_status = MagicMock()
+            success.json.return_value = payload
+            success.headers = {}
+
+            mock_ctx = AsyncMock()
+            mock_ctx.post.side_effect = [rate_limited, success]
+            mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
+            mock_ctx.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_ctx
+
+            sleep_calls: list[float] = []
+
+            async def fake_sleep(delay: float) -> None:
+                sleep_calls.append(delay)
+
+            client = LLMEvaluationClient(
+                base_url="https://fake.api/v1",
+                api_key="fake-key",
+                model="test-model",
+                timeout_seconds=10,
+                temperature=0.1,
+                sleep_fn=fake_sleep,
+                max_retries=1,
+                retry_base_delay_seconds=0.25,
+            )
+
+            result = await client.evaluate(
+                question="test", expected_cypher="", expected_answer={},
+                actual_cypher="", actual_result={}, rule_based_verdict="fail",
+                rule_based_dimensions={},
+            )
+
+        assert result["result_correctness"] == "pass"
+        assert mock_ctx.post.await_count == 2
+        assert sleep_calls == [3.5]
+
+    @pytest.mark.asyncio
     async def test_does_not_retry_non_retryable_400(self):
         with patch("httpx.AsyncClient") as mock_client_cls:
             bad_request = MagicMock()
@@ -254,6 +362,75 @@ class TestLLMEvaluationClientParseResponse:
 
         assert mock_ctx.post.await_count == 1
         assert sleep_calls == []
+
+    @pytest.mark.asyncio
+    async def test_serializes_llm_calls_when_concurrency_is_one(self):
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            enter_count = 0
+            max_inflight = 0
+            inflight = 0
+
+            class _FakeClient:
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, exc_type, exc, tb):
+                    return False
+
+                async def post(self, *args, **kwargs):
+                    nonlocal enter_count, inflight, max_inflight
+                    enter_count += 1
+                    inflight += 1
+                    max_inflight = max(max_inflight, inflight)
+                    await asyncio.sleep(0)
+                    inflight -= 1
+                    response = MagicMock()
+                    response.status_code = 200
+                    response.raise_for_status = MagicMock()
+                    response.headers = {}
+                    response.json.return_value = {
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": json.dumps({
+                                        "result_correctness": "pass",
+                                        "question_alignment": "pass",
+                                        "reasoning": "serialized",
+                                        "confidence": 0.9,
+                                    })
+                                }
+                            }
+                        ]
+                    }
+                    return response
+
+            mock_client_cls.return_value = _FakeClient()
+
+            client = LLMEvaluationClient(
+                base_url="https://fake.api/v1",
+                api_key="fake-key",
+                model="test-model",
+                timeout_seconds=10,
+                temperature=0.1,
+                max_retries=0,
+                max_concurrency=1,
+            )
+
+            await asyncio.gather(
+                client.evaluate(
+                    question="q1", expected_cypher="", expected_answer={},
+                    actual_cypher="", actual_result={}, rule_based_verdict="fail",
+                    rule_based_dimensions={},
+                ),
+                client.evaluate(
+                    question="q2", expected_cypher="", expected_answer={},
+                    actual_cypher="", actual_result={}, rule_based_verdict="fail",
+                    rule_based_dimensions={},
+                ),
+            )
+
+        assert enter_count == 2
+        assert max_inflight == 1
 
 
 class TestLLMReEvaluate:
@@ -340,22 +517,19 @@ class TestLLMReEvaluate:
         assert len([e for e in result.evidence if "[LLM override]" in e]) == 1
 
     @pytest.mark.asyncio
-    async def test_llm_returns_none_keeps_original(self):
+    async def test_llm_failure_bubbles_up(self):
         evaluation = _make_evaluation("fail", result_correctness="fail", question_alignment="fail")
-        self.llm_client.evaluate.return_value = None
+        self.llm_client.evaluate.side_effect = RuntimeError("glm unavailable")
 
-        result = await self.svc._llm_re_evaluate(
-            evaluation=evaluation,
-            question="test",
-            expected_cypher="c1",
-            expected_answer=[],
-            actual_cypher="c2",
-            execution=TuGraphExecutionResult(success=True, rows=[], row_count=0),
-        )
-
-        assert result.dimensions.result_correctness == "fail"
-        assert result.dimensions.question_alignment == "fail"
-        assert result.verdict == "fail"
+        with pytest.raises(RuntimeError, match="glm unavailable"):
+            await self.svc._llm_re_evaluate(
+                evaluation=evaluation,
+                question="test",
+                expected_cypher="c1",
+                expected_answer=[],
+                actual_cypher="c2",
+                execution=TuGraphExecutionResult(success=True, rows=[], row_count=0),
+            )
 
 
 class TestEvaluateReadyPairWithLLM:
@@ -464,17 +638,11 @@ class TestEvaluateReadyPairWithLLM:
         assert result.status == "issue_ticket_created"
 
     @pytest.mark.asyncio
-    async def test_repair_timeout_does_not_fail_evaluation_request(self):
+    async def test_repair_timeout_bubbles_up_instead_of_returning_fake_success(self):
         self.golden["golden_answer_json"] = json.dumps([{"name": "router-999"}])
         self.repo.get_golden.return_value = self.golden
         self.repo.get_submission.return_value = self.submission
         self.repo.save_issue_ticket = MagicMock()
-        self.repo.get_submission_attempt.return_value = {
-            **self.submission,
-            "attempt_no": 1,
-            "issue_ticket_id": "ticket-test-001-attempt-1",
-            "status": "issue_ticket_created",
-        }
         self.llm_client.evaluate.return_value = {
             "result_correctness": "fail",
             "question_alignment": "fail",
@@ -483,10 +651,9 @@ class TestEvaluateReadyPairWithLLM:
         }
         self.repair_client.submit_issue_ticket.side_effect = TimeoutError("krss timeout")
 
-        result = await self.svc._evaluate_ready_pair("test-001")
+        with pytest.raises(TimeoutError, match="krss timeout"):
+            await self.svc._evaluate_ready_pair("test-001")
 
-        assert result.status == "issue_ticket_created"
-        assert result.issue_ticket_id == "ticket-test-001-attempt-1"
         self.repo.save_submission_krss_response.assert_not_called()
 
 
@@ -603,7 +770,7 @@ class TestRepairServiceClientContract:
 
 class TestRuleBasedEvaluation:
     def test_pass_all_dimensions(self, execution_success):
-        from shared.evaluation import evaluate_submission
+        from contracts.evaluation import evaluate_submission
 
         result = evaluate_submission(
             question="查看所有设备",
@@ -620,7 +787,7 @@ class TestRuleBasedEvaluation:
         assert result.dimensions.result_correctness == "pass"
 
     def test_result_mismatch(self, execution_success):
-        from shared.evaluation import evaluate_submission
+        from contracts.evaluation import evaluate_submission
 
         result = evaluate_submission(
             question="查看所有设备",
@@ -635,7 +802,7 @@ class TestRuleBasedEvaluation:
         assert result.verdict != "pass"
 
     def test_syntax_error(self, execution_fail):
-        from shared.evaluation import evaluate_submission
+        from contracts.evaluation import evaluate_submission
 
         result = evaluate_submission(
             question="查看所有设备",
@@ -650,7 +817,7 @@ class TestRuleBasedEvaluation:
         assert result.verdict == "fail"
 
     def test_schema_alignment_invalid_label(self):
-        from shared.evaluation import evaluate_submission
+        from contracts.evaluation import evaluate_submission
 
         execution = TuGraphExecutionResult(
             success=True, rows=[], row_count=0, error_message=None, elapsed_ms=10

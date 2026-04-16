@@ -5,15 +5,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from shared.models import (
+from contracts.models import (
     EvaluationDimensions,
     EvaluationSummary,
     KRSSIssueTicketResponse,
     KnowledgeRepairSuggestionRequest,
     TuGraphExecutionResult,
 )
-from services.testing_service.app.clients import RepairServiceClient
-from services.testing_service.app.service import EvaluationService
+from services.testing_agent.app.clients import RepairServiceClient
+from services.testing_agent.app.service import EvaluationService
 
 
 @pytest.mark.asyncio
@@ -57,7 +57,7 @@ async def test_issue_ticket_id_is_stable_for_same_qa_id():
         "input_prompt_snapshot": "PROMPT",
     }
 
-    with patch("services.testing_service.app.service.evaluate_submission") as eval_fn:
+    with patch("services.testing_agent.app.service.evaluate_submission") as eval_fn:
         eval_fn.return_value = EvaluationSummary(
             verdict="fail",
             dimensions=EvaluationDimensions(

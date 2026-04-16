@@ -1,6 +1,14 @@
 # Text2Cypher 闭环系统
 
-一个围绕 `id` 串联的自然语言问答闭环系统，当前包含四项核心能力：
+一个围绕 `id` 串联的自然语言问答闭环系统。仓库现已按“单仓内独立服务工程”重组，核心目录如下：
+
+- `services/query_generator_agent/`
+- `services/testing_agent/`
+- `services/repair_agent/`
+- `console/runtime_console/`
+- `contracts/`
+
+当前包含四项核心能力：
 
 1. `Cypher Generation Service`（Cypher 生成服务，端口 `8000`）
    - 接收 `id + question`
@@ -23,7 +31,7 @@
    - 完成评测并在失败时产出问题单
 
 当前 Cypher 生成服务的正式职责定义以
-[Cypher_Generation_Service_Design.md](/Users/mangowmac/Desktop/code/NL2Cypher/docs/Cypher_Generation_Service_Design.md)
+[Cypher_Generation_Service_Design.md](/Users/mangowmac/Desktop/code/NL2Cypher/services/query_generator_agent/docs/Cypher_Generation_Service_Design.md)
 为准。
 
 ## 快速开始
@@ -172,5 +180,5 @@ curl http://localhost:8003/api/v1/issues/{ticket_id}
 - 生成服务输出的是“生成阶段处理状态”，不是最终业务评测结果。
 - 根因分析依赖 `id + input_prompt_snapshot + raw_output_snapshot`，这些字段不得删除。
 - 若文档与
-  [Cypher_Generation_Service_Design.md](/Users/mangowmac/Desktop/code/NL2Cypher/docs/Cypher_Generation_Service_Design.md)
+  [Cypher_Generation_Service_Design.md](/Users/mangowmac/Desktop/code/NL2Cypher/services/query_generator_agent/docs/Cypher_Generation_Service_Design.md)
   冲突，以该设计文档为准。

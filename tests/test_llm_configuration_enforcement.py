@@ -6,15 +6,14 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pydantic import ValidationError
 
-from services.query_generator_service.app.clients import (
-    HeuristicCypherGenerator,
+from services.query_generator_agent.app.clients import (
     OpenAICompatibleCypherGenerator,
     QwenGeneratorClient,
 )
-from services.query_generator_service.app.config import Settings as QueryGeneratorSettings
-from services.repair_service.app.config import Settings as RepairServiceSettings
-from services.testing_service.app.clients import LLMEvaluationClient
-from services.testing_service.app.config import Settings as TestingServiceSettings
+from services.query_generator_agent.app.config import Settings as QueryGeneratorSettings
+from services.repair_agent.app.config import Settings as RepairServiceSettings
+from services.testing_agent.app.clients import LLMEvaluationClient
+from services.testing_agent.app.config import Settings as TestingServiceSettings
 
 
 def test_query_generator_requires_complete_llm_configuration(monkeypatch: pytest.MonkeyPatch):
@@ -54,10 +53,7 @@ def test_repair_service_accepts_legacy_model_env_name(monkeypatch: pytest.Monkey
 async def test_query_generator_raises_when_llm_call_fails():
     llm_generator = AsyncMock(spec=OpenAICompatibleCypherGenerator)
     llm_generator.generate_from_prompt.side_effect = RuntimeError("llm offline")
-    client = QwenGeneratorClient(
-        heuristic_generator=HeuristicCypherGenerator(model_name="heuristic"),
-        llm_generator=llm_generator,
-    )
+    client = QwenGeneratorClient(llm_generator=llm_generator)
 
     with pytest.raises(RuntimeError, match="llm offline"):
         await client.generate_from_prompt(

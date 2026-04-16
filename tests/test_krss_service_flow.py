@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 from fastapi.testclient import TestClient
 import pytest
 
-from shared.models import (
+from contracts.models import (
     ActualAnswer,
     EvaluationDimensions,
     EvaluationSummary,
@@ -17,52 +17,44 @@ from shared.models import (
     PromptSnapshotResponse,
     TuGraphExecutionResult,
 )
-from services.repair_service.app.analysis import KRSSAnalyzer
-from services.repair_service.app.main import app
-from services.repair_service.app.service import RepairService
+from services.repair_agent.app.analysis import KRSSAnalyzer
+from services.repair_agent.app.main import app
+from services.repair_agent.app.service import RepairService
 
 
 class _DeterministicKRSSDiagnosisClient:
-    async def diagnose(self, ticket: IssueTicket, prompt_snapshot: str) -> dict[str, object]:
-        del prompt_snapshot
+    async def diagnose(self, context: dict[str, object]) -> dict[str, object]:
+        dimensions = context["evaluation_summary"]["dimensions"]
 
-        dimensions = ticket.evaluation.dimensions
-        if dimensions.syntax_validity == "fail":
+        if dimensions["syntax_validity"] == "fail":
             return {
-                "knowledge_types": ["cypher_syntax", "system_prompt"],
+                "primary_knowledge_type": "cypher_syntax",
+                "secondary_knowledge_types": ["system_prompt"],
                 "confidence": 0.9,
                 "suggestion": "Add Cypher syntax guardrails and a system prompt rule that rejects malformed query patterns.",
                 "rationale": "The failing ticket shows a syntax-validity error, so the weakest link is syntax guidance rather than business context.",
-                "need_experiments": False,
+                "need_validation": False,
                 "candidate_patch_types": [],
             }
 
-        if dimensions.schema_alignment == "fail":
+        if dimensions["question_alignment"] == "fail" or dimensions["result_correctness"] == "fail":
             return {
-                "knowledge_types": ["business_knowledge", "system_prompt"],
-                "confidence": 0.88,
-                "suggestion": "Add business-knowledge constraints and prompt rules that only allow graph-valid labels, relations, and properties.",
-                "rationale": "The generated Cypher violates schema expectations, so KRSS should route a business-knowledge-focused repair suggestion.",
-                "need_experiments": False,
-                "candidate_patch_types": [],
-            }
-
-        if dimensions.question_alignment == "fail" or dimensions.result_correctness == "fail":
-            return {
-                "knowledge_types": ["business_knowledge", "few_shot"],
+                "primary_knowledge_type": "few_shot",
+                "secondary_knowledge_types": ["business_knowledge"],
                 "confidence": 0.85,
-                "suggestion": "Add business-term mapping guidance and a few_shot example that matches the failed question pattern.",
+                "suggestion": "Add a few_shot example that matches the failed question pattern.",
                 "rationale": "The query missed the intended semantics, which usually points to missing business context or missing examples.",
-                "need_experiments": False,
-                "candidate_patch_types": [],
+                "need_validation": True,
+                "candidate_patch_types": ["few_shot", "business_knowledge"],
             }
 
         return {
-            "knowledge_types": ["system_prompt"],
+            "primary_knowledge_type": "system_prompt",
+            "secondary_knowledge_types": [],
             "confidence": 0.8,
             "suggestion": "Tighten the system prompt so future generations preserve the expected question intent and output contract.",
             "rationale": "Fallback deterministic KRSS diagnosis.",
-            "need_experiments": False,
+            "need_validation": False,
             "candidate_patch_types": [],
         }
 
@@ -110,12 +102,22 @@ def test_issue_ticket_flow_fetches_prompt_analyzes_applies_and_returns_krss_resp
         id=ticket.id,
         confidence=0.91,
         rationale="Prompt misses protocol-version mapping guidance",
-        used_experiments=False,
+        used_experiments=True,
+        primary_knowledge_type="few_shot",
+        secondary_knowledge_types=["business_knowledge"],
+        candidate_patch_types=["few_shot", "business_knowledge"],
+        validation_mode="lightweight",
+        validation_result={
+            "validated_patch_types": ["few_shot"],
+            "rejected_patch_types": ["business_knowledge"],
+            "validation_reasoning": ["few_shot best explains the mismatch"],
+        },
+        diagnosis_context_summary={"failure_diff": {"entity_or_relation_problem": True}},
         to_request=MagicMock(
             return_value=KnowledgeRepairSuggestionRequest(
                 id=ticket.id,
-                suggestion="Add business mapping and a matching few_shot example",
-                knowledge_types=["business_knowledge", "few_shot"],
+                suggestion="Add a few_shot example that matches the failed question pattern.",
+                knowledge_types=["few_shot"],
             )
         ),
     )
@@ -129,15 +131,15 @@ def test_issue_ticket_flow_fetches_prompt_analyzes_applies_and_returns_krss_resp
             id=ticket.id,
             knowledge_repair_request=KnowledgeRepairSuggestionRequest(
                 id=ticket.id,
-                suggestion="Add business mapping and a matching few_shot example",
-                knowledge_types=["business_knowledge", "few_shot"],
+                suggestion="Add a few_shot example that matches the failed question pattern.",
+                knowledge_types=["few_shot"],
             ),
             applied=True,
         )
     )
     service.get_analysis.return_value = None
 
-    monkeypatch.setattr("services.repair_service.app.main.get_repair_service", lambda: service)
+    monkeypatch.setattr("services.repair_agent.app.main.get_repair_service", lambda: service)
 
     with TestClient(app) as client:
         response = client.post("/api/v1/issue-tickets", json=ticket.model_dump(mode="json"))
@@ -146,12 +148,12 @@ def test_issue_ticket_flow_fetches_prompt_analyzes_applies_and_returns_krss_resp
     assert response.json() == {
         "status": "applied",
         "analysis_id": "analysis-q-001",
-        "id": "q-001",
-        "knowledge_repair_request": {
             "id": "q-001",
-            "suggestion": "Add business mapping and a matching few_shot example",
-            "knowledge_types": ["business_knowledge", "few_shot"],
-        },
+            "knowledge_repair_request": {
+                "id": "q-001",
+                "suggestion": "Add a few_shot example that matches the failed question pattern.",
+                "knowledge_types": ["few_shot"],
+            },
         "knowledge_ops_response": None,
         "applied": True,
     }
@@ -169,11 +171,21 @@ async def test_repair_service_orchestrates_krss_apply_flow():
     analysis_result.id = ticket.id
     analysis_result.confidence = 0.91
     analysis_result.rationale = "Prompt misses protocol-version mapping guidance"
-    analysis_result.used_experiments = False
+    analysis_result.used_experiments = True
+    analysis_result.primary_knowledge_type = "few_shot"
+    analysis_result.secondary_knowledge_types = ["business_knowledge"]
+    analysis_result.candidate_patch_types = ["few_shot", "business_knowledge"]
+    analysis_result.validation_mode = "lightweight"
+    analysis_result.validation_result = {
+        "validated_patch_types": ["few_shot"],
+        "rejected_patch_types": ["business_knowledge"],
+        "validation_reasoning": ["few_shot best explains the mismatch"],
+    }
+    analysis_result.diagnosis_context_summary = {"failure_diff": {"entity_or_relation_problem": True}}
     analysis_result.to_request.return_value = KnowledgeRepairSuggestionRequest(
         id=ticket.id,
-        suggestion="Add business mapping and a matching few_shot example",
-        knowledge_types=["business_knowledge", "few_shot"],
+        suggestion="Add a few_shot example that matches the failed question pattern.",
+        knowledge_types=["few_shot"],
     )
     analyzer = AsyncMock()
     analyzer.analyze.return_value = analysis_result
@@ -196,8 +208,8 @@ async def test_repair_service_orchestrates_krss_apply_flow():
     apply_client.apply.assert_awaited_once_with(
         KnowledgeRepairSuggestionRequest(
             id=ticket.id,
-            suggestion="Add business mapping and a matching few_shot example",
-            knowledge_types=["business_knowledge", "few_shot"],
+            suggestion="Add a few_shot example that matches the failed question pattern.",
+            knowledge_types=["few_shot"],
         )
     )
     repository.save_analysis.assert_called_once()
@@ -207,8 +219,8 @@ async def test_repair_service_orchestrates_krss_apply_flow():
         id=ticket.id,
         knowledge_repair_request=KnowledgeRepairSuggestionRequest(
             id=ticket.id,
-            suggestion="Add business mapping and a matching few_shot example",
-            knowledge_types=["business_knowledge", "few_shot"],
+            suggestion="Add a few_shot example that matches the failed question pattern.",
+            knowledge_types=["few_shot"],
         ),
         knowledge_ops_response={"ok": True},
         applied=True,
@@ -233,6 +245,12 @@ async def test_repair_service_is_idempotent_when_analysis_exists():
         confidence=0.9,
         rationale="cached",
         used_experiments=False,
+        primary_knowledge_type="system_prompt",
+        secondary_knowledge_types=[],
+        candidate_patch_types=[],
+        validation_mode="disabled",
+        validation_result={"validated_patch_types": [], "rejected_patch_types": []},
+        diagnosis_context_summary={},
         applied=True,
         created_at="2026-01-01T00:00:00Z",
         applied_at="2026-01-01T00:00:00Z",
@@ -299,11 +317,21 @@ async def test_repair_service_uses_ticket_scoped_analysis_id_uniqueness():
     analysis_result.id = first_ticket.id
     analysis_result.confidence = 0.91
     analysis_result.rationale = "Prompt misses protocol-version mapping guidance"
-    analysis_result.used_experiments = False
+    analysis_result.used_experiments = True
+    analysis_result.primary_knowledge_type = "few_shot"
+    analysis_result.secondary_knowledge_types = ["business_knowledge"]
+    analysis_result.candidate_patch_types = ["few_shot", "business_knowledge"]
+    analysis_result.validation_mode = "lightweight"
+    analysis_result.validation_result = {
+        "validated_patch_types": ["few_shot"],
+        "rejected_patch_types": ["business_knowledge"],
+        "validation_reasoning": ["few_shot best explains the mismatch"],
+    }
+    analysis_result.diagnosis_context_summary = {"failure_diff": {"entity_or_relation_problem": True}}
     analysis_result.to_request.return_value = KnowledgeRepairSuggestionRequest(
         id=first_ticket.id,
-        suggestion="Add business mapping and a matching few_shot example",
-        knowledge_types=["business_knowledge", "few_shot"],
+        suggestion="Add a few_shot example that matches the failed question pattern.",
+        knowledge_types=["few_shot"],
     )
     analyzer = AsyncMock()
     analyzer.analyze.return_value = analysis_result
@@ -336,12 +364,18 @@ def test_get_krss_analysis_endpoint_returns_record(monkeypatch):
         prompt_snapshot="Original CGS prompt snapshot",
         knowledge_repair_request=KnowledgeRepairSuggestionRequest(
             id="q-001",
-            suggestion="Add business mapping and a matching few_shot example",
-            knowledge_types=["business_knowledge", "few_shot"],
+            suggestion="Add a few_shot example that matches the failed question pattern.",
+            knowledge_types=["few_shot"],
         ),
         confidence=0.91,
         rationale="Prompt misses protocol-version mapping guidance",
-        used_experiments=False,
+        used_experiments=True,
+        primary_knowledge_type="few_shot",
+        secondary_knowledge_types=["business_knowledge"],
+        candidate_patch_types=["few_shot", "business_knowledge"],
+        validation_mode="lightweight",
+        validation_result={"validated_patch_types": ["few_shot"], "rejected_patch_types": ["business_knowledge"]},
+        diagnosis_context_summary={"failure_diff": {"entity_or_relation_problem": True}},
         applied=True,
         created_at="2026-04-13T00:00:00+00:00",
         applied_at="2026-04-13T00:00:01+00:00",
@@ -349,7 +383,7 @@ def test_get_krss_analysis_endpoint_returns_record(monkeypatch):
     service = MagicMock()
     service.create_issue_ticket_response = AsyncMock()
     service.get_analysis.return_value = analysis
-    monkeypatch.setattr("services.repair_service.app.main.get_repair_service", lambda: service)
+    monkeypatch.setattr("services.repair_agent.app.main.get_repair_service", lambda: service)
 
     with TestClient(app) as client:
         response = client.get("/api/v1/krss-analyses/analysis-ticket-001")
@@ -383,8 +417,8 @@ async def test_repair_service_deterministic_diagnosis_uses_formal_contract_types
 
     apply_client.apply.assert_awaited_once()
     request = apply_client.apply.await_args.args[0]
-    assert request.knowledge_types == ["business_knowledge", "few_shot"]
-    assert response.knowledge_repair_request.knowledge_types == ["business_knowledge", "few_shot"]
+    assert request.knowledge_types == ["few_shot"]
+    assert response.knowledge_repair_request.knowledge_types == ["few_shot"]
 
 
 @pytest.mark.asyncio

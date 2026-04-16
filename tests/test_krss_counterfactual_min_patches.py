@@ -4,8 +4,8 @@ from typing import Any, Dict, List
 
 import pytest
 
-from shared.models import ActualAnswer, EvaluationDimensions, EvaluationSummary, ExpectedAnswer, IssueTicket
-from services.repair_service.app.analysis import KRSSAnalyzer
+from contracts.models import ActualAnswer, EvaluationDimensions, EvaluationSummary, ExpectedAnswer, IssueTicket
+from services.repair_agent.app.analysis import KRSSAnalyzer
 
 
 def _make_ticket() -> IssueTicket:
@@ -30,15 +30,15 @@ def _make_ticket() -> IssueTicket:
 
 
 class _LowConfidenceDiagnosisClient:
-    async def diagnose(self, ticket: IssueTicket, prompt_snapshot: str) -> Dict[str, Any]:
-        assert ticket.id == "q-krss-2"
-        assert prompt_snapshot == "PROMPT SNAPSHOT"
+    async def diagnose(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        assert context["question"] == "Show services impacted by protocol BGP on link L1."
         return {
-            "knowledge_types": ["business_knowledge", "few_shot"],
+            "primary_knowledge_type": "business_knowledge",
+            "secondary_knowledge_types": ["few_shot"],
             "confidence": 0.41,
             "suggestion": "Strengthen graph traversal guidance for Link, Protocol, and Service reasoning.",
             "rationale": "The failure could come from several missing knowledge layers.",
-            "need_experiments": True,
+            "need_validation": True,
             "candidate_patch_types": ["business_knowledge", "few_shot"],
         }
 
@@ -47,9 +47,9 @@ class _LowConfidenceDiagnosisClient:
 async def test_krss_analyzer_narrows_knowledge_types_using_minimal_patch_experiments():
     experiment_calls: List[str] = []
 
-    async def experiment_runner(ticket: IssueTicket, prompt_snapshot: str, patch_type: str, diagnosis: Dict[str, Any]) -> Dict[str, Any]:
+    async def experiment_runner(ticket: IssueTicket, context: Dict[str, Any], patch_type: str, diagnosis: Dict[str, Any]) -> Dict[str, Any]:
         assert ticket.id == "q-krss-2"
-        assert prompt_snapshot == "PROMPT SNAPSHOT"
+        assert context["failure_diff"]["entity_or_relation_problem"] is True
         assert diagnosis["confidence"] == 0.41
         experiment_calls.append(patch_type)
         if patch_type == "business_knowledge":
@@ -69,6 +69,11 @@ async def test_krss_analyzer_narrows_knowledge_types_using_minimal_patch_experim
     assert result.id == "q-krss-2"
     assert result.used_experiments is True
     assert result.knowledge_types == ["business_knowledge"]
+    assert result.primary_knowledge_type == "business_knowledge"
+    assert result.secondary_knowledge_types == ["few_shot"]
+    assert result.candidate_patch_types == ["business_knowledge", "few_shot"]
+    assert result.validation_mode == "lightweight"
+    assert result.validation_result["validated_patch_types"] == ["business_knowledge", "few_shot"]
     assert result.suggestion == "Strengthen graph traversal guidance for Link, Protocol, and Service reasoning."
     assert result.confidence == pytest.approx(0.88)
     assert result.rationale == "The failure could come from several missing knowledge layers."
@@ -82,9 +87,9 @@ async def test_krss_analyzer_narrows_knowledge_types_using_minimal_patch_experim
 
 @pytest.mark.asyncio
 async def test_krss_analyzer_prefers_only_the_best_improved_patch_type():
-    async def experiment_runner(ticket: IssueTicket, prompt_snapshot: str, patch_type: str, diagnosis: Dict[str, Any]) -> Dict[str, Any]:
+    async def experiment_runner(ticket: IssueTicket, context: Dict[str, Any], patch_type: str, diagnosis: Dict[str, Any]) -> Dict[str, Any]:
         assert ticket.id == "q-krss-2"
-        assert prompt_snapshot == "PROMPT SNAPSHOT"
+        assert context["question"] == "Show services impacted by protocol BGP on link L1."
         assert diagnosis["confidence"] == 0.41
         if patch_type == "few_shot":
             return {"improved": True, "confidence": 0.89}
@@ -101,3 +106,5 @@ async def test_krss_analyzer_prefers_only_the_best_improved_patch_type():
     assert result.used_experiments is True
     assert result.knowledge_types == ["few_shot"]
     assert result.confidence == pytest.approx(0.89)
+    assert result.validation_result["validated_patch_types"] == ["few_shot"]
+    assert result.validation_result["rejected_patch_types"] == ["business_knowledge"]

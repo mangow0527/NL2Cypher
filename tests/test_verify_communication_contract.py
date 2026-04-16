@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from shared.models import EvaluationSubmissionRequest
+from contracts.models import EvaluationSubmissionRequest
 from verify_communication import ServiceCommunicationTester
 
 

@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
 
-from shared.models import (
+from contracts.models import (
     ActualAnswer,
     EvaluationDimensions,
     EvaluationSubmissionRequest,
@@ -25,7 +25,7 @@ def test_runtime_results_center_html_exposes_task_list_and_cypher_quality(monkey
     monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(tmp_path / "testing"))
     monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_REPAIR_DATA_DIR", str(tmp_path / "repair"))
 
-    from services.runtime_results_service.app.main import create_app
+    from console.runtime_console.app.main import create_app
 
     client = TestClient(create_app())
 
@@ -35,6 +35,7 @@ def test_runtime_results_center_html_exposes_task_list_and_cypher_quality(monkey
     assert "运行结果中心" in response.text
     assert "Runtime Results Center" in response.text
     assert "Cypher 结果与质量" in response.text
+    assert "KRSS 诊断摘要" in response.text
     assert "任务列表" in response.text
     assert "服务运行状态" in response.text
     assert "开始联调" not in response.text
@@ -45,8 +46,8 @@ def test_runtime_results_service_status_endpoint_returns_five_service_cards(monk
     monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(tmp_path / "testing"))
     monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_REPAIR_DATA_DIR", str(tmp_path / "repair"))
 
-    from services.runtime_results_service.app.main import create_app
-    from services.runtime_results_service.app.service import RuntimeResultsService
+    from console.runtime_console.app.main import create_app
+    from console.runtime_console.app.service import RuntimeResultsService
 
     mock_cards = [
         {"service_key": "cgs", "label_zh": "查询生成服务", "status": "online"},
@@ -85,8 +86,8 @@ def test_runtime_results_tasks_only_include_qa_generator_items(monkeypatch, tmp_
     monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(testing_dir))
     monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_REPAIR_DATA_DIR", str(repair_dir))
 
-    from services.query_generator_service.app.repository import QueryGeneratorRepository
-    from services.runtime_results_service.app.main import create_app
+    from services.query_generator_agent.app.repository import QueryGeneratorRepository
+    from console.runtime_console.app.main import create_app
 
     query_repository = QueryGeneratorRepository(str(query_dir))
     query_repository.upsert_question(id="qa_old", question="旧问题", status="generated")
@@ -139,10 +140,10 @@ def test_runtime_results_task_detail_aggregates_cypher_quality_and_repair_trace(
     monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(testing_dir))
     monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_REPAIR_DATA_DIR", str(repair_dir))
 
-    from services.query_generator_service.app.repository import QueryGeneratorRepository
-    from services.repair_service.app.repository import RepairRepository
-    from services.runtime_results_service.app.main import create_app
-    from services.testing_service.app.repository import TestingRepository
+    from services.query_generator_agent.app.repository import QueryGeneratorRepository
+    from services.repair_agent.app.repository import RepairRepository
+    from console.runtime_console.app.main import create_app
+    from services.testing_agent.app.repository import TestingRepository
 
     query_repository = QueryGeneratorRepository(str(query_dir))
     testing_repository = TestingRepository(str(testing_dir))
@@ -326,7 +327,17 @@ def test_runtime_results_task_detail_aggregates_cypher_quality_and_repair_trace(
             knowledge_ops_response={"status": "ok"},
             confidence=0.92,
             rationale="The failure points to missing ranking-specific examples.",
-            used_experiments=False,
+            used_experiments=True,
+            primary_knowledge_type="few_shot",
+            secondary_knowledge_types=["business_knowledge"],
+            candidate_patch_types=["few_shot", "business_knowledge"],
+            validation_mode="lightweight",
+            validation_result={
+                "validated_patch_types": ["few_shot"],
+                "rejected_patch_types": ["business_knowledge"],
+                "validation_reasoning": ["few_shot best explains the top-N ranking mismatch"],
+            },
+            diagnosis_context_summary={"failure_diff": {"return_shape_problem": True, "limit_problem": True}},
             applied=True,
             created_at="2026-04-14T10:18:10.108360+00:00",
             applied_at="2026-04-14T10:18:10.108387+00:00",
@@ -351,6 +362,9 @@ def test_runtime_results_task_detail_aggregates_cypher_quality_and_repair_trace(
     assert payload["improvement_assessment"]["status"] == "improved"
     assert payload["improvement_assessment"]["previous_attempt_no"] == 1
     assert payload["artifacts"]["repair"]["analysis"]["analysis_id"] == "analysis-ticket-qa_fiber_001"
+    assert payload["artifacts"]["repair"]["analysis"]["primary_knowledge_type"] == "few_shot"
+    assert payload["artifacts"]["repair"]["analysis"]["validation_mode"] == "lightweight"
+    assert payload["artifacts"]["repair"]["analysis"]["validation_result"]["validated_patch_types"] == ["few_shot"]
 
 
 def test_runtime_results_prefers_latest_attempt_artifacts_when_question_points_to_newer_attempt(monkeypatch, tmp_path: Path):
@@ -361,9 +375,9 @@ def test_runtime_results_prefers_latest_attempt_artifacts_when_question_points_t
     monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(testing_dir))
     monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_REPAIR_DATA_DIR", str(repair_dir))
 
-    from services.query_generator_service.app.repository import QueryGeneratorRepository
-    from services.runtime_results_service.app.main import create_app
-    from services.testing_service.app.repository import TestingRepository
+    from services.query_generator_agent.app.repository import QueryGeneratorRepository
+    from console.runtime_console.app.main import create_app
+    from services.testing_agent.app.repository import TestingRepository
 
     query_repository = QueryGeneratorRepository(str(query_dir))
     testing_repository = TestingRepository(str(testing_dir))

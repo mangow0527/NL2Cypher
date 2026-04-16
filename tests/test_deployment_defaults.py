@@ -1,10 +1,10 @@
 import unittest
 from unittest.mock import patch
 
-from services.query_generator_service.app.config import Settings as QueryGeneratorSettings
-from services.repair_service.app.config import Settings as RepairServiceSettings
-from services.runtime_results_service.app.config import Settings as RuntimeResultsSettings
-from services.testing_service.app.config import Settings as TestingServiceSettings
+from services.query_generator_agent.app.config import Settings as QueryGeneratorSettings
+from services.repair_agent.app.config import Settings as RepairServiceSettings
+from console.runtime_console.app.config import Settings as RuntimeResultsSettings
+from services.testing_agent.app.config import Settings as TestingServiceSettings
 
 
 class DeploymentDefaultsTest(unittest.TestCase):

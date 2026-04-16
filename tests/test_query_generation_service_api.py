@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 from fastapi.testclient import TestClient
 
-from services.query_generator_service.app.main import app
+from services.query_generator_agent.app.main import app
 
 
 client = TestClient(app)
@@ -16,7 +16,7 @@ def test_get_prompt_snapshot_endpoint_returns_prompt(monkeypatch):
         "id": task_id,
         "input_prompt_snapshot": "请返回一个合法 Cypher",
     }
-    monkeypatch.setattr("services.query_generator_service.app.main.get_workflow_service", lambda: service)
+    monkeypatch.setattr("services.query_generator_agent.app.main.get_workflow_service", lambda: service)
 
     response = client.get("/api/v1/questions/qa-010/prompt")
 
@@ -31,7 +31,7 @@ def test_get_prompt_snapshot_endpoint_returns_prompt(monkeypatch):
 def test_get_prompt_snapshot_endpoint_returns_404_when_missing(monkeypatch):
     service = MagicMock()
     service.get_prompt_snapshot.side_effect = lambda task_id: None
-    monkeypatch.setattr("services.query_generator_service.app.main.get_workflow_service", lambda: service)
+    monkeypatch.setattr("services.query_generator_agent.app.main.get_workflow_service", lambda: service)
 
     response = client.get("/api/v1/questions/qa-missing/prompt")
 
