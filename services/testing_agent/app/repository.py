@@ -44,15 +44,19 @@ class TestingRepository:
         }
         path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def save_submission(self, request: EvaluationSubmissionRequest, status: str) -> None:
+    def save_submission(self, request: EvaluationSubmissionRequest, status: str) -> bool:
         path = self._submissions_dir / f"{request.id}.json"
         now = _utc_now()
-        if path.exists():
+        existing = self.get_submission_attempt(request.id, request.attempt_no)
+        if existing is None and path.exists():
             existing = json.loads(path.read_text(encoding="utf-8"))
+        if existing is not None:
             if (
                 existing["generation_run_id"] == request.generation_run_id
-                and existing.get("attempt_no") == request.attempt_no
+                and int(existing.get("attempt_no") or 1) == request.attempt_no
             ):
+                if self._submission_payload_matches(existing, request):
+                    return False
                 raise ValueError(f"Submission conflict for id={request.id}")
         self._archive_legacy_latest_submission(request.id)
         record = {
@@ -76,6 +80,7 @@ class TestingRepository:
         path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
         attempt_path = self._attempt_submissions_dir / f"{request.id}__attempt_{request.attempt_no}.json"
         attempt_path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+        return True
 
     def save_submission_execution(self, id: str, execution_json: str, *, attempt_no: int | None = None) -> None:
         self._update_submission_record(
@@ -299,6 +304,23 @@ class TestingRepository:
             return
         existing["attempt_no"] = attempt_no
         attempt_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _submission_payload_matches(
+        self,
+        existing: Dict[str, Any],
+        request: EvaluationSubmissionRequest,
+    ) -> bool:
+        return (
+            existing.get("id") == request.id
+            and existing.get("question") == request.question
+            and existing.get("generation_run_id") == request.generation_run_id
+            and int(existing.get("attempt_no") or 1) == request.attempt_no
+            and existing.get("generated_cypher") == request.generated_cypher
+            and existing.get("parse_summary") == request.parse_summary
+            and existing.get("guardrail_summary") == request.guardrail_summary
+            and existing.get("raw_output_snapshot") == request.raw_output_snapshot
+            and existing.get("input_prompt_snapshot") == request.input_prompt_snapshot
+        )
 
 
 def _utc_now() -> str:

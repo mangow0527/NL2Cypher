@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import time
 from typing import Dict, Optional
@@ -164,11 +163,13 @@ class PromptServiceClient:
                     "elapsed_ms": elapsed_ms,
                 },
             )
-            headers = getattr(response, "headers", {}) or {}
-            content_type = str(headers.get("content-type", "")).lower()
-            if "application/json" in content_type:
-                raise ValueError("prompt-package contract violation: expected plain text prompt string, got JSON response")
-            return response.text.strip()
+            content_type = response.headers.get("content-type", "")
+            if "application/json" in content_type.lower():
+                raise ValueError("prompt-package contract violation: expected text/plain prompt package response")
+            prompt = response.text.strip()
+            if not prompt:
+                raise ValueError("prompt-package contract violation: empty prompt package response")
+            return prompt
 
 
 class TestingServiceClient:

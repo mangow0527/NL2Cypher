@@ -7,6 +7,7 @@ import pytest
 
 from contracts.models import (
     EvaluationDimensions,
+    EvaluationSubmissionRequest,
     EvaluationSummary,
     KRSSIssueTicketResponse,
     KnowledgeRepairSuggestionRequest,
@@ -74,3 +75,53 @@ async def test_issue_ticket_id_is_stable_for_same_qa_id():
 
     sent_ticket = repair_client.submit_issue_ticket.await_args.args[0]
     assert sent_ticket.ticket_id == "ticket-qa-123-attempt-2"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_submission_reuses_existing_issue_ticket_without_re_evaluating():
+    repo = MagicMock()
+    repair_client = AsyncMock(spec=RepairServiceClient)
+    tugraph_client = AsyncMock()
+
+    repo.get_golden.return_value = {
+        "id": "qa-dup",
+        "golden_cypher": "MATCH (n) RETURN n",
+        "golden_answer_json": json.dumps([]),
+        "difficulty": "L3",
+    }
+    repo.save_submission.return_value = False
+    repo.get_submission_attempt.return_value = {
+        "id": "qa-dup",
+        "attempt_no": 1,
+        "status": "issue_ticket_created",
+        "issue_ticket_id": "ticket-qa-dup-attempt-1",
+    }
+    repo.get_issue_ticket.return_value = type(
+        "Ticket",
+        (),
+        {
+            "evaluation": type("Eval", (), {"verdict": "partial_fail"})(),
+        },
+    )()
+
+    svc = EvaluationService(repository=repo, repair_client=repair_client, tugraph_client=tugraph_client, llm_client=None)
+
+    result = await svc.ingest_submission(
+        EvaluationSubmissionRequest(
+            id="qa-dup",
+            question="重复提交",
+            generation_run_id="run-001",
+            attempt_no=1,
+            generated_cypher="MATCH (n) RETURN n",
+            parse_summary="parsed",
+            guardrail_summary="accepted",
+            raw_output_snapshot="MATCH (n) RETURN n",
+            input_prompt_snapshot="PROMPT",
+        )
+    )
+
+    assert result.status == "issue_ticket_created"
+    assert result.issue_ticket_id == "ticket-qa-dup-attempt-1"
+    assert result.verdict == "partial_fail"
+    tugraph_client.execute.assert_not_awaited()
+    repair_client.submit_issue_ticket.assert_not_awaited()

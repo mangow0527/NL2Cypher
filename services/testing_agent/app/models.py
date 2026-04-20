@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 Difficulty = Literal["L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8"]
 DimensionStatus = Literal["pass", "fail"]
+DimensionVerdict = Literal["pass", "partial", "fail"]
 Verdict = Literal["pass", "fail", "partial_fail"]
 RootCauseType = Literal[
     "generator_logic_issue",
@@ -137,9 +138,58 @@ class EvaluationDimensions(BaseModel):
     question_alignment: DimensionStatus
 
 
+class SyntaxValidityMetrics(BaseModel):
+    score: float = Field(default=0.0, ge=0.0, le=1.0)
+    verdict: DimensionVerdict = "fail"
+    parse_success: bool = False
+    execution_success: bool = False
+    evidence: List[str] = Field(default_factory=list)
+
+
+class SchemaAlignmentMetrics(BaseModel):
+    score: float = Field(default=0.0, ge=0.0, le=1.0)
+    verdict: DimensionVerdict = "fail"
+    label_match_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    relation_match_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    property_match_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    evidence: List[str] = Field(default_factory=list)
+
+
+class ResultCorrectnessMetrics(BaseModel):
+    score: float = Field(default=0.0, ge=0.0, le=1.0)
+    verdict: DimensionVerdict = "fail"
+    execution_match_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    result_set_precision: float = Field(default=0.0, ge=0.0, le=1.0)
+    result_set_recall: float = Field(default=0.0, ge=0.0, le=1.0)
+    result_set_f1: float = Field(default=0.0, ge=0.0, le=1.0)
+    order_sensitive: bool = False
+    evidence: List[str] = Field(default_factory=list)
+
+
+class QuestionAlignmentMetrics(BaseModel):
+    score: float = Field(default=0.0, ge=0.0, le=1.0)
+    verdict: DimensionVerdict = "fail"
+    entity_match_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    relation_path_match_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    filter_match_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    aggregation_match_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    projection_match_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    ordering_limit_match_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    evidence: List[str] = Field(default_factory=list)
+
+
+class EvaluationMetrics(BaseModel):
+    syntax_validity: SyntaxValidityMetrics = Field(default_factory=SyntaxValidityMetrics)
+    schema_alignment: SchemaAlignmentMetrics = Field(default_factory=SchemaAlignmentMetrics)
+    result_correctness: ResultCorrectnessMetrics = Field(default_factory=ResultCorrectnessMetrics)
+    question_alignment: QuestionAlignmentMetrics = Field(default_factory=QuestionAlignmentMetrics)
+
+
 class EvaluationSummary(BaseModel):
     verdict: Verdict
     dimensions: EvaluationDimensions
+    overall_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    metrics: Optional[EvaluationMetrics] = None
     symptom: str
     evidence: List[str] = Field(default_factory=list)
 

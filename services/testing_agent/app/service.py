@@ -6,7 +6,7 @@ import logging
 from functools import lru_cache
 from typing import Any, Dict, Optional
 
-from .evaluation import evaluate_submission
+from .evaluation import calculate_overall_score, evaluate_submission
 from .models import (
     ActualAnswer,
     ImprovementAssessment,
@@ -65,9 +65,21 @@ class EvaluationService:
     async def ingest_submission(self, request: EvaluationSubmissionRequest) -> EvaluationSubmissionResponse:
         golden = self.repository.get_golden(request.id)
         status = "ready_to_evaluate" if golden else "waiting_for_golden"
-        self.repository.save_submission(request, status=status)
+        created = self.repository.save_submission(request, status=status)
         if golden is None:
             return EvaluationSubmissionResponse(id=request.id, status="waiting_for_golden")
+        if not created:
+            existing = self.repository.get_submission_attempt(request.id, request.attempt_no) or self.repository.get_submission(
+                request.id
+            )
+            if existing is not None and existing.get("status") not in {None, "ready_to_evaluate"}:
+                verdict = self._get_submission_verdict(existing)
+                return EvaluationSubmissionResponse(
+                    id=request.id,
+                    status=existing["status"],
+                    issue_ticket_id=existing.get("issue_ticket_id"),
+                    verdict=verdict,
+                )
         return await self._evaluate_ready_pair(request.id)
 
     async def _evaluate_ready_pair(self, id: str) -> EvaluationSubmissionResponse | QAGoldenResponse:
@@ -173,11 +185,13 @@ class EvaluationService:
 
         if llm_result_correctness == "pass" and dimensions.result_correctness == "fail":
             dimensions.result_correctness = "pass"
+            self._mark_result_correctness_pass(evaluation)
             evaluation.evidence.append(f"[LLM override] result_correctness flipped to pass: {reasoning}")
             logger.info("LLM overrode result_correctness to pass (confidence=%.2f)", confidence)
 
         if llm_question_alignment == "pass" and dimensions.question_alignment == "fail":
             dimensions.question_alignment = "pass"
+            self._mark_question_alignment_pass(evaluation)
             evaluation.evidence.append(f"[LLM override] question_alignment flipped to pass: {reasoning}")
             logger.info("LLM overrode question_alignment to pass (confidence=%.2f)", confidence)
 
@@ -196,7 +210,34 @@ class EvaluationService:
         else:
             evaluation.verdict = "partial_fail"
 
+        if evaluation.metrics is not None:
+            evaluation.overall_score = calculate_overall_score(evaluation.metrics)
+
         return evaluation
+
+    def _mark_result_correctness_pass(self, evaluation) -> None:
+        if evaluation.metrics is None:
+            return
+        metrics = evaluation.metrics.result_correctness
+        metrics.score = 1.0
+        metrics.verdict = "pass"
+        metrics.execution_match_score = 1.0
+        metrics.result_set_precision = 1.0
+        metrics.result_set_recall = 1.0
+        metrics.result_set_f1 = 1.0
+
+    def _mark_question_alignment_pass(self, evaluation) -> None:
+        if evaluation.metrics is None:
+            return
+        metrics = evaluation.metrics.question_alignment
+        metrics.score = 1.0
+        metrics.verdict = "pass"
+        metrics.entity_match_score = 1.0
+        metrics.relation_path_match_score = 1.0
+        metrics.filter_match_score = 1.0
+        metrics.aggregation_match_score = 1.0
+        metrics.projection_match_score = 1.0
+        metrics.ordering_limit_match_score = 1.0
 
     def get_evaluation_status(self, id: str) -> Dict[str, object]:
         golden = self.repository.get_golden(id)
@@ -210,6 +251,16 @@ class EvaluationService:
             "submission": submission,
             "attempts": attempts,
         }
+
+    def _get_submission_verdict(self, submission: Dict[str, Any]) -> Optional[str]:
+        issue_ticket_id = submission.get("issue_ticket_id")
+        if issue_ticket_id:
+            ticket = self.repository.get_issue_ticket(str(issue_ticket_id))
+            if ticket is not None:
+                return ticket.evaluation.verdict
+        if submission.get("status") == "passed":
+            return "pass"
+        return None
 
     def get_issue_ticket(self, ticket_id: str) -> Optional[IssueTicket]:
         return self.repository.get_issue_ticket(ticket_id)

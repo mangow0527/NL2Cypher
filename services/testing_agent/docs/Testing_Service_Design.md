@@ -391,7 +391,7 @@ LLM 只允许修正两个维度：
 - `result_correctness`
 - `question_alignment`
 
-如果 LLM 将失败维度翻转为 `pass`，Testing Service 会重新计算最终 verdict。
+如果 LLM 将失败维度翻转为 `pass`，Testing Service 会同步更新对应维度的量化 `metrics`，并重新计算最终 `verdict` 与 `overall_score`。
 
 ### 7.3 关键边界原则
 

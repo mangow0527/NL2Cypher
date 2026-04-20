@@ -15,7 +15,14 @@ from contracts.models import (
     TuGraphExecutionResult,
 )
 from services.testing_agent.app.clients import LLMEvaluationClient, RepairServiceClient
-from services.testing_agent.app.models import KnowledgeRepairSuggestionRequest
+from services.testing_agent.app.models import (
+    EvaluationMetrics,
+    KnowledgeRepairSuggestionRequest,
+    QuestionAlignmentMetrics,
+    ResultCorrectnessMetrics,
+    SchemaAlignmentMetrics,
+    SyntaxValidityMetrics,
+)
 from services.testing_agent.app.service import EvaluationService
 
 
@@ -492,6 +499,40 @@ class TestLLMReEvaluate:
         assert result.dimensions.result_correctness == "pass"
         assert result.dimensions.question_alignment == "pass"
         assert result.verdict == "pass"
+
+    @pytest.mark.asyncio
+    async def test_llm_override_updates_metrics_and_overall_score(self):
+        evaluation = _make_evaluation("partial_fail", result_correctness="fail", question_alignment="fail")
+        evaluation.metrics = EvaluationMetrics(
+            syntax_validity=SyntaxValidityMetrics(score=1.0, verdict="pass", parse_success=True, execution_success=True),
+            schema_alignment=SchemaAlignmentMetrics(score=1.0, verdict="pass", label_match_score=1.0, relation_match_score=1.0, property_match_score=1.0),
+            result_correctness=ResultCorrectnessMetrics(score=0.0, verdict="fail", execution_match_score=0.0, result_set_precision=0.0, result_set_recall=0.0, result_set_f1=0.0),
+            question_alignment=QuestionAlignmentMetrics(score=0.5, verdict="partial", entity_match_score=1.0, relation_path_match_score=1.0, filter_match_score=1.0, aggregation_match_score=1.0, projection_match_score=0.0, ordering_limit_match_score=1.0),
+        )
+        evaluation.overall_score = 0.475
+        self.llm_client.evaluate.return_value = {
+            "result_correctness": "pass",
+            "question_alignment": "pass",
+            "reasoning": "Alias-only mismatch; same graph objects.",
+            "confidence": 0.95,
+        }
+
+        result = await self.svc._llm_re_evaluate(
+            evaluation=evaluation,
+            question="test",
+            expected_cypher="c1",
+            expected_answer=[{"a": 1}],
+            actual_cypher="c2",
+            execution=TuGraphExecutionResult(success=True, rows=[{"t": 1}], row_count=1),
+        )
+
+        assert result.metrics is not None
+        assert result.verdict == "pass"
+        assert result.metrics.result_correctness.score == 1.0
+        assert result.metrics.result_correctness.verdict == "pass"
+        assert result.metrics.question_alignment.score == 1.0
+        assert result.metrics.question_alignment.verdict == "pass"
+        assert result.overall_score == 1.0
 
     @pytest.mark.asyncio
     async def test_llm_cannot_flip_pass_to_fail(self):

@@ -20,6 +20,16 @@ from .clients import (
     TestingServiceClient,
 )
 from .config import Settings, get_settings
+from .prompt_overrides import (
+    build_intent_guided_generation_prompt,
+    build_intent_understanding_prompt,
+    build_manual_prompt_override,
+    build_semantic_parsing_prompt,
+    build_two_stage_generation_prompt,
+    should_bypass_knowledge_ops_prompt,
+    uses_intent_guided_flow,
+    uses_semantic_two_stage_flow,
+)
 from .repository import QueryGeneratorRepository
 
 
@@ -48,6 +58,16 @@ class QueryWorkflowService:
         )
         if prompt_response is not None:
             return self._persist_and_return(request=request, response=prompt_response)
+        prompt_snapshot = generation_prompt
+
+        semantic_response, generation_prompt, prompt_snapshot = await self._prepare_generation_prompt(
+            request=request,
+            generation_run_id=generation_run_id,
+            attempt_no=attempt_no,
+            generation_prompt=generation_prompt,
+        )
+        if semantic_response is not None:
+            return self._persist_and_return(request=request, response=semantic_response)
 
         readiness_response = self._validate_prompt_readiness(
             request=request,
@@ -65,6 +85,7 @@ class QueryWorkflowService:
             generation_run_id=generation_run_id,
             attempt_no=attempt_no,
             generation_prompt=generation_prompt,
+            input_prompt_snapshot=prompt_snapshot,
         )
         if invocation_response is not None:
             return self._persist_and_return(request=request, response=invocation_response)
@@ -74,6 +95,7 @@ class QueryWorkflowService:
             generation_run_id=generation_run_id,
             attempt_no=attempt_no,
             generation_prompt=generation_prompt,
+            input_prompt_snapshot=prompt_snapshot,
             raw_output=raw_output,
         )
         if parsing_response is not None:
@@ -84,6 +106,7 @@ class QueryWorkflowService:
             generation_run_id=generation_run_id,
             attempt_no=attempt_no,
             generation_prompt=generation_prompt,
+            input_prompt_snapshot=prompt_snapshot,
             generated_cypher=generated_cypher,
             parse_summary=parse_summary,
             raw_output=raw_output,
@@ -102,7 +125,7 @@ class QueryWorkflowService:
             raw_output_snapshot=raw_output,
             failure_stage=None,
             failure_reason_summary=None,
-            input_prompt_snapshot=generation_prompt,
+            input_prompt_snapshot=prompt_snapshot,
         )
 
         await self.testing_client.submit(
@@ -115,7 +138,7 @@ class QueryWorkflowService:
                 parse_summary=parse_summary,
                 guardrail_summary=guardrail_summary,
                 raw_output_snapshot=raw_output,
-                input_prompt_snapshot=generation_prompt,
+                input_prompt_snapshot=prompt_snapshot,
             )
         )
 
@@ -128,7 +151,7 @@ class QueryWorkflowService:
             parse_summary=parse_summary,
             guardrail_summary=guardrail_summary,
             raw_output_snapshot=raw_output,
-            input_prompt_snapshot=generation_prompt,
+            input_prompt_snapshot=prompt_snapshot,
         )
         return self._persist_and_return(request=request, response=response)
 
@@ -152,6 +175,11 @@ class QueryWorkflowService:
         generation_run_id: str,
         attempt_no: int,
     ) -> Tuple[QueryQuestionResponse | None, str]:
+        manual_prompt = build_manual_prompt_override(request.id, request.question)
+        if manual_prompt is not None:
+            return None, manual_prompt
+        if should_bypass_knowledge_ops_prompt(request.id):
+            return None, ""
         try:
             prompt = await self.prompt_client.fetch_prompt(id=request.id, question=request.question)
         except Exception as exc:
@@ -197,6 +225,150 @@ class QueryWorkflowService:
             input_prompt_snapshot=generation_prompt,
         )
 
+    async def _prepare_generation_prompt(
+        self,
+        *,
+        request: QAQuestionRequest,
+        generation_run_id: str,
+        attempt_no: int,
+        generation_prompt: str,
+    ) -> Tuple[QueryQuestionResponse | None, str, str]:
+        if uses_intent_guided_flow(request.id):
+            return await self._prepare_intent_guided_prompt(
+                request=request,
+                generation_run_id=generation_run_id,
+                attempt_no=attempt_no,
+            )
+        if not uses_semantic_two_stage_flow(request.id):
+            return None, generation_prompt, generation_prompt
+
+        semantic_prompt = build_semantic_parsing_prompt(request.question)
+        try:
+            semantic_generation = await self.generator_client.generate_from_prompt(
+                task_id=f"{request.id}:semantic_parsing",
+                question_text=request.question,
+                generation_prompt=semantic_prompt,
+            )
+        except Exception as exc:
+            return (
+                self._build_response(
+                    id=request.id,
+                    generation_run_id=generation_run_id,
+                    attempt_no=attempt_no,
+                    generation_status="model_invocation_failed",
+                    generated_cypher="",
+                    parse_summary="semantic_parsing_model_invocation_failed",
+                    guardrail_summary="not_checked",
+                    raw_output_snapshot="",
+                    failure_stage="semantic_parsing_model_invocation",
+                    failure_reason_summary=str(exc),
+                    input_prompt_snapshot=semantic_prompt,
+                ),
+                "",
+                semantic_prompt,
+            )
+
+        semantic_raw_output = semantic_generation.get("raw_output", "")
+        semantic_parse, semantic_parse_summary = _extract_semantic_parse(semantic_raw_output)
+        if semantic_parse is None:
+            return (
+                self._build_response(
+                    id=request.id,
+                    generation_run_id=generation_run_id,
+                    attempt_no=attempt_no,
+                    generation_status="output_parsing_failed",
+                    generated_cypher="",
+                    parse_summary=semantic_parse_summary,
+                    guardrail_summary="not_checked",
+                    raw_output_snapshot=semantic_raw_output,
+                    failure_stage="semantic_parsing_output_parsing",
+                    failure_reason_summary="Unable to parse structured semantic representation from model output.",
+                    input_prompt_snapshot=semantic_prompt,
+                ),
+                "",
+                semantic_prompt,
+            )
+
+        combined_prompt = build_two_stage_generation_prompt(
+            base_generation_prompt=generation_prompt,
+            semantic_parse=semantic_parse,
+            semantic_parse_raw_output=semantic_raw_output,
+        )
+        audit_snapshot = (
+            "【Stage 1 Semantic Parsing Prompt】\n"
+            f"{semantic_prompt}\n\n"
+            "【Stage 1 Structured Semantic Output】\n"
+            f"{json.dumps(semantic_parse, ensure_ascii=False, indent=2)}\n\n"
+            "【Stage 2 Generation Prompt】\n"
+            f"{combined_prompt}"
+        )
+        return None, combined_prompt, audit_snapshot
+
+    async def _prepare_intent_guided_prompt(
+        self,
+        *,
+        request: QAQuestionRequest,
+        generation_run_id: str,
+        attempt_no: int,
+    ) -> Tuple[QueryQuestionResponse | None, str, str]:
+        intent_prompt = build_intent_understanding_prompt(request.question)
+        try:
+            intent_generation = await self.generator_client.generate_from_prompt(
+                task_id=f"{request.id}:intent_understanding",
+                question_text=request.question,
+                generation_prompt=intent_prompt,
+            )
+        except Exception as exc:
+            return (
+                self._build_response(
+                    id=request.id,
+                    generation_run_id=generation_run_id,
+                    attempt_no=attempt_no,
+                    generation_status="model_invocation_failed",
+                    generated_cypher="",
+                    parse_summary="intent_understanding_model_invocation_failed",
+                    guardrail_summary="not_checked",
+                    raw_output_snapshot="",
+                    failure_stage="intent_understanding_model_invocation",
+                    failure_reason_summary=str(exc),
+                    input_prompt_snapshot=intent_prompt,
+                ),
+                "",
+                intent_prompt,
+            )
+
+        intent_raw_output = intent_generation.get("raw_output", "")
+        intent_parse, intent_summary = _extract_intent_understanding(intent_raw_output)
+        if intent_parse is None:
+            return (
+                self._build_response(
+                    id=request.id,
+                    generation_run_id=generation_run_id,
+                    attempt_no=attempt_no,
+                    generation_status="output_parsing_failed",
+                    generated_cypher="",
+                    parse_summary=intent_summary,
+                    guardrail_summary="not_checked",
+                    raw_output_snapshot=intent_raw_output,
+                    failure_stage="intent_understanding_output_parsing",
+                    failure_reason_summary="Unable to parse structured intent from model output.",
+                    input_prompt_snapshot=intent_prompt,
+                ),
+                "",
+                intent_prompt,
+            )
+
+        combined_prompt = build_intent_guided_generation_prompt(question=request.question, intent=intent_parse)
+        audit_snapshot = (
+            "【Stage 1 Intent Understanding Prompt】\n"
+            f"{intent_prompt}\n\n"
+            "【Stage 1 Structured Intent Output】\n"
+            f"{json.dumps(intent_parse, ensure_ascii=False, indent=2)}\n\n"
+            "【Stage 2 Intent-Guided Generation Prompt】\n"
+            f"{combined_prompt}"
+        )
+        return None, combined_prompt, audit_snapshot
+
     async def _invoke_model(
         self,
         *,
@@ -204,6 +376,7 @@ class QueryWorkflowService:
         generation_run_id: str,
         attempt_no: int,
         generation_prompt: str,
+        input_prompt_snapshot: str,
     ) -> Tuple[QueryQuestionResponse | None, str]:
         try:
             raw_generation = await self.generator_client.generate_from_prompt(
@@ -224,7 +397,7 @@ class QueryWorkflowService:
                     raw_output_snapshot="",
                     failure_stage="model_invocation",
                     failure_reason_summary=str(exc),
-                    input_prompt_snapshot=generation_prompt,
+                    input_prompt_snapshot=input_prompt_snapshot,
                 ),
                 "",
             )
@@ -237,6 +410,7 @@ class QueryWorkflowService:
         generation_run_id: str,
         attempt_no: int,
         generation_prompt: str,
+        input_prompt_snapshot: str,
         raw_output: str,
     ) -> Tuple[QueryQuestionResponse | None, str, str]:
         generated_cypher, parse_summary = _extract_cypher(raw_output)
@@ -254,7 +428,7 @@ class QueryWorkflowService:
                 raw_output_snapshot=raw_output,
                 failure_stage="output_parsing",
                 failure_reason_summary="Unable to parse Cypher from model output.",
-                input_prompt_snapshot=generation_prompt,
+                input_prompt_snapshot=input_prompt_snapshot,
             ),
             "",
             parse_summary,
@@ -267,6 +441,7 @@ class QueryWorkflowService:
         generation_run_id: str,
         attempt_no: int,
         generation_prompt: str,
+        input_prompt_snapshot: str,
         generated_cypher: str,
         parse_summary: str,
         raw_output: str,
@@ -286,7 +461,7 @@ class QueryWorkflowService:
                 raw_output_snapshot=raw_output,
                 failure_stage="guardrail_check",
                 failure_reason_summary=guardrail_error,
-                input_prompt_snapshot=generation_prompt,
+                input_prompt_snapshot=input_prompt_snapshot,
             ),
             guardrail_summary,
         )
@@ -367,6 +542,69 @@ def _extract_cypher(content: str) -> tuple[str, str]:
             return stripped, "parsed_first_query_line"
 
     return "", "parse_failed"
+
+
+def _extract_semantic_parse(content: str) -> tuple[dict[str, object] | None, str]:
+    cleaned = content.strip()
+    if not cleaned:
+        return None, "semantic_parse_raw_output_empty"
+
+    fenced = _strip_fence(cleaned)
+    if fenced != cleaned:
+        cleaned = fenced
+
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError:
+        return None, "semantic_parse_json_parse_failed"
+
+    required_keys = {
+        "entities",
+        "relations",
+        "attributes",
+        "conditions",
+        "limit",
+        "direction",
+        "aggregation",
+        "ordering",
+        "return_shape",
+    }
+    if not isinstance(parsed, dict):
+        return None, "semantic_parse_not_object"
+    if not required_keys.issubset(parsed.keys()):
+        return None, "semantic_parse_missing_required_keys"
+    return parsed, "semantic_parse_parsed_json"
+
+
+def _extract_intent_understanding(content: str) -> tuple[dict[str, object] | None, str]:
+    cleaned = content.strip()
+    if not cleaned:
+        return None, "intent_understanding_raw_output_empty"
+
+    fenced = _strip_fence(cleaned)
+    if fenced != cleaned:
+        cleaned = fenced
+
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError:
+        return None, "intent_understanding_json_parse_failed"
+
+    required_keys = {
+        "query_type",
+        "primary_entity",
+        "related_entities",
+        "relation_paths",
+        "filters",
+        "aggregation",
+        "ordering_limit",
+        "return_shape",
+    }
+    if not isinstance(parsed, dict):
+        return None, "intent_understanding_not_object"
+    if not required_keys.issubset(parsed.keys()):
+        return None, "intent_understanding_missing_required_keys"
+    return parsed, "intent_understanding_parsed_json"
 
 
 def _strip_fence(content: str) -> str:
