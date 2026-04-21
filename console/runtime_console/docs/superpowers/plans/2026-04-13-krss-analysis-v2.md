@@ -1,12 +1,12 @@
-# Knowledge Repair Suggestion Service（KRSS）根因分析 V2 实现计划
+# repair-agent 根因分析 V2 实现计划
 
 > **面向 AI 代理的工作者：** 必需子技能：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 逐任务实现此计划。步骤使用复选框（`- [ ]`）语法来跟踪进度。
 
-**目标：** 将现有 repair_service 重构为 KRSS：利用强模型（glm-5）+（可选）“类型级最小补丁对照实验”诊断 CGS 在 `id + prompt_snapshot` 下的知识缺口，并以单一请求 `POST /api/knowledge/repairs/apply` 向 Knowledge Ops 提交 `{id, suggestion, knowledge_types}`（成功语义为对方 HTTP 200；非 200 重试直至 200）。
+**目标：** 将现有 repair_service 重构为 repair-agent：利用强模型（glm-5）+（可选）“类型级最小补丁对照实验”诊断 testing-agent 持久化的 `IssueTicket` / `KRSSAnalysisRecord` 中的 `prompt_snapshot` 所对应的知识缺口，并以单一请求 `POST /api/knowledge/repairs/apply` 向 knowledge-agent 提交 `{id, suggestion, knowledge_types}`（成功语义为对方 HTTP 200；非 200 重试直至 200）。
 
-**架构：** 以 LLM 主导的 Prompt Gap Analysis 生成候选 `knowledge_types` 与 suggestion，再按不确定性阈值触发最小补丁对照实验（不从 Knowledge Ops 拉补丁包），用弱模型对“增量类型”响应来收敛类型选择，最后生成对 Knowledge Ops 大模型可执行的 suggestion prompt 并投递。
+**架构：** 以 LLM 主导的 Prompt Gap Analysis 生成候选 `knowledge_types` 与 suggestion，再按不确定性阈值触发最小补丁对照实验（不从 knowledge-agent 拉补丁包），用弱模型对“增量类型”响应来收敛类型选择，最后生成对 knowledge-agent 大模型可执行的 suggestion prompt 并投递。
 
-**技术栈：** FastAPI + Pydantic（contracts/models.py）+ httpx（OpenAI-compatible 调用 glm-5 / CGS prompt snapshot / Knowledge Ops apply）+ pytest。
+**技术栈：** FastAPI + Pydantic（contracts/models.py）+ httpx（OpenAI-compatible 调用 glm-5 / testing-agent issue-ticket snapshot / knowledge-agent apply）+ pytest。
 
 ---
 
@@ -15,9 +15,9 @@
 **修改：**
 - `services/repair_agent/app/main.py`：接口响应语义改为“投递成功才 200”，移除 `RepairPlanEnvelope` 输出。
 - `services/repair_agent/app/service.py`：替换“RepairPlan + 分发”流水线为“Diagnose → Suggest → Apply（重试）”流水线；保留 TuGraph 仅用于对照实验可选项（不用于业务裁决）。
-- `services/repair_agent/app/config.py`：增加 Knowledge Ops apply URL 与 CGS prompt snapshot URL 配置；保留 glm-5 配置（已存在字段）。
-- `services/repair_agent/app/clients.py`：新增 `CGSPromptSnapshotClient`、`KnowledgeOpsRepairApplyClient`、`OpenAICompatibleKRSSAnalyzer`（glm-5）。
-- `contracts/models.py`：增加 KRSS 输出 payload 的模型（严格 3 字段）与 `KnowledgeType` 枚举/字面量约束。
+- `services/repair_agent/app/config.py`：增加 knowledge-agent apply URL 与 testing-agent prompt snapshot 读取配置；保留 glm-5 配置（已存在字段）。
+- `services/repair_agent/app/clients.py`：新增 `TestingServicePromptSnapshotClient`、`KnowledgeOpsRepairApplyClient`、`OpenAICompatibleKRSSAnalyzer`（glm-5）。
+- `contracts/models.py`：增加 repair-agent 输出 payload 的模型（严格 3 字段）与 `KnowledgeType` 枚举/字面量约束。
 
 **新增：**
 - `services/repair_agent/app/analysis.py`：根因分析与对照实验调度（纯函数/小类），负责把 `IssueTicket + prompt_snapshot` 变成 `{knowledge_types, suggestion}`。
@@ -107,14 +107,14 @@ git commit -m "feat(修复建议): 新增知识修复建议 payload 模型"
 
 ---
 
-## 任务 2：新增 CGS prompt_snapshot 拉取客户端（KRSS 内部调用）
+## 任务 2：新增 cypher-generator-agent prompt_snapshot 拉取客户端（repair-agent 内部调用）
 
 **文件：**
 - 修改：`/Users/mangowmac/Desktop/code/NL2Cypher/services/repair_agent/app/clients.py`
 - 修改：`/Users/mangowmac/Desktop/code/NL2Cypher/services/repair_agent/app/config.py`
 - 测试：`/Users/mangowmac/Desktop/code/NL2Cypher/tests/test_krss_contract_and_retry.py`
 
-- [ ] **步骤 1：编写失败的测试（调用 CGS /api/v1/questions/{id}/prompt）**
+- [ ] **步骤 1：编写失败的测试（调用 cypher-generator-agent /api/v1/questions/{id}/prompt）**
 
 ```python
 from __future__ import annotations
@@ -199,12 +199,12 @@ python -m pytest -q tests/test_krss_contract_and_retry.py::test_cgs_prompt_snaps
 
 ```bash
 git add services/repair_agent/app/clients.py services/repair_agent/app/config.py tests/test_krss_contract_and_retry.py
-git commit -m "feat(修复建议): 新增 CGS prompt snapshot 客户端"
+git commit -m "feat(修复建议): 新增 cypher-generator-agent prompt snapshot 客户端"
 ```
 
 ---
 
-## 任务 3：新增 Knowledge Ops apply 客户端（严格 200 语义 + 重试直至 200）
+## 任务 3：新增 knowledge-agent apply 客户端（严格 200 语义 + 重试直至 200）
 
 **文件：**
 - 修改：`/Users/mangowmac/Desktop/code/NL2Cypher/services/repair_agent/app/clients.py`
@@ -307,7 +307,7 @@ python -m pytest -q tests/test_krss_contract_and_retry.py::test_knowledge_ops_ap
 
 ```bash
 git add services/repair_agent/app/clients.py services/repair_agent/app/config.py tests/test_krss_contract_and_retry.py
-git commit -m "feat(修复建议): 新增 Knowledge Ops apply 重试客户端"
+git commit -m "feat(修复建议): 新增 knowledge-agent apply 重试客户端"
 ```
 
 ---
@@ -409,7 +409,7 @@ class KRSSAnalyzer:
         knowledge_types = diagnosis["knowledge_types"]
         evidence = list(ticket.evaluation.evidence)
         suggestion = (
-            "你是知识运营服务（Knowledge Ops）的执行模型。请根据以下失败信息产出可落地的知识资产修复产物。\n\n"
+            "你是 knowledge-agent 的执行模型。请根据以下失败信息产出可落地的知识资产修复产物。\n\n"
             f"id: {ticket.id}\n"
             f"question: {ticket.question}\n"
             f"input_prompt_snapshot: {prompt_snapshot}\n"
@@ -478,7 +478,7 @@ git commit -m "feat(修复建议): 引入 LLM 主导的缺口诊断"
 
 ---
 
-## 任务 5：加入“类型级最小补丁对照实验”（不从 Knowledge Ops 拉包）
+## 任务 5：加入“类型级最小补丁对照实验”（不从 knowledge-agent 拉包）
 
 **文件：**
 - 修改：`/Users/mangowmac/Desktop/code/NL2Cypher/services/repair_agent/app/analysis.py`
@@ -575,7 +575,7 @@ git commit -m "feat(修复建议): 支持类型级最小补丁对照实验"
 
 ---
 
-## 任务 6：改造 repair_service 主流程为 KRSS（只投递 Knowledge Ops）
+## 任务 6：改造 repair_service 主流程为 repair-agent，只投递 knowledge-agent
 
 **文件：**
 - 修改：`/Users/mangowmac/Desktop/code/NL2Cypher/services/repair_agent/app/service.py`
@@ -583,7 +583,7 @@ git commit -m "feat(修复建议): 支持类型级最小补丁对照实验"
 - 修改：`/Users/mangowmac/Desktop/code/NL2Cypher/services/repair_agent/app/schemas.py`
 - 测试：`/Users/mangowmac/Desktop/code/NL2Cypher/tests/test_verify_communication_contract.py`（或新增 `tests/test_krss_api.py`）
 
-- [ ] **步骤 1：编写失败的测试（API 语义：仅当 Knowledge Ops 返回 200 才返回 200）**
+- [ ] **步骤 1：编写失败的测试（API 语义：仅当 knowledge-agent 返回 200 才返回 200）**
 
 新增 `tests/test_krss_api.py`：
 
@@ -627,7 +627,7 @@ python -m pytest -q tests/test_krss_api.py
 
 改造要点：
 - 新增 `create_suggestion_and_apply(issue_ticket)`：
-  - 调用 `CGSPromptSnapshotClient.fetch_prompt_snapshot(id)`（以 CGS 为事实来源）
+  - 读取 testing-agent 持久化的 `IssueTicket.input_prompt_snapshot`，必要时结合 `KRSSAnalysisRecord.prompt_snapshot` 作为事实来源
   - 调用 `KRSSAnalyzer.analyze(ticket, prompt_snapshot)`
   - 组装 `KnowledgeRepairSuggestionRequest(id, suggestion, knowledge_types)`
   - 调用 `KnowledgeOpsRepairApplyClient.apply(payload)`（重试直至 200）
@@ -653,7 +653,7 @@ python -m pytest -q
 
 ```bash
 git add services/repair_agent/app/main.py services/repair_agent/app/service.py services/repair_agent/app/schemas.py tests/test_krss_api.py
-git commit -m "refactor(修复建议): 将 repair_service 主流程重构为 KRSS 单一投递"
+git commit -m "refactor(修复建议): 将 repair_service 主流程重构为 repair-agent 单一投递"
 ```
 
 ---
@@ -662,9 +662,9 @@ git commit -m "refactor(修复建议): 将 repair_service 主流程重构为 KRS
 
 1. `knowledge_types` 的字符串是否全仓库一致：`schema/cypher_syntax/few-shot/system_prompt/business_knowledge`
 2. payload 是否严格 3 字段（不包含 evidence/confidence/root_cause）
-3. 成功语义是否严格以 Knowledge Ops HTTP 200 判定，且 200 后不落库
+3. 成功语义是否严格以 knowledge-agent HTTP 200 判定，且 200 后不落库
 4. 重试是否只在投递层发生，不会重复调用 LLM 导致成本爆炸
-5. KRSS 仅使用 CGS 的 `prompt_snapshot` 作为“当时输入事实”，不从 Knowledge Ops 拉“补丁包”进行实验
+5. repair-agent 仅使用 testing-agent 持久化的 `IssueTicket` / `KRSSAnalysisRecord` 中的 `prompt_snapshot` 作为“当时输入事实”，不再向 cypher-generator-agent 回查 prompt
 
 ---
 

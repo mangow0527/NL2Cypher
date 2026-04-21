@@ -4,7 +4,7 @@
 
 本设计稿定义两个交付物：
 
-1. 一个挂载在 `Testing Service` 下的系统级界面：
+1. 一个挂载在 `testing-agent` 下的系统级界面：
    - 名称：`系统联调工作台（System Integration Console）`
    - 目标：同时承担“系统架构展示”和“系统级联调操作”两类职责
 
@@ -14,13 +14,13 @@
 
 本设计以当前实际运行架构为基础：
 
-- `Cypher 生成服务（Cypher Generation Service, CGS）`：`8000`
-- `测试服务（Testing Service）`：`8001`
-- `知识修复建议服务（Knowledge Repair Suggestion Service, KRSS）`：`8002`
-- `知识运营服务（Knowledge Ops / knowledge-agent）`：`8010`
-- `QA 生成器（QA Generator / qa-agent）`：`8020`
+- `cypher-generator-agent`：`8000`
+- `testing-agent`：`8001`
+- `repair-agent`：`8002`
+- `knowledge-agent`：`8010`
+- `qa-agent`：`8020`
 
-其中，`Testing Service` 作为系统执行与评测中心，承载本次新增界面的挂载位置。
+其中，`testing-agent` 作为系统执行与评测中心，承载本次新增界面的挂载位置。
 
 ---
 
@@ -30,16 +30,16 @@
 
 本次设计希望解决 4 个问题：
 
-1. 让系统当前的运行架构可以被直观看见  
+1. 让系统当前的运行架构可以被直观看见
    包括服务关系、端口、职责边界、数据流。
 
-2. 让系统主链路可以从一个页面发起联调  
+2. 让系统主链路可以从一个页面发起联调
    包括成功路径和失败闭环路径。
 
-3. 让联调时的关键中间产物可以集中查看  
+3. 让联调时的关键中间产物可以集中查看
    包括 prompt、generated cypher、evaluation、issue ticket、knowledge repair suggestion。
 
-4. 让界面和文档都采用中英双语表达  
+4. 让界面和文档都采用中英双语表达
    避免“只有英文术语可看、中文语义不清”的问题。
 
 ### 1.2 非目标
@@ -48,9 +48,9 @@
 
 - 不新增新的核心业务服务
 - 不重构现有服务边界
-- 不在本次设计中启用 KRSS 的 `experiment_runner`
+- 不在本次设计中启用 repair-agent 的 `experiment_runner`
 - 不要求一次性把所有联调都汇总成新的后端 orchestration service
-- 不试图替代单服务控制台（CGS / Testing / KRSS 各自已有控制台仍保留）
+- 不试图替代单服务控制台（cypher-generator-agent / testing-agent / repair-agent 各自已有控制台仍保留）
 
 ---
 
@@ -60,7 +60,7 @@
 
 采用**方案 B：双标签页（Two-Tab Workspace）**。
 
-页面挂载在 `Testing Service` 下，提供两个标签页：
+页面挂载在 `testing-agent` 下，提供两个标签页：
 
 1. `架构总览（Architecture Overview）`
 2. `系统联调（System Integration Console）`
@@ -73,7 +73,7 @@
 - 兼顾“讲架构”和“真联调”
 - 不会把页面做得过重
 - 便于后续继续扩展更多联调细节
-- 与当前 `Testing Service` 控制台的既有实现方式更兼容
+- 与当前 `testing-agent` 控制台的既有实现方式更兼容
 
 ---
 
@@ -83,7 +83,7 @@
 
 新界面挂载在：
 
-`Testing Service（测试服务）`
+`testing-agent`
 
 理由：
 
@@ -93,7 +93,7 @@
 
 ### 3.2 主要落点
 
-优先在现有 Testing Service UI 基础上扩展：
+优先在现有 testing-agent UI 基础上扩展：
 
 - `/Users/mangowmac/Desktop/code/NL2Cypher/services/testing_agent/app/ui/index.html`
 - `/Users/mangowmac/Desktop/code/NL2Cypher/services/testing_agent/app/ui/app.js`
@@ -155,23 +155,23 @@
 
 #### 服务列表
 
-1. `Cypher 生成服务（Cypher Generation Service, CGS）`
+1. `cypher-generator-agent`
    - 端口：`8000`
-   - 核心职责：接收 `id + question`、拉取 prompt、生成 Cypher、提交测试服务
+   - 核心职责：接收 `id + question`、拉取 prompt、生成 Cypher、提交testing-agent
 
-2. `测试服务（Testing Service）`
+2. `testing-agent`
    - 端口：`8001`
    - 核心职责：执行 TuGraph、做评测、失败时生成 `Issue Ticket`
 
-3. `知识修复建议服务（Knowledge Repair Suggestion Service, KRSS）`
+3. `repair-agent`
    - 端口：`8002`
-   - 核心职责：读取失败证据和 prompt snapshot，生成知识修复建议
+   - 核心职责：读取 testing-agent 持久化的失败证据和 prompt snapshot，生成知识修复建议
 
-4. `知识运营服务（Knowledge Ops / knowledge-agent）`
+4. `knowledge-agent`
    - 端口：`8010`
    - 核心职责：提供 prompt、接收知识修复建议
 
-5. `QA 生成器（QA Generator / qa-agent）`
+5. `qa-agent`
    - 端口：`8020`
    - 核心职责：外围问题生成/任务驱动组件
 
@@ -181,12 +181,12 @@
 
 结构图需要明确显示：
 
-- CGS -> Knowledge Ops：获取 prompt
-- CGS -> Testing Service：提交生成结果
-- Testing Service -> TuGraph：执行查询
-- Testing Service -> KRSS：失败后发送 `Issue Ticket`
-- KRSS -> CGS：读取 `Prompt Snapshot`
-- KRSS -> Knowledge Ops：发送 `Knowledge Repair Suggestion`
+- cypher-generator-agent -> knowledge-agent：获取 prompt
+- cypher-generator-agent -> testing-agent：提交生成结果
+- testing-agent -> TuGraph：执行查询
+- testing-agent -> repair-agent：失败后发送 `Issue Ticket`
+- repair-agent -> testing-agent 记录：读取 `Issue Ticket` 与 `KRSSAnalysisRecord` 中的 `Prompt Snapshot`
+- repair-agent -> knowledge-agent：发送 `Knowledge Repair Suggestion`
 
 ### 5.3 模块三：正式数据流图
 
@@ -212,10 +212,10 @@
 
 用简明分区说明当前职责边界：
 
-- CGS 负责生成，不负责执行
-- Testing Service 负责执行与评测
-- KRSS 负责知识修复建议，不负责业务裁决
-- Knowledge Ops 负责知识输入与知识更新
+- cypher-generator-agent 负责生成，不负责执行
+- testing-agent 负责执行与评测
+- repair-agent 负责知识修复建议，不负责业务裁决
+- knowledge-agent 负责知识输入与知识更新
 
 ### 5.5 模块五：接口速查表
 
@@ -241,11 +241,15 @@
 
 #### 6.1.1 成功路径（Success Path）
 
-`问题 -> CGS -> Testing Service -> 通过`
+`问题 -> cypher-generator-agent -> testing-agent -> 通过`
 
 #### 6.1.2 失败闭环路径（Failure Closed Loop）
 
-`问题 -> CGS -> Testing Service -> KRSS -> Knowledge Ops`
+`问题 -> cypher-generator-agent -> testing-agent -> repair-agent -> knowledge-agent`
+
+说明：
+- repair-agent 不会为了展示 prompt snapshot 再回头向 cypher-generator-agent 拉取
+- 控制台上的 prompt snapshot 视图以 testing-agent 持久化的 `Issue Ticket` / `KRSSAnalysisRecord` 为准
 
 ### 6.2 模块一：联调输入区
 
@@ -267,10 +271,10 @@
 
 展示每个阶段的运行状态卡片：
 
-- `Cypher 生成服务（CGS）`
-- `测试服务（Testing Service）`
-- `知识修复建议服务（KRSS）`
-- `知识运营服务（Knowledge Ops）`
+- `cypher-generator-agent`
+- `testing-agent`
+- `repair-agent`
+- `knowledge-agent`
 
 每张卡片状态：
 
@@ -286,18 +290,18 @@
 
 按时间顺序展示：
 
-1. 问题进入 CGS
-2. CGS 拉取 prompt
-3. CGS 生成 Cypher
-4. CGS 提交 Testing Service
-5. Testing Service 执行 TuGraph
-6. Testing Service 输出评测结果
+1. 问题进入 cypher-generator-agent
+2. cypher-generator-agent 拉取 prompt
+3. cypher-generator-agent 生成 Cypher
+4. cypher-generator-agent 提交 testing-agent
+5. testing-agent 执行 TuGraph
+6. testing-agent 输出评测结果
 7. 若失败：
    - 生成 `Issue Ticket`
-   - 调用 KRSS
-   - KRSS 拉取 `Prompt Snapshot`
-   - KRSS 生成修复建议
-   - KRSS 调用 Knowledge Ops
+   - 调用 repair-agent
+   - repair-agent 拉取 `Prompt Snapshot`
+   - repair-agent 生成修复建议
+   - repair-agent 调用 knowledge-agent
 
 ### 6.5 模块四：关键数据面板
 
@@ -320,9 +324,9 @@
 
 建议支持：
 
-- CGS 原始响应
-- Testing 状态快照
-- KRSS 分析记录或写接口响应
+- cypher-generator-agent 原始响应
+- testing-agent 状态快照
+- repair-agent 分析记录或写接口响应
 
 ---
 
@@ -340,14 +344,14 @@
 
 例如：
 
-- `Cypher 生成服务（Cypher Generation Service, CGS）`
-- `知识修复建议服务（Knowledge Repair Suggestion Service, KRSS）`
+- `cypher-generator-agent`
+- `repair-agent`
 - `问题单（Issue Ticket）`
 - `输入提示词快照（Prompt Snapshot）`
 
 ### 7.2 JSON 字段展示规范
 
-原始 JSON 区域保留英文原字段名，不做字段重命名。  
+原始 JSON 区域保留英文原字段名，不做字段重命名。
 但在旁边或上方给出中文业务解释。
 
 ### 7.3 文档规范
@@ -364,27 +368,27 @@
 
 ### 8.2 可直接复用的接口
 
-#### CGS
+#### cypher-generator-agent
 
 - `POST /api/v1/qa/questions`
 - `GET /api/v1/questions/{id}/prompt`
 
-#### Testing Service
+#### testing-agent
 
 - `POST /api/v1/qa/goldens`
 - `GET /api/v1/evaluations/{id}`
 - `GET /api/v1/issues/{ticket_id}`
 - `GET /api/v1/status`
 
-#### KRSS
+#### repair-agent
 
 - `POST /api/v1/issue-tickets`
 - `GET /api/v1/krss-analyses/{analysis_id}`
 
 ### 8.3 是否新增聚合接口
 
-建议先不新增。  
-前端先通过 Testing Service 页面内直接请求已有接口完成联调展示。
+建议先不新增。
+前端先通过 testing-agent 页面内直接请求已有接口完成联调展示。
 
 只有在出现以下问题时，才考虑新增轻量聚合接口：
 
@@ -447,7 +451,7 @@
 
 先完成：
 
-- Testing Service UI 双标签页改造
+- testing-agent UI 双标签页改造
 - 架构总览页
 - 正式运行架构文档
 
@@ -483,7 +487,7 @@
 
 推荐实施方案：
 
-- 在 `Testing Service` 下新增双标签页工作台
+- 在 `testing-agent` 下新增双标签页工作台
 - 标签页一：`架构总览（Architecture Overview）`
 - 标签页二：`系统联调（System Integration Console）`
 - 同时新增正式运行架构文档：

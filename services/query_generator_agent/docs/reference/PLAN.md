@@ -2,17 +2,17 @@
 
 ## 说明
 
-这份文档保留为历史规划入口，但其中旧版“查询生成服务执行 TuGraph、再把 execution 提交给测试服务”的方案已经**不再生效**。
+这份文档保留为历史规划入口，但其中旧版“`cypher-generator-agent` 执行 TuGraph、再把 execution 提交给 `testing-agent`”的方案已经**不再生效**。
 
 当前实现已经切换为：
 
-- `Cypher Generation Service`（Cypher 生成服务）负责：
+- `cypher-generator-agent`（cypher-generator-agent）负责：
   - 接收 `id + question`
   - 主动获取 `prompt`
   - 调用模型生成 Cypher
   - 保留 `input_prompt_snapshot`
-  - 向测试服务提交生成结果
-- `Testing Service`（测试服务）负责：
+  - 向 `testing-agent`提交生成结果
+- `testing-agent`（testing-agent）负责：
   - 执行 TuGraph
   - 完成评测
   - 生成 `IssueTicket`
@@ -33,10 +33,10 @@
 
 以下假设已全部失效，请勿再据此开发：
 
-1. 查询生成服务负责执行 TuGraph
-2. 测试服务接收 `execution + knowledge_context`
-3. 查询生成服务主链路依赖知识标签加载和 schema hint 组装
-4. 查询生成服务输出的是“业务成功/失败”结论
+1. `cypher-generator-agent` 负责执行 TuGraph
+2. `testing-agent` 接收 `execution + knowledge_context`
+3. `cypher-generator-agent` 主链路依赖知识标签加载和 schema hint 组装
+4. `cypher-generator-agent` 输出的是“业务成功/失败”结论
 5. 主存储方案是 SQLite
 
 当前代码以 JSON 文件持久化为主，且按新的服务边界执行。

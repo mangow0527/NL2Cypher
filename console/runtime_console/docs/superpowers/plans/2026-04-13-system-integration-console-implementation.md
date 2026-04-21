@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a bilingual Testing Service-hosted system integration console with `架构总览（Architecture Overview）` and `系统联调（System Integration Console）` tabs, plus a formal runtime architecture document.
+**Goal:** Build a bilingual testing-agent-hosted system integration console with `架构总览（Architecture Overview）` and `系统联调（System Integration Console）` tabs, plus a formal runtime architecture document.
 
-**Architecture:** Keep Testing Service as the UI host and add only lightweight orchestration/aggregation endpoints where cross-service data is needed. Reuse existing CGS, Testing Service, and KRSS contracts wherever possible so the console reflects the real running system rather than a mock-only flow.
+**Architecture:** Keep testing-agent as the UI host and add only lightweight orchestration/aggregation endpoints where cross-service data is needed. Reuse existing cypher-generator-agent, testing-agent, and repair-agent contracts wherever possible so the console reflects the real running system rather than a mock-only flow. Prompt snapshot display should come from testing-agent persisted IssueTicket / KRSSAnalysisRecord artifacts, not from a live repair-agent-to-cypher-generator-agent fetch.
 
 **Tech Stack:** FastAPI, vanilla HTML/CSS/JavaScript, Pydantic models, pytest
 
@@ -15,11 +15,11 @@
 - Modify: `/Users/mangowmac/Desktop/code/NL2Cypher/services/testing_agent/app/main.py`
   - Add console-support API endpoints for architecture snapshot and system integration runs.
 - Modify: `/Users/mangowmac/Desktop/code/NL2Cypher/services/testing_agent/app/service.py`
-  - Add orchestration helpers that call CGS and package data for the console.
+  - Add orchestration helpers that call cypher-generator-agent and package data for the console.
 - Modify: `/Users/mangowmac/Desktop/code/NL2Cypher/services/testing_agent/app/clients.py`
-  - Add lightweight clients for CGS and service health/status reads.
+  - Add lightweight clients for cypher-generator-agent and service health/status reads.
 - Modify: `/Users/mangowmac/Desktop/code/NL2Cypher/services/testing_agent/app/repository.py`
-  - Add helpers to read stored evaluation/submission/issue/KRSS data for console aggregation.
+  - Add helpers to read stored evaluation/submission/issue/repair-agent data for console aggregation.
 - Modify: `/Users/mangowmac/Desktop/code/NL2Cypher/services/testing_agent/app/ui/index.html`
   - Replace the single-purpose evaluator console with the two-tab bilingual workspace.
 - Modify: `/Users/mangowmac/Desktop/code/NL2Cypher/services/testing_agent/app/ui/app.js`
@@ -85,7 +85,7 @@ Run: `python -m pytest -q tests/test_testing_service_console_api.py`
 
 Expected: FAIL because the new `/api/v1/runtime/architecture` and `/api/v1/runtime/console-runs` endpoints do not exist yet.
 
-- [ ] **Step 3: Add minimal console clients for CGS and service health reads**
+- [ ] **Step 3: Add minimal console clients for cypher-generator-agent and service health reads**
 
 ```python
 class QueryGeneratorConsoleClient:
@@ -117,7 +117,7 @@ class ServiceHealthClient:
             return response.json()
 ```
 
-- [ ] **Step 4: Add repository read helpers for stored submission, issue, and KRSS response aggregation**
+- [ ] **Step 4: Add repository read helpers for stored submission, issue, and repair-agent response aggregation**
 
 ```python
     def get_submission_snapshot(self, id: str) -> Optional[Dict[str, Any]]:
@@ -209,7 +209,7 @@ git commit -m "feat: add testing service console runtime APIs"
 
 ---
 
-### Task 2: Build The Dual-Tab Testing Service Console UI
+### Task 2: Build The Dual-Tab testing-agent Console UI
 
 **Files:**
 - Modify: `/Users/mangowmac/Desktop/code/NL2Cypher/services/testing_agent/app/ui/index.html`
@@ -333,24 +333,25 @@ git commit -m "feat: add bilingual system integration console ui"
 ## 系统概述（System Overview）
 
 当前运行中的服务包括：
-- Cypher 生成服务（Cypher Generation Service, CGS） `8000`
-- 测试服务（Testing Service） `8001`
-- 知识修复建议服务（Knowledge Repair Suggestion Service, KRSS） `8002`
-- 知识运营服务（Knowledge Ops / knowledge-agent） `8010`
-- QA 生成器（QA Generator / qa-agent） `8020`
+- cypher-generator-agent `8000`
+- testing-agent `8001`
+- repair-agent `8002`
+- knowledge-agent `8010`
+- qa-agent `8020`
 
 ## 成功路径（Success Path）
 
-`问题请求 -> CGS -> Testing Service -> 通过`
+`问题请求 -> cypher-generator-agent -> testing-agent -> 通过`
 
 ## 失败闭环路径（Failure Closed Loop）
 
-`问题请求 -> CGS -> Testing Service -> KRSS -> Knowledge Ops`
-```
+`问题请求 -> cypher-generator-agent -> testing-agent -> repair-agent -> knowledge-agent`
+
+In the failure loop, the console should surface prompt snapshot facts from the testing-agent sidecar records (`Issue Ticket`, `KRSSAnalysisRecord`), rather than implying repair-agent does a live cypher-generator-agent lookup.
 
 - [ ] **Step 2: Verify the document includes service boundaries, key objects, and interface quick reference**
 
-Run: `rg -n "Success Path|Failure Closed Loop|Issue Ticket|Knowledge Repair Suggestion|QA Generator" docs/System_Runtime_Architecture.md`
+Run: `rg -n "Success Path|Failure Closed Loop|Issue Ticket|Knowledge Repair Suggestion|qa-agent" docs/System_Runtime_Architecture.md`
 
 Expected: matching lines for each required section and term.
 
@@ -369,7 +370,7 @@ git commit -m "docs: add formal system runtime architecture reference"
 - Modify as needed: `/Users/mangowmac/Desktop/code/NL2Cypher/tests/test_testing_service_console_api.py`
 - Modify as needed: `/Users/mangowmac/Desktop/code/NL2Cypher/tests/test_testing_service_llm_eval.py`
 
-- [ ] **Step 1: Run the focused console and Testing Service test suite**
+- [ ] **Step 1: Run the focused console and testing-agent test suite**
 
 Run: `python -m pytest -q tests/test_testing_service_console_api.py tests/test_testing_service_llm_eval.py`
 

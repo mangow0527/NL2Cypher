@@ -2,14 +2,14 @@
 
 系统中有两处使用 LLM：
 
-1. **查询语句生成服务**：用 LLM 生成 Cypher 查询语句
-2. **问题修复服务**：用 LLM 辅助精化修复计划
+1. **cypher-generator-agent**：用 LLM 生成 Cypher 查询语句
+2. **repair-agent**：用 LLM 辅助精化修复计划
 
 两处均采用 OpenAI-compatible `/chat/completions` 接入方式，且均有无 LLM 时的回退机制。
 
 ---
 
-## 1. 查询语句生成服务
+## 1. cypher-generator-agent
 
 ### 两种模式
 
@@ -81,11 +81,11 @@ Prompt 中会携带：
 
 ---
 
-## 2. 问题修复服务
+## 2. repair-agent
 
 ### 工作方式
 
-修复服务先执行确定性规则分析和对照实验，然后可选地调用 LLM 来精化修复计划。
+`repair-agent` 先执行确定性规则分析和对照实验，然后可选地调用 LLM 来精化修复计划。
 
 ### 配置方式
 
@@ -133,7 +133,7 @@ Prompt 中会携带：
 
 ### 启动约束
 
-修复服务现在强制要求启用并正确配置 LLM：
+`repair-agent` 现在强制要求启用并正确配置 LLM：
 - `REPAIR_SERVICE_LLM_ENABLED` 必须为 `true`
 - 必须完整提供 `base_url` / `api_key` / `model`
 - 缺少任一关键配置时，服务会直接启动失败
@@ -142,18 +142,18 @@ Prompt 中会携带：
 
 ## 3. 对照实验中的 LLM 使用
 
-修复服务在执行对照实验（A/B/C）时，需要重新调用查询语句生成服务来生成 Cypher。这里使用的 LLM 配置是查询语句生成服务的配置，而不是修复服务的配置。
+`repair-agent` 在执行对照实验（A/B/C）时，需要重新调用 `cypher-generator-agent`来生成 Cypher。这里使用的 LLM 配置是`cypher-generator-agent` 的配置，而不是`repair-agent` 的配置。
 
 流程：
-1. 修复服务调用查询语句生成服务的 API（如对照实验端点）
-2. 查询语句生成服务使用自己的 LLM 配置生成 Cypher
-3. 修复服务收集实验结果并进行归因
+1. `repair-agent` 调用`cypher-generator-agent` 的 API（如对照实验端点）
+2. `cypher-generator-agent` 使用自己的 LLM 配置生成 Cypher
+3. `repair-agent` 收集实验结果并进行归因
 
 ---
 
 ## 4. 状态检查
 
-### 查询生成服务状态
+### cypher-generator-agent 状态
 
 ```bash
 curl http://127.0.0.1:8000/api/v1/generator/status
@@ -172,9 +172,9 @@ curl http://127.0.0.1:8000/api/v1/generator/status
 }
 ```
 
-### 修复服务状态
+### repair-agent 状态
 
-修复服务的 LLM 配置可通过其 `/health` 端点间接确认：
+`repair-agent` 的 LLM 配置可通过其 `/health` 端点间接确认：
 
 ```bash
 curl http://127.0.0.1:8002/health

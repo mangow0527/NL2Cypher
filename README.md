@@ -8,29 +8,30 @@
 - `console/runtime_console/`
 - `contracts/`
 
-当前包含四项核心能力：
+当前明确五个服务名称：
 
-1. `Cypher Generation Service`（Cypher 生成服务，端口 `8000`）
+1. `cypher-generator-agent`（端口 `8000`）
    - 接收 `id + question`
-   - 主动向知识运营服务获取 `prompt`
+   - 主动向 `knowledge-agent` 获取 `prompt`
    - 调用模型生成 Cypher
    - 保留 `id + prompt` 与原始输出快照
-   - 将生成结果提交给测试服务
-2. `Runtime Results Service`（运行结果中心，端口 `8001`）
-   - 聚合来自 QA 生成服务的全部任务
-   - 动态展示全流程阶段结果
-   - 展示当前生成的 Cypher 与质量概括
-3. `Repair Service`（修复服务，端口 `8002`）
+   - 将生成结果提交给 `testing-agent`
+2. `testing-agent`（端口 `8001`）
+   - 接收 Golden Answer（标准答案）
+   - 接收 `cypher-generator-agent` 提交的 Cypher
+   - 负责执行 TuGraph
+   - 完成评测并在失败时产出问题单
+3. `repair-agent`（端口 `8002`）
    - 接收问题单
    - 做根因分析与对照实验
    - 产出修复计划
-4. `Testing Service`（测试服务，端口 `8003`）
-   - 接收 Golden Answer（标准答案）
-   - 接收生成服务提交的 Cypher
-   - 负责执行 TuGraph
-   - 完成评测并在失败时产出问题单
+4. `knowledge-agent`（端口 `8010`）
+   - 提供 Cypher 生成所需的知识上下文
+   - 接收并应用知识修复建议
+5. `qa-agent`（端口 `8020`）
+   - 提供自然语言问题与黄金样本
 
-当前 Cypher 生成服务的正式职责定义以
+当前 `cypher-generator-agent` 的正式职责定义以
 [Cypher_Generation_Service_Design.md](/Users/mangowmac/Desktop/code/NL2Cypher/services/query_generator_agent/docs/Cypher_Generation_Service_Design.md)
 为准。
 
@@ -44,24 +45,25 @@
 
 控制台入口：
 
-- 生成服务: [http://localhost:8000/console](http://localhost:8000/console)
-- 运行结果中心: [http://localhost:8001/console](http://localhost:8001/console)
-- 修复服务: [http://localhost:8002/console](http://localhost:8002/console)
-- 测试服务: [http://localhost:8003/health](http://localhost:8003/health)
+- cypher-generator-agent: [http://localhost:8000/console](http://localhost:8000/console)
+- testing-agent: [http://localhost:8001/health](http://localhost:8001/health)
+- repair-agent: [http://localhost:8002/console](http://localhost:8002/console)
+- knowledge-agent: [http://localhost:8010/health](http://localhost:8010/health)
+- qa-agent: [http://localhost:8020/health](http://localhost:8020/health)
 
 ## 当前工作流
 
-1. 外部服务向生成服务提交 `id + question`
-2. 生成服务向知识运营服务拉取当前可用 `prompt`
-3. 生成服务调用模型生成 Cypher，并保留 `input_prompt_snapshot`
-4. 生成服务把 `generated_cypher + generation evidence` 提交给测试服务
-5. 测试服务执行 TuGraph，等待或合并对应的 Golden Answer
-6. 测试服务完成评测，失败时创建 `IssueTicket`
-7. 修复服务基于问题单生成 `RepairPlan`
+1. `qa-agent` 向 `cypher-generator-agent` 提交 `id + question`
+2. `cypher-generator-agent` 向 `knowledge-agent` 拉取当前可用 `prompt`
+3. `cypher-generator-agent` 调用模型生成 Cypher，并保留 `input_prompt_snapshot`
+4. `cypher-generator-agent` 把 `generated_cypher + generation evidence` 提交给 `testing-agent`
+5. `testing-agent` 执行 TuGraph，等待或合并对应的 Golden Answer
+6. `testing-agent` 完成评测，失败时创建 `IssueTicket`
+7. `repair-agent` 基于问题单生成 `RepairPlan`
 
 ## 主要接口
 
-### 生成服务
+### cypher-generator-agent
 
 提交问题：
 
@@ -86,12 +88,12 @@ curl http://localhost:8000/api/v1/questions/qa-001
 curl http://localhost:8000/api/v1/questions/qa-001/prompt
 ```
 
-### 测试服务
+### testing-agent
 
 提交 Golden Answer：
 
 ```bash
-curl -X POST http://localhost:8003/api/v1/qa/goldens \
+curl -X POST http://localhost:8001/api/v1/qa/goldens \
   -H "Content-Type: application/json" \
   -d '{
     "id": "qa-001",
@@ -101,10 +103,10 @@ curl -X POST http://localhost:8003/api/v1/qa/goldens \
   }'
 ```
 
-提交生成结果给测试服务：
+提交生成结果给 `testing-agent`：
 
 ```bash
-curl -X POST http://localhost:8003/api/v1/evaluations/submissions \
+curl -X POST http://localhost:8001/api/v1/evaluations/submissions \
   -H "Content-Type: application/json" \
   -d '{
     "id": "qa-001",
@@ -121,18 +123,18 @@ curl -X POST http://localhost:8003/api/v1/evaluations/submissions \
 查询评测状态：
 
 ```bash
-curl http://localhost:8003/api/v1/evaluations/qa-001
+curl http://localhost:8001/api/v1/evaluations/qa-001
 ```
 
 查询问题单：
 
 ```bash
-curl http://localhost:8003/api/v1/issues/{ticket_id}
+curl http://localhost:8001/api/v1/issues/{ticket_id}
 ```
 
 ## 配置说明
 
-### 生成服务环境变量
+### cypher-generator-agent 环境变量
 
 - `QUERY_GENERATOR_HOST`
 - `QUERY_GENERATOR_PORT`
@@ -145,7 +147,7 @@ curl http://localhost:8003/api/v1/issues/{ticket_id}
 - `QUERY_GENERATOR_LLM_MODEL`
 - 说明：该服务默认要求启用 LLM，缺少以上任一关键配置会直接启动失败，不再回退到启发式生成。
 
-### 测试服务环境变量
+### testing-agent 环境变量
 
 - `TESTING_SERVICE_HOST`
 - `TESTING_SERVICE_PORT`
@@ -161,7 +163,7 @@ curl http://localhost:8003/api/v1/issues/{ticket_id}
 - `TESTING_SERVICE_LLM_MODEL`
 - 说明：该服务默认要求启用 LLM，缺少关键配置会直接启动失败，不再静默保留规则评测结果。
 
-### 修复服务环境变量
+### repair-agent 环境变量
 
 - `REPAIR_SERVICE_HOST`
 - `REPAIR_SERVICE_PORT`
@@ -172,12 +174,12 @@ curl http://localhost:8003/api/v1/issues/{ticket_id}
 - `REPAIR_SERVICE_LLM_API_KEY`
 - `REPAIR_SERVICE_LLM_MODEL_NAME`
 - 兼容旧变量：`REPAIR_SERVICE_LLM_MODEL`
-- 说明：该服务默认要求启用 LLM，缺少关键配置会直接启动失败，不再回退到 deterministic KRSS 诊断。
+- 说明：该服务默认要求启用 LLM，缺少关键配置会直接启动失败，不再回退到 deterministic repair-agent 诊断。
 
 ## 维护说明
 
-- 生成服务不执行 TuGraph；执行职责由测试服务承担。
-- 生成服务输出的是“生成阶段处理状态”，不是最终业务评测结果。
+- `cypher-generator-agent` 不执行 TuGraph；执行职责由 `testing-agent` 承担。
+- `cypher-generator-agent` 输出的是“生成阶段处理状态”，不是最终业务评测结果。
 - 根因分析依赖 `id + input_prompt_snapshot + raw_output_snapshot`，这些字段不得删除。
 - 若文档与
   [Cypher_Generation_Service_Design.md](/Users/mangowmac/Desktop/code/NL2Cypher/services/query_generator_agent/docs/Cypher_Generation_Service_Design.md)
