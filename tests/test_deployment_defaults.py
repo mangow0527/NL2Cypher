@@ -12,16 +12,17 @@ class DeploymentDefaultsTest(unittest.TestCase):
         with patch.dict(
             "os.environ",
             {
-                "QUERY_GENERATOR_LLM_ENABLED": "true",
-                "QUERY_GENERATOR_LLM_BASE_URL": "https://example.com/v1",
-                "QUERY_GENERATOR_LLM_API_KEY": "secret",
-                "QUERY_GENERATOR_LLM_MODEL": "glm-4.5",
+                "CYPHER_GENERATOR_AGENT_LLM_ENABLED": "true",
+                "CYPHER_GENERATOR_AGENT_LLM_BASE_URL": "https://example.com/v1",
+                "CYPHER_GENERATOR_AGENT_LLM_API_KEY": "secret",
+                "CYPHER_GENERATOR_AGENT_LLM_MODEL": "glm-4.5",
             },
             clear=False,
         ):
             settings = QueryGeneratorSettings(_env_file=None)
 
-        self.assertEqual(settings.testing_service_url, "http://127.0.0.1:8003")
+        self.assertEqual(settings.testing_agent_url, "http://127.0.0.1:8003")
+        self.assertEqual(settings.knowledge_agent_url, "http://127.0.0.1:8010")
         self.assertEqual(settings.service_public_base_url, "http://127.0.0.1:8000")
 
     def test_testing_service_defaults_target_fixed_remote_tugraph(self):

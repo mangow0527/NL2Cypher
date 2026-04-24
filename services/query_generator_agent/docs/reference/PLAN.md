@@ -21,7 +21,7 @@
 
 请以后续设计和实现以下文档为准：
 
-- [Cypher_Generation_Service_Design.md](/Users/mangowmac/Desktop/code/NL2Cypher/services/query_generator_agent/docs/Cypher_Generation_Service_Design.md)
+- [cypher-generator-agent-design.md](/Users/mangowmac/Desktop/code/NL2Cypher/services/query_generator_agent/docs/cypher-generator-agent-design.md)
 - [workflow.md](/Users/mangowmac/Desktop/code/NL2Cypher/console/runtime_console/docs/reference/workflow.md)
 
 ## 保留这份文档的原因

@@ -7,8 +7,8 @@ import pytest
 from pydantic import ValidationError
 
 from services.query_generator_agent.app.clients import (
+    CypherLLMClient,
     OpenAICompatibleCypherGenerator,
-    QwenGeneratorClient,
 )
 from services.query_generator_agent.app.config import Settings as QueryGeneratorSettings
 from services.repair_agent.app.config import Settings as RepairServiceSettings
@@ -17,10 +17,10 @@ from services.testing_agent.app.config import Settings as TestingServiceSettings
 
 
 def test_query_generator_requires_complete_llm_configuration(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.delenv("QUERY_GENERATOR_LLM_ENABLED", raising=False)
-    monkeypatch.delenv("QUERY_GENERATOR_LLM_BASE_URL", raising=False)
-    monkeypatch.delenv("QUERY_GENERATOR_LLM_API_KEY", raising=False)
-    monkeypatch.delenv("QUERY_GENERATOR_LLM_MODEL", raising=False)
+    monkeypatch.delenv("CYPHER_GENERATOR_AGENT_LLM_ENABLED", raising=False)
+    monkeypatch.delenv("CYPHER_GENERATOR_AGENT_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("CYPHER_GENERATOR_AGENT_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("CYPHER_GENERATOR_AGENT_LLM_MODEL", raising=False)
 
     with pytest.raises(ValidationError):
         QueryGeneratorSettings(_env_file=None)
@@ -53,13 +53,13 @@ def test_repair_service_accepts_legacy_model_env_name(monkeypatch: pytest.Monkey
 async def test_query_generator_raises_when_llm_call_fails():
     llm_generator = AsyncMock(spec=OpenAICompatibleCypherGenerator)
     llm_generator.generate_from_prompt.side_effect = RuntimeError("llm offline")
-    client = QwenGeneratorClient(llm_generator=llm_generator)
+    client = CypherLLMClient(llm_generator=llm_generator)
 
     with pytest.raises(RuntimeError, match="llm offline"):
         await client.generate_from_prompt(
             task_id="qa-001",
             question_text="统计网元数量",
-            generation_prompt="Generate Cypher",
+            llm_prompt="Generate Cypher",
         )
 
 
@@ -86,12 +86,12 @@ async def test_query_generator_logs_exact_llm_call_evidence(monkeypatch: pytest.
     mock_ctx.__aexit__.return_value = False
     monkeypatch.setattr("httpx.AsyncClient", lambda *args, **kwargs: mock_ctx)
 
-    caplog.set_level(logging.INFO, logger="query_generator")
+    caplog.set_level(logging.INFO, logger="cypher_generator_agent")
 
     await client.generate_from_prompt(
         task_id="qa-001",
         question_text="统计网元数量",
-        generation_prompt="Generate Cypher",
+        llm_prompt="Generate Cypher",
     )
 
     start = next(record for record in caplog.records if record.message.startswith("llm_call_started"))
@@ -99,12 +99,12 @@ async def test_query_generator_logs_exact_llm_call_evidence(monkeypatch: pytest.
 
     assert start.qa_id == "qa-001"
     assert start.model == "qwen-test"
-    assert start.target == "query_generator.llm"
+    assert start.target == "cypher_generator_agent.llm"
     assert "qa_id=qa-001" in start.message
     assert "model=qwen-test" in start.message
     assert success.qa_id == "qa-001"
     assert success.model == "qwen-test"
-    assert success.target == "query_generator.llm"
+    assert success.target == "cypher_generator_agent.llm"
     assert success.request_id == "req-qg-123"
     assert success.elapsed_ms >= 0
     assert "request_id=req-qg-123" in success.message

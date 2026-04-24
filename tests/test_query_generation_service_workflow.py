@@ -1,183 +1,266 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
+from pydantic import ValidationError
 
-from contracts.models import QAQuestionRequest
-from services.query_generator_agent.app import service as workflow_module
-from services.query_generator_agent.app.service import QueryWorkflowService
+from services.query_generator_agent.app.models import (
+    GeneratedCypherSubmissionRequest,
+    GenerationRunResult,
+    PreflightCheck,
+    QAQuestionRequest,
+)
+from services.query_generator_agent.app.parser import parse_model_output
+from services.query_generator_agent.app.preflight import run_preflight_check
+from services.query_generator_agent.app.service import CypherGeneratorAgentService
 
 
-class TestCypherGenerationWorkflow:
+class TestCypherGeneratorAgentWorkflow:
     @pytest.mark.asyncio
-    async def test_ingest_question_fetches_prompt_generates_and_submits(self):
-        prompt_client = AsyncMock()
-        prompt_client.fetch_prompt.return_value = "请生成一个 Cypher JSON"
-
-        generator_client = AsyncMock()
-        generator_client.generate_from_prompt.return_value = {
-            "raw_output": '{"cypher":"MATCH (n:NetworkElement) RETURN n.name AS name LIMIT 5"}',
+    async def test_generates_direct_cypher_and_submits_evidence_without_attempt_no(self):
+        knowledge_client = AsyncMock()
+        knowledge_client.fetch_context.return_value = "Schema: (:Protocol)-[:HAS_TUNNEL]->(:Tunnel)"
+        llm_client = AsyncMock()
+        llm_client.generate_from_prompt.return_value = {
+            "raw_output": "MATCH (p:Protocol)-[:HAS_TUNNEL]->(t:Tunnel) RETURN p.version, t.name",
             "model_name": "test-model",
         }
-
         testing_client = AsyncMock()
-        testing_client.submit.return_value = {"status": "waiting_for_golden"}
 
-        repository = MagicMock()
-        repository.next_generation_run_id.return_value = "run-001"
-        repository.get_generation_run.return_value = None
-
-        svc = QueryWorkflowService(
-            prompt_client=prompt_client,
-            generator_client=generator_client,
+        service = CypherGeneratorAgentService(
+            knowledge_client=knowledge_client,
+            llm_client=llm_client,
             testing_client=testing_client,
-            repository=repository,
+            generation_run_id_factory=lambda: "cypher-run-001",
         )
 
-        result = await svc.ingest_question(QAQuestionRequest(id="qa-001", question="查询设备名称"))
+        result = await service.ingest_question(QAQuestionRequest(id="qa-001", question="查询所有协议版本对应的隧道名称"))
 
-        prompt_client.fetch_prompt.assert_awaited_once_with(id="qa-001", question="查询设备名称")
-        generator_client.generate_from_prompt.assert_awaited_once_with(
-            task_id="qa-001",
-            question_text="查询设备名称",
-            generation_prompt="请生成一个 Cypher JSON",
-        )
+        assert result.generation_status == "submitted_to_testing"
+        assert result.generation_run_id == "cypher-run-001"
+        assert result.reason is None
+        knowledge_client.fetch_context.assert_awaited_once_with(id="qa-001", question="查询所有协议版本对应的隧道名称")
+        prompt = llm_client.generate_from_prompt.await_args.kwargs["llm_prompt"]
+        assert "【任务说明】" in prompt
+        assert "【用户问题】" in prompt
+        assert "【knowledge-agent 上下文】" in prompt
+        assert "【输出格式】" in prompt
+        assert "Schema: (:Protocol)-[:HAS_TUNNEL]->(:Tunnel)" in prompt
+        assert "CGS" not in prompt
+        assert "KO Prompt" not in prompt
+
         testing_client.submit.assert_awaited_once()
-        submission_payload = testing_client.submit.await_args.kwargs["payload"]
-        assert submission_payload.id == "qa-001"
-        assert submission_payload.question == "查询设备名称"
-        assert submission_payload.generated_cypher.startswith("MATCH")
-        assert submission_payload.input_prompt_snapshot == "请生成一个 Cypher JSON"
-        assert result.generation_run_id == "run-001"
-        assert result.attempt_no == 1
-        assert result.generation_status == "submitted_to_testing"
-        assert result.input_prompt_snapshot == "请生成一个 Cypher JSON"
-        assert result.parse_summary == "parsed_json"
-        assert "MATCH (n:NetworkElement)" in result.raw_output_snapshot
+        submission = testing_client.submit.await_args.kwargs["payload"]
+        assert submission.model_dump() == {
+            "id": "qa-001",
+            "question": "查询所有协议版本对应的隧道名称",
+            "generation_run_id": "cypher-run-001",
+            "generated_cypher": "MATCH (p:Protocol)-[:HAS_TUNNEL]->(t:Tunnel) RETURN p.version, t.name",
+            "parse_summary": "direct_cypher",
+            "preflight_check": {"accepted": True},
+            "raw_output_snapshot": "MATCH (p:Protocol)-[:HAS_TUNNEL]->(t:Tunnel) RETURN p.version, t.name",
+            "input_prompt_snapshot": prompt,
+        }
+        assert "attempt_no" not in submission.model_dump()
 
     @pytest.mark.asyncio
-    async def test_prompt_snapshot_is_persisted_before_submit(self):
-        prompt_client = AsyncMock()
-        prompt_client.fetch_prompt.return_value = "请生成一个 Cypher JSON"
+    async def test_retries_with_fixed_extra_constraint_after_markdown_wrapped_output(self):
+        knowledge_client = AsyncMock()
+        knowledge_client.fetch_context.return_value = "Schema: (:Protocol)"
+        llm_client = AsyncMock()
+        llm_client.generate_from_prompt.side_effect = [
+            {"raw_output": "```cypher\nMATCH (p:Protocol) RETURN p.version\n```", "model_name": "test-model"},
+            {"raw_output": "MATCH (p:Protocol) RETURN p.version", "model_name": "test-model"},
+        ]
+        testing_client = AsyncMock()
 
-        generator_client = AsyncMock()
-        generator_client.generate_from_prompt.return_value = {
-            "raw_output": '{"cypher":"MATCH (n:NetworkElement) RETURN n.name AS name LIMIT 5"}',
+        service = CypherGeneratorAgentService(
+            knowledge_client=knowledge_client,
+            llm_client=llm_client,
+            testing_client=testing_client,
+            generation_run_id_factory=lambda: "cypher-run-002",
+        )
+
+        result = await service.ingest_question(QAQuestionRequest(id="qa-002", question="查询协议版本"))
+
+        assert result.generation_status == "submitted_to_testing"
+        assert llm_client.generate_from_prompt.await_count == 2
+        first_prompt = llm_client.generate_from_prompt.await_args_list[0].kwargs["llm_prompt"]
+        second_prompt = llm_client.generate_from_prompt.await_args_list[1].kwargs["llm_prompt"]
+        assert "【额外约束】" not in first_prompt
+        assert "【额外约束】" in second_prompt
+        assert "不要使用 Markdown 或代码块包装查询。" in second_prompt
+        assert "上一轮" not in second_prompt
+
+    @pytest.mark.asyncio
+    async def test_generation_failure_after_three_preflight_failures(self):
+        knowledge_client = AsyncMock()
+        knowledge_client.fetch_context.return_value = "Schema: (:Protocol)"
+        llm_client = AsyncMock()
+        llm_client.generate_from_prompt.return_value = {
+            "raw_output": "MATCH (p:Protocol RETURN p.version",
             "model_name": "test-model",
         }
-
-        repository = MagicMock()
-        repository.next_generation_run_id.return_value = "run-004"
-        repository.get_generation_run.return_value = None
-
-        async def _submit(*, payload):
-            assert repository.save_generation_run.call_count >= 1
-            return {"status": "ok"}
-
-        testing_client = AsyncMock()
-        testing_client.submit.side_effect = _submit
-
-        svc = QueryWorkflowService(
-            prompt_client=prompt_client,
-            generator_client=generator_client,
-            testing_client=testing_client,
-            repository=repository,
-        )
-
-        result = await svc.ingest_question(QAQuestionRequest(id="qa-004", question="查询设备名称"))
-
-        assert result.generation_status == "submitted_to_testing"
-
-    @pytest.mark.asyncio
-    async def test_same_qa_id_creates_new_attempt_and_refetches_prompt(self):
-        prompt_client = AsyncMock()
-        prompt_client.fetch_prompt.side_effect = ["prompt-v1", "prompt-v2"]
-
-        generator_client = AsyncMock()
-        generator_client.generate_from_prompt.side_effect = [
-            {"raw_output": '{"cypher":"MATCH (n) RETURN n LIMIT 5"}', "model_name": "test-model"},
-            {"raw_output": '{"cypher":"MATCH (n) RETURN n LIMIT 3"}', "model_name": "test-model"},
-        ]
-
-        testing_client = AsyncMock()
-        repository = MagicMock()
-        repository.next_generation_run_id.side_effect = ["run-101", "run-102"]
-        repository.next_attempt_no.side_effect = [1, 2]
-
-        svc = QueryWorkflowService(
-            prompt_client=prompt_client,
-            generator_client=generator_client,
-            testing_client=testing_client,
-            repository=repository,
-        )
-
-        first = await svc.ingest_question(QAQuestionRequest(id="qa-101", question="查询设备"))
-        second = await svc.ingest_question(QAQuestionRequest(id="qa-101", question="查询设备"))
-
-        assert first.attempt_no == 1
-        assert second.attempt_no == 2
-        first_payload = testing_client.submit.await_args_list[0].kwargs["payload"]
-        second_payload = testing_client.submit.await_args_list[1].kwargs["payload"]
-        assert first_payload.attempt_no == 1
-        assert second_payload.attempt_no == 2
-        assert prompt_client.fetch_prompt.await_count == 2
-
-    @pytest.mark.asyncio
-    async def test_prompt_fetch_failure_returns_processing_failure(self):
-        prompt_client = AsyncMock()
-        prompt_client.fetch_prompt.side_effect = RuntimeError("knowledge ops offline")
-
-        generator_client = AsyncMock()
         testing_client = AsyncMock()
 
-        repository = MagicMock()
-        repository.next_generation_run_id.return_value = "run-002"
-
-        svc = QueryWorkflowService(
-            prompt_client=prompt_client,
-            generator_client=generator_client,
+        service = CypherGeneratorAgentService(
+            knowledge_client=knowledge_client,
+            llm_client=llm_client,
             testing_client=testing_client,
-            repository=repository,
+            generation_run_id_factory=lambda: "cypher-run-003",
         )
 
-        result = await svc.ingest_question(QAQuestionRequest(id="qa-002", question="查询隧道"))
+        result = await service.ingest_question(QAQuestionRequest(id="qa-003", question="查询协议版本"))
 
-        generator_client.generate_from_prompt.assert_not_called()
+        assert result.generation_status == "generation_failed"
+        assert result.reason == "generation_retry_exhausted"
+        assert result.last_reason == "unbalanced_brackets"
+        assert llm_client.generate_from_prompt.await_count == 3
         testing_client.submit.assert_not_called()
-        assert result.generation_status == "prompt_fetch_failed"
-        assert result.failure_stage == "prompt_fetch"
-        assert "knowledge ops offline" in (result.failure_reason_summary or "")
-
-    def test_get_prompt_snapshot_returns_id_and_prompt(self):
-        prompt_client = AsyncMock()
-        generator_client = AsyncMock()
-        testing_client = AsyncMock()
-        repository = MagicMock()
-        repository.get_generation_prompt_snapshot.return_value = {
-            "id": "qa-003",
-            "input_prompt_snapshot": "请仅返回 JSON，其中包含 cypher 字段",
-        }
-
-        svc = QueryWorkflowService(
-            prompt_client=prompt_client,
-            generator_client=generator_client,
-            testing_client=testing_client,
-            repository=repository,
-        )
-
-        result = svc.get_prompt_snapshot("qa-003")
-
-        repository.get_generation_prompt_snapshot.assert_called_once_with("qa-003")
-        assert result is not None
-        assert result.id == "qa-003"
-        assert result.input_prompt_snapshot == "请仅返回 JSON，其中包含 cypher 字段"
 
     @pytest.mark.asyncio
-    async def test_tugraph_connection_is_reported_as_unsupported(self):
-        result = await workflow_module.test_tugraph_connection()
+    async def test_knowledge_context_failure_is_service_failure_without_llm_retry(self):
+        knowledge_client = AsyncMock()
+        knowledge_client.fetch_context.side_effect = RuntimeError("knowledge-agent offline")
+        llm_client = AsyncMock()
+        testing_client = AsyncMock()
 
-        assert result == {
-            "supported": False,
-            "detail": "Cypher Generation Service no longer executes TuGraph queries directly.",
-        }
+        service = CypherGeneratorAgentService(
+            knowledge_client=knowledge_client,
+            llm_client=llm_client,
+            testing_client=testing_client,
+            generation_run_id_factory=lambda: "cypher-run-004",
+        )
+
+        result = await service.ingest_question(QAQuestionRequest(id="qa-004", question="查询协议版本"))
+
+        assert result.generation_status == "service_failed"
+        assert result.reason == "knowledge_agent_context_unavailable"
+        llm_client.generate_from_prompt.assert_not_called()
+        testing_client.submit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unreadable_llm_response_is_service_failure_without_generation_retry(self):
+        knowledge_client = AsyncMock()
+        knowledge_client.fetch_context.return_value = "Schema: (:Protocol)"
+        llm_client = AsyncMock()
+        llm_client.generate_from_prompt.return_value = {"model_name": "test-model"}
+        testing_client = AsyncMock()
+
+        service = CypherGeneratorAgentService(
+            knowledge_client=knowledge_client,
+            llm_client=llm_client,
+            testing_client=testing_client,
+            generation_run_id_factory=lambda: "cypher-run-005",
+        )
+
+        result = await service.ingest_question(QAQuestionRequest(id="qa-005", question="查询协议版本"))
+
+        assert result.generation_status == "service_failed"
+        assert result.reason == "model_invocation_failed"
+        assert llm_client.generate_from_prompt.await_count == 1
+        testing_client.submit.assert_not_called()
+
+
+def test_preflight_rejects_unsupported_and_malformed_cypher_with_single_reason():
+    cases = {
+        "": "empty_output",
+        "MATCH (n) RETURN n; MATCH (m) RETURN m": "multiple_statements",
+        "MATCH (n RETURN n": "unbalanced_brackets",
+        "MATCH (n) RETURN 'abc": "unclosed_string",
+        "CREATE (n) RETURN n": "write_operation",
+        "CALL db.labels()": "unsupported_call",
+        "RETURN 1": "unsupported_start_clause",
+    }
+
+    for cypher, expected_reason in cases.items():
+        result = run_preflight_check(cypher)
+        assert result.accepted is False
+        assert result.reason == expected_reason
+
+
+def test_preflight_does_not_treat_write_keywords_inside_strings_as_write_operations():
+    result = run_preflight_check('MATCH (n {name: "DELETE"}) RETURN n')
+
+    assert result.accepted is True
+
+
+def test_preflight_uses_clause_boundaries_for_start_and_write_checks():
+    assert run_preflight_check("MATCHED (n) RETURN n").reason == "unsupported_start_clause"
+    assert run_preflight_check("MATCH (n:Set) RETURN n").accepted is True
+    assert run_preflight_check("MATCH (n) SET n.name = 'x' RETURN n").reason == "write_operation"
+    assert run_preflight_check("MATCH (n) RETURN n.set").accepted is True
+
+
+def test_preflight_rejects_call_clause_even_when_it_is_not_the_start_clause():
+    result = run_preflight_check("MATCH (n) CALL db.labels() YIELD label RETURN label")
+
+    assert result.accepted is False
+    assert result.reason == "unsupported_call"
+
+
+def test_preflight_allows_semicolon_inside_string_literal():
+    result = run_preflight_check('MATCH (n {name: "a;b"}) RETURN n')
+
+    assert result.accepted is True
+
+
+def test_preflight_check_enforces_reason_invariant():
+    with pytest.raises(ValidationError):
+        PreflightCheck(accepted=False)
+
+    with pytest.raises(ValidationError):
+        PreflightCheck(accepted=True, reason="empty_output")
+
+
+def test_submission_payload_requires_accepted_preflight_check():
+    with pytest.raises(ValidationError):
+        GeneratedCypherSubmissionRequest(
+            id="qa-001",
+            question="查询协议版本",
+            generation_run_id="cypher-run-001",
+            generated_cypher="MATCH (p:Protocol) RETURN p.version",
+            parse_summary="direct_cypher",
+            preflight_check=PreflightCheck(accepted=False, reason="unsupported_start_clause"),
+            raw_output_snapshot="MATCH (p:Protocol) RETURN p.version",
+            input_prompt_snapshot="prompt",
+        )
+
+
+def test_generation_run_result_enforces_status_reason_invariants():
+    GenerationRunResult(generation_run_id="run-ok", generation_status="submitted_to_testing")
+
+    with pytest.raises(ValidationError):
+        GenerationRunResult(
+            generation_run_id="run-invalid",
+            generation_status="submitted_to_testing",
+            reason="empty_output",
+        )
+
+    with pytest.raises(ValidationError):
+        GenerationRunResult(generation_run_id="run-invalid", generation_status="generation_failed")
+
+    with pytest.raises(ValidationError):
+        GenerationRunResult(
+            generation_run_id="run-invalid",
+            generation_status="service_failed",
+            reason="empty_output",
+        )
+
+    with pytest.raises(ValidationError):
+        GenerationRunResult(
+            generation_run_id="run-invalid",
+            generation_status="generation_failed",
+            reason="generation_retry_exhausted",
+        )
+
+
+def test_parser_rejects_cypher_with_explanation_text_after_query():
+    parsed = parse_model_output(
+        "MATCH (p:Protocol) RETURN p.version\n"
+        "This query returns all protocol versions."
+    )
+
+    assert parsed.parsed_cypher == ""
+    assert parsed.reason == "contains_explanation"

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Dict, Optional
+from typing import Any, Dict
 
 import httpx
 
-from .models import EvaluationSubmissionRequest, EvaluationSubmissionResponse
-logger = logging.getLogger("query_generator")
+from .models import GeneratedCypherSubmissionRequest
+
+
+logger = logging.getLogger("cypher_generator_agent")
 
 
 def _extract_request_id(headers: object) -> str | None:
@@ -35,16 +37,22 @@ class OpenAICompatibleCypherGenerator:
         self.timeout_seconds = timeout_seconds
         self.temperature = temperature
 
-    async def generate_from_prompt(self, task_id: str, question_text: str, generation_prompt: str) -> Dict[str, str]:
+    async def generate_from_prompt(
+        self,
+        *,
+        task_id: str,
+        question_text: str,
+        llm_prompt: str,
+    ) -> Dict[str, str]:
         started = time.monotonic()
         logger.warning(
             "llm_call_started target=%s qa_id=%s model=%s base_url=%s",
-            "query_generator.llm",
+            "cypher_generator_agent.llm",
             task_id,
             self.model,
             self.base_url,
             extra={
-                "target": "query_generator.llm",
+                "target": "cypher_generator_agent.llm",
                 "qa_id": task_id,
                 "model": self.model,
                 "base_url": self.base_url,
@@ -61,7 +69,7 @@ class OpenAICompatibleCypherGenerator:
                     json={
                         "model": self.model,
                         "temperature": self.temperature,
-                        "messages": [{"role": "user", "content": generation_prompt}],
+                        "messages": [{"role": "user", "content": llm_prompt}],
                     },
                 )
                 response.raise_for_status()
@@ -70,14 +78,14 @@ class OpenAICompatibleCypherGenerator:
                 elapsed_ms = int((time.monotonic() - started) * 1000)
                 logger.warning(
                     "llm_call_failed target=%s qa_id=%s model=%s base_url=%s elapsed_ms=%s error=%s",
-                    "query_generator.llm",
+                    "cypher_generator_agent.llm",
                     task_id,
                     self.model,
                     self.base_url,
                     elapsed_ms,
                     str(exc),
                     extra={
-                        "target": "query_generator.llm",
+                        "target": "cypher_generator_agent.llm",
                         "qa_id": task_id,
                         "model": self.model,
                         "base_url": self.base_url,
@@ -92,14 +100,14 @@ class OpenAICompatibleCypherGenerator:
         request_id = _extract_request_id(getattr(response, "headers", None))
         logger.warning(
             "llm_call_succeeded target=%s qa_id=%s model=%s base_url=%s elapsed_ms=%s request_id=%s",
-            "query_generator.llm",
+            "cypher_generator_agent.llm",
             task_id,
             self.model,
             self.base_url,
             elapsed_ms,
             request_id,
             extra={
-                "target": "query_generator.llm",
+                "target": "cypher_generator_agent.llm",
                 "qa_id": task_id,
                 "model": self.model,
                 "base_url": self.base_url,
@@ -107,32 +115,35 @@ class OpenAICompatibleCypherGenerator:
                 "request_id": request_id,
             },
         )
-        return {
-            "raw_output": content,
-            "model_name": self.model,
-        }
+        return {"raw_output": content, "model_name": self.model}
 
 
-class QwenGeneratorClient:
-    def __init__(self, llm_generator: Optional[OpenAICompatibleCypherGenerator] = None) -> None:
+class CypherLLMClient:
+    def __init__(self, llm_generator: OpenAICompatibleCypherGenerator | None = None) -> None:
         self.llm_generator = llm_generator
 
-    async def generate_from_prompt(self, task_id: str, question_text: str, generation_prompt: str) -> Dict[str, str]:
+    async def generate_from_prompt(
+        self,
+        *,
+        task_id: str,
+        question_text: str,
+        llm_prompt: str,
+    ) -> Dict[str, str]:
         if self.llm_generator is None:
-            raise RuntimeError("LLM generator is required for Cypher generation service.")
+            raise RuntimeError("LLM generator is required for cypher-generator-agent.")
+        return await self.llm_generator.generate_from_prompt(
+            task_id=task_id,
+            question_text=question_text,
+            llm_prompt=llm_prompt,
+        )
 
-        logger.info("LLM call started for id=%s", task_id)
-        result = await self.llm_generator.generate_from_prompt(task_id, question_text, generation_prompt)
-        logger.info("LLM call succeeded for id=%s", task_id)
-        return result
 
-
-class PromptServiceClient:
+class KnowledgeAgentClient:
     def __init__(self, base_url: str, timeout_seconds: float) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
 
-    async def fetch_prompt(self, id: str, question: str) -> str:
+    async def fetch_context(self, id: str, question: str) -> str:
         started = time.monotonic()
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             try:
@@ -145,7 +156,7 @@ class PromptServiceClient:
                 logger.warning(
                     "outbound_call_failed",
                     extra={
-                        "target": "knowledge_ops.prompt_package",
+                        "target": "knowledge_agent.context",
                         "qa_id": id,
                         "elapsed_ms": elapsed_ms,
                         "error": str(exc),
@@ -157,7 +168,7 @@ class PromptServiceClient:
             logger.info(
                 "outbound_call_ok",
                 extra={
-                    "target": "knowledge_ops.prompt_package",
+                    "target": "knowledge_agent.context",
                     "qa_id": id,
                     "status_code": response.status_code,
                     "elapsed_ms": elapsed_ms,
@@ -165,19 +176,38 @@ class PromptServiceClient:
             )
             content_type = response.headers.get("content-type", "")
             if "application/json" in content_type.lower():
-                raise ValueError("prompt-package contract violation: expected text/plain prompt package response")
-            prompt = response.text.strip()
-            if not prompt:
-                raise ValueError("prompt-package contract violation: empty prompt package response")
-            return prompt
+                raise ValueError("knowledge-agent context contract violation: expected text/plain context response")
+            context = response.text.strip()
+            if not context:
+                raise ValueError("knowledge-agent context contract violation: empty context response")
+            return context
 
 
-class TestingServiceClient:
-    def __init__(self, base_url: str, timeout_seconds: float) -> None:
+class TestingAgentClient:
+    __test__ = False
+
+    def __init__(self, base_url: str, timeout_seconds: float, max_submit_attempts: int = 3) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
+        self.max_submit_attempts = max_submit_attempts
 
-    async def submit(self, payload: EvaluationSubmissionRequest) -> EvaluationSubmissionResponse:
+    async def submit(self, payload: GeneratedCypherSubmissionRequest) -> Dict[str, Any]:
+        last_error: Exception | None = None
+        for submit_index in range(1, self.max_submit_attempts + 1):
+            try:
+                return await self._submit_once(payload, submit_index)
+            except httpx.HTTPStatusError as exc:
+                last_error = exc
+                status_code = exc.response.status_code
+                if status_code < 500 or status_code == 409:
+                    raise
+            except Exception as exc:
+                last_error = exc
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("testing-agent submission failed")
+
+    async def _submit_once(self, payload: GeneratedCypherSubmissionRequest, submit_index: int) -> Dict[str, Any]:
         started = time.monotonic()
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             try:
@@ -190,8 +220,9 @@ class TestingServiceClient:
                 logger.warning(
                     "outbound_call_failed",
                     extra={
-                        "target": "testing.submission",
+                        "target": "testing_agent.submission",
                         "qa_id": payload.id,
+                        "submit_index": submit_index,
                         "elapsed_ms": elapsed_ms,
                         "error": str(exc),
                     },
@@ -202,10 +233,11 @@ class TestingServiceClient:
             logger.info(
                 "outbound_call_ok",
                 extra={
-                    "target": "testing.submission",
+                    "target": "testing_agent.submission",
                     "qa_id": payload.id,
+                    "submit_index": submit_index,
                     "status_code": response.status_code,
                     "elapsed_ms": elapsed_ms,
                 },
             )
-            return EvaluationSubmissionResponse.model_validate(response.json())
+            return {}

@@ -32,7 +32,7 @@
    - 提供自然语言问题与黄金样本
 
 当前 `cypher-generator-agent` 的正式职责定义以
-[Cypher_Generation_Service_Design.md](/Users/mangowmac/Desktop/code/NL2Cypher/services/query_generator_agent/docs/Cypher_Generation_Service_Design.md)
+[cypher-generator-agent-design.md](/Users/mangowmac/Desktop/code/NL2Cypher/services/query_generator_agent/docs/cypher-generator-agent-design.md)
 为准。
 
 ## 快速开始
@@ -76,17 +76,7 @@ curl -X POST http://localhost:8000/api/v1/qa/questions \
   }'
 ```
 
-查询本轮生成结果：
-
-```bash
-curl http://localhost:8000/api/v1/questions/qa-001
-```
-
-查询本轮输入提示词快照：
-
-```bash
-curl http://localhost:8000/api/v1/questions/qa-001/prompt
-```
+该接口不返回生成结果、生成状态或提示词快照。`cypher-generator-agent` 只负责把生成结果和证据提交给 `testing-agent`。
 
 ### testing-agent
 
@@ -114,7 +104,9 @@ curl -X POST http://localhost:8001/api/v1/evaluations/submissions \
     "generation_run_id": "run-001",
     "generated_cypher": "MATCH (ne:NetworkElement)-[:HAS_PORT]->(p:Port) RETURN ne.name, p.name LIMIT 10",
     "parse_summary": "parsed_json",
-    "guardrail_summary": "accepted",
+    "preflight_check": {
+      "accepted": true
+    },
     "raw_output_snapshot": "",
     "input_prompt_snapshot": "请只返回 cypher 字段"
   }'
@@ -136,15 +128,15 @@ curl http://localhost:8001/api/v1/issues/{ticket_id}
 
 ### cypher-generator-agent 环境变量
 
-- `QUERY_GENERATOR_HOST`
-- `QUERY_GENERATOR_PORT`
-- `QUERY_GENERATOR_TESTING_SERVICE_URL`
-- `QUERY_GENERATOR_KNOWLEDGE_OPS_SERVICE_URL`
-- `QUERY_GENERATOR_LLM_ENABLED`
-- `QUERY_GENERATOR_LLM_PROVIDER`
-- `QUERY_GENERATOR_LLM_BASE_URL`
-- `QUERY_GENERATOR_LLM_API_KEY`
-- `QUERY_GENERATOR_LLM_MODEL`
+- `CYPHER_GENERATOR_AGENT_HOST`
+- `CYPHER_GENERATOR_AGENT_PORT`
+- `CYPHER_GENERATOR_AGENT_TESTING_AGENT_URL`
+- `CYPHER_GENERATOR_AGENT_KNOWLEDGE_AGENT_URL`
+- `CYPHER_GENERATOR_AGENT_LLM_ENABLED`
+- `CYPHER_GENERATOR_AGENT_LLM_PROVIDER`
+- `CYPHER_GENERATOR_AGENT_LLM_BASE_URL`
+- `CYPHER_GENERATOR_AGENT_LLM_API_KEY`
+- `CYPHER_GENERATOR_AGENT_LLM_MODEL`
 - 说明：该服务默认要求启用 LLM，缺少以上任一关键配置会直接启动失败，不再回退到启发式生成。
 
 ### testing-agent 环境变量
@@ -167,7 +159,7 @@ curl http://localhost:8001/api/v1/issues/{ticket_id}
 
 - `REPAIR_SERVICE_HOST`
 - `REPAIR_SERVICE_PORT`
-- `REPAIR_SERVICE_CGS_BASE_URL`
+- `REPAIR_SERVICE_QUERY_GENERATOR_SERVICE_URL`
 - `REPAIR_SERVICE_KNOWLEDGE_OPS_REPAIRS_APPLY_URL`
 - `REPAIR_SERVICE_LLM_ENABLED`
 - `REPAIR_SERVICE_LLM_BASE_URL`
@@ -182,5 +174,5 @@ curl http://localhost:8001/api/v1/issues/{ticket_id}
 - `cypher-generator-agent` 输出的是“生成阶段处理状态”，不是最终业务评测结果。
 - 根因分析依赖 `id + input_prompt_snapshot + raw_output_snapshot`，这些字段不得删除。
 - 若文档与
-  [Cypher_Generation_Service_Design.md](/Users/mangowmac/Desktop/code/NL2Cypher/services/query_generator_agent/docs/Cypher_Generation_Service_Design.md)
+  [cypher-generator-agent-design.md](/Users/mangowmac/Desktop/code/NL2Cypher/services/query_generator_agent/docs/cypher-generator-agent-design.md)
   冲突，以该设计文档为准。
