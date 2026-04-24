@@ -2,7 +2,7 @@
 
 一个围绕 `id` 串联的自然语言问答闭环系统。仓库现已按“单仓内独立服务工程”重组，核心目录如下：
 
-- `services/query_generator_agent/`
+- `services/cypher_generator_agent/`
 - `services/testing_agent/`
 - `services/repair_agent/`
 - `console/runtime_console/`
@@ -32,7 +32,7 @@
    - 提供自然语言问题与黄金样本
 
 当前 `cypher-generator-agent` 的正式职责定义以
-[cypher-generator-agent-design.md](/Users/mangowmac/Desktop/code/NL2Cypher/services/query_generator_agent/docs/cypher-generator-agent-design.md)
+[cypher-generator-agent-design.md](/Users/mangowmac/Desktop/code/NL2Cypher/services/cypher_generator_agent/docs/cypher-generator-agent-design.md)
 为准。
 
 ## 快速开始
@@ -174,5 +174,5 @@ curl http://localhost:8001/api/v1/issues/{ticket_id}
 - `cypher-generator-agent` 输出的是“生成阶段处理状态”，不是最终业务评测结果。
 - 根因分析依赖 `id + input_prompt_snapshot + raw_output_snapshot`，这些字段不得删除。
 - 若文档与
-  [cypher-generator-agent-design.md](/Users/mangowmac/Desktop/code/NL2Cypher/services/query_generator_agent/docs/cypher-generator-agent-design.md)
+  [cypher-generator-agent-design.md](/Users/mangowmac/Desktop/code/NL2Cypher/services/cypher_generator_agent/docs/cypher-generator-agent-design.md)
   冲突，以该设计文档为准。

@@ -50,7 +50,7 @@ python -m uvicorn services.repair_agent.app.main:app --host 0.0.0.0 --port 8002 
 pids+=("$!")
 python -m uvicorn services.testing_agent.app.main:app --host 0.0.0.0 --port 8001 &
 pids+=("$!")
-python -m uvicorn services.query_generator_agent.app.main:app --host 0.0.0.0 --port 8000 &
+python -m uvicorn services.cypher_generator_agent.app.main:app --host 0.0.0.0 --port 8000 &
 pids+=("$!")
 
 for _ in $(seq 1 30); do
@@ -67,7 +67,7 @@ for _ in $(seq 1 30); do
 done
 
 echo "running:"
-echo "  query-generator-agent    http://127.0.0.1:8000"
+echo "  cypher-generator-agent    http://127.0.0.1:8000"
 echo "  testing-agent            http://127.0.0.1:8001"
 echo "  repair-agent (KRSS)      http://127.0.0.1:8002"
 echo "  knowledge_ops            http://127.0.0.1:8010"

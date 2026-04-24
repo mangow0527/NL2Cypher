@@ -58,7 +58,7 @@ start_service() {
 
 echo "🚀 启动 Text2Cypher 闭环系统..."
 
-start_service "query_generator_service" "services.query_generator_agent.app.main:app" "8000"
+start_service "cypher_generator_agent" "services.cypher_generator_agent.app.main:app" "8000"
 start_service "runtime_results_service" "console.runtime_console.app.main:app" "8001"
 start_service "repair_service" "services.repair_agent.app.main:app" "8002"
 start_service "testing_service" "services.testing_agent.app.main:app" "8003"

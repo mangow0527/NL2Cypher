@@ -26,8 +26,8 @@ def main() -> int:
 
     root = Path(__file__).resolve().parents[1]
     paths = [
-        root / "data/query_generator_service/questions" / f"{qa_id}.json",
-        root / "data/query_generator_service/generation_runs" / f"{qa_id}.json",
+        root / "data/cypher_generator_agent/questions" / f"{qa_id}.json",
+        root / "data/cypher_generator_agent/generation_runs" / f"{qa_id}.json",
         root / "data/testing_service/goldens" / f"{qa_id}.json",
         root / "data/testing_service/submissions" / f"{qa_id}.json",
         root / "data/testing_service/issue_tickets" / f"{ticket_id}.json",

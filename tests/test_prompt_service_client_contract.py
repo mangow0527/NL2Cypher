@@ -4,8 +4,8 @@ from typing import Any, Dict, Optional
 
 import pytest
 
-from services.query_generator_agent.app.clients import KnowledgeAgentClient, TestingAgentClient
-from services.query_generator_agent.app.models import GeneratedCypherSubmissionRequest, PreflightCheck
+from services.cypher_generator_agent.app.clients import KnowledgeAgentClient, TestingAgentClient
+from services.cypher_generator_agent.app.models import GeneratedCypherSubmissionRequest, PreflightCheck
 
 
 class _FakeResponse:

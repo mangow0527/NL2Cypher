@@ -30,4 +30,4 @@ async def ingest_question(request: QAQuestionRequest) -> Response:
 
 if __name__ == "__main__":
     settings = get_settings()
-    uvicorn.run("services.query_generator_agent.app.main:app", host=settings.host, port=settings.port, reload=False)
+    uvicorn.run("services.cypher_generator_agent.app.main:app", host=settings.host, port=settings.port, reload=False)

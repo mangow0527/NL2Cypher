@@ -6,24 +6,24 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pydantic import ValidationError
 
-from services.query_generator_agent.app.clients import (
+from services.cypher_generator_agent.app.clients import (
     CypherLLMClient,
     OpenAICompatibleCypherGenerator,
 )
-from services.query_generator_agent.app.config import Settings as QueryGeneratorSettings
+from services.cypher_generator_agent.app.config import Settings as CypherGeneratorAgentSettings
 from services.repair_agent.app.config import Settings as RepairServiceSettings
 from services.testing_agent.app.clients import LLMEvaluationClient
 from services.testing_agent.app.config import Settings as TestingServiceSettings
 
 
-def test_query_generator_requires_complete_llm_configuration(monkeypatch: pytest.MonkeyPatch):
+def test_cypher_generator_agent_requires_complete_llm_configuration(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("CYPHER_GENERATOR_AGENT_LLM_ENABLED", raising=False)
     monkeypatch.delenv("CYPHER_GENERATOR_AGENT_LLM_BASE_URL", raising=False)
     monkeypatch.delenv("CYPHER_GENERATOR_AGENT_LLM_API_KEY", raising=False)
     monkeypatch.delenv("CYPHER_GENERATOR_AGENT_LLM_MODEL", raising=False)
 
     with pytest.raises(ValidationError):
-        QueryGeneratorSettings(_env_file=None)
+        CypherGeneratorAgentSettings(_env_file=None)
 
 
 def test_testing_service_requires_complete_llm_configuration(monkeypatch: pytest.MonkeyPatch):
@@ -50,7 +50,7 @@ def test_repair_service_accepts_legacy_model_env_name(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.asyncio
-async def test_query_generator_raises_when_llm_call_fails():
+async def test_cypher_generator_agent_raises_when_llm_call_fails():
     llm_generator = AsyncMock(spec=OpenAICompatibleCypherGenerator)
     llm_generator.generate_from_prompt.side_effect = RuntimeError("llm offline")
     client = CypherLLMClient(llm_generator=llm_generator)
@@ -64,7 +64,7 @@ async def test_query_generator_raises_when_llm_call_fails():
 
 
 @pytest.mark.asyncio
-async def test_query_generator_logs_exact_llm_call_evidence(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture):
+async def test_cypher_generator_agent_logs_exact_llm_call_evidence(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture):
     client = OpenAICompatibleCypherGenerator(
         base_url="https://example.com/v1",
         api_key="secret",

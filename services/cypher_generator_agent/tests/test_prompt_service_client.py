@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import httpx
 
-from services.query_generator_agent.app.clients import KnowledgeAgentClient
+from services.cypher_generator_agent.app.clients import KnowledgeAgentClient
 
 
 class _FakeAsyncClient:
@@ -31,7 +31,7 @@ class KnowledgeAgentClientTest(unittest.TestCase):
         )
         client = KnowledgeAgentClient(base_url="http://knowledge-agent", timeout_seconds=5)
 
-        with patch("services.query_generator_agent.app.clients.httpx.AsyncClient", return_value=_FakeAsyncClient(response)):
+        with patch("services.cypher_generator_agent.app.clients.httpx.AsyncClient", return_value=_FakeAsyncClient(response)):
             context = asyncio.run(client.fetch_context(id="qa-1", question="查询所有节点"))
 
         self.assertEqual(context, "Schema: (:Protocol)-[:HAS_TUNNEL]->(:Tunnel)")

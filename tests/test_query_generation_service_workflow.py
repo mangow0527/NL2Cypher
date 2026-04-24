@@ -5,15 +5,15 @@ from unittest.mock import AsyncMock
 import pytest
 from pydantic import ValidationError
 
-from services.query_generator_agent.app.models import (
+from services.cypher_generator_agent.app.models import (
     GeneratedCypherSubmissionRequest,
     GenerationRunResult,
     PreflightCheck,
     QAQuestionRequest,
 )
-from services.query_generator_agent.app.parser import parse_model_output
-from services.query_generator_agent.app.preflight import run_preflight_check
-from services.query_generator_agent.app.service import CypherGeneratorAgentService
+from services.cypher_generator_agent.app.parser import parse_model_output
+from services.cypher_generator_agent.app.preflight import run_preflight_check
+from services.cypher_generator_agent.app.service import CypherGeneratorAgentService
 
 
 class TestCypherGeneratorAgentWorkflow:

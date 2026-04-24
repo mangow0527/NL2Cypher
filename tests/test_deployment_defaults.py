@@ -1,14 +1,14 @@
 import unittest
 from unittest.mock import patch
 
-from services.query_generator_agent.app.config import Settings as QueryGeneratorSettings
+from services.cypher_generator_agent.app.config import Settings as CypherGeneratorAgentSettings
 from services.repair_agent.app.config import Settings as RepairServiceSettings
 from console.runtime_console.app.config import Settings as RuntimeResultsSettings
 from services.testing_agent.app.config import Settings as TestingServiceSettings
 
 
 class DeploymentDefaultsTest(unittest.TestCase):
-    def test_query_generator_defaults_keep_local_service_routing(self):
+    def test_cypher_generator_agent_defaults_keep_local_service_routing(self):
         with patch.dict(
             "os.environ",
             {
@@ -19,7 +19,7 @@ class DeploymentDefaultsTest(unittest.TestCase):
             },
             clear=False,
         ):
-            settings = QueryGeneratorSettings(_env_file=None)
+            settings = CypherGeneratorAgentSettings(_env_file=None)
 
         self.assertEqual(settings.testing_agent_url, "http://127.0.0.1:8003")
         self.assertEqual(settings.knowledge_agent_url, "http://127.0.0.1:8010")
@@ -46,7 +46,7 @@ class DeploymentDefaultsTest(unittest.TestCase):
         settings = RuntimeResultsSettings()
 
         self.assertEqual(settings.port, 8001)
-        self.assertEqual(settings.query_generator_data_dir, "data/query_generator_service")
+        self.assertEqual(settings.cypher_generator_agent_data_dir, "data/cypher_generator_agent")
         self.assertEqual(settings.testing_data_dir, "data/testing_service")
         self.assertEqual(settings.repair_data_dir, "data/repair_service")
 
@@ -63,5 +63,5 @@ class DeploymentDefaultsTest(unittest.TestCase):
         ):
             settings = RepairServiceSettings(_env_file=None)
 
-        self.assertEqual(settings.query_generator_service_url, "http://127.0.0.1:8000")
+        self.assertEqual(settings.cypher_generator_agent_url, "http://127.0.0.1:8000")
         self.assertEqual(settings.tugraph_url, "http://118.196.92.128:7070")

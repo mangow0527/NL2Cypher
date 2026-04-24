@@ -5,7 +5,7 @@ Production service code should use service-local models.
 
 from pydantic import BaseModel, Field
 
-from services.query_generator_agent.app.models import (
+from services.cypher_generator_agent.app.models import (
     GeneratedCypherSubmissionRequest,
     GenerationRunResult,
     PreflightCheck,

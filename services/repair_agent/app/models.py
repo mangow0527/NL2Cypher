@@ -16,7 +16,7 @@ RootCauseType = Literal[
     "mixed_issue",
     "unknown",
 ]
-ActionTarget = Literal["query_generator_service", "knowledge_ops_service", "qa_generation_service"]
+ActionTarget = Literal["cypher_generator_agent", "knowledge_ops_service", "qa_generation_service"]
 ActionType = Literal["prompt_adjustment", "knowledge_enrichment", "question_rewrite", "manual_review"]
 GenerationProcessingStatus = Literal[
     "received",
@@ -48,8 +48,23 @@ RepairPlanState = Literal[
 ]
 DispatchStatus = Literal["sent", "stored_for_later"]
 KnowledgeType = Literal["cypher_syntax", "few_shot", "system_prompt", "business_knowledge"]
-ImprovementStatus = Literal["first_run", "improved", "regressed", "unchanged", "not_comparable"]
 ImprovementDimensionStatus = Literal["improved", "regressed", "unchanged", "not_comparable"]
+FailureClass = Literal["syntax_validity", "schema_alignment", "result_correctness", "query_intent_alignment"]
+Severity = Literal["low", "medium", "high", "critical"]
+DiagnosticTag = Literal[
+    "syntax_error",
+    "execution_error",
+    "schema_label_mismatch",
+    "schema_relation_mismatch",
+    "schema_property_mismatch",
+    "low_result_precision",
+    "low_result_recall",
+    "projection_mismatch",
+    "filter_mismatch",
+    "aggregation_mismatch",
+    "ordering_mismatch",
+    "limit_mismatch",
+]
 
 
 class QAQuestionRequest(BaseModel):
@@ -130,6 +145,15 @@ class EvaluationSubmissionRequest(BaseModel):
     input_prompt_snapshot: str
 
 
+class GenerationEvidence(BaseModel):
+    generation_run_id: str
+    attempt_no: int = Field(..., ge=1)
+    parse_summary: str
+    guardrail_summary: str
+    raw_output_snapshot: str
+    input_prompt_snapshot: str
+
+
 class EvaluationDimensions(BaseModel):
     syntax_validity: DimensionStatus
     schema_alignment: DimensionStatus
@@ -154,6 +178,16 @@ class ActualAnswer(BaseModel):
     execution: TuGraphExecutionResult
 
 
+class DiagnosticSummary(BaseModel):
+    failure_classes: List[FailureClass] = Field(default_factory=list)
+    primary_failure_class: Optional[FailureClass] = None
+    severity: Severity = "low"
+    dimension_signals: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    failure_diff: Dict[str, Any] = Field(default_factory=dict)
+    diagnostic_tags: List[DiagnosticTag] = Field(default_factory=list)
+    evidence_preview: List[str] = Field(default_factory=list)
+
+
 class IssueTicket(BaseModel):
     ticket_id: str = Field(default_factory=lambda: str(uuid4()))
     id: str
@@ -161,8 +195,9 @@ class IssueTicket(BaseModel):
     question: str
     expected: ExpectedAnswer
     actual: ActualAnswer
-    knowledge_context: Optional[KnowledgeContext] = None
     evaluation: EvaluationSummary
+    generation_evidence: Optional[GenerationEvidence] = None
+    diagnostic_summary: Optional[DiagnosticSummary] = None
     input_prompt_snapshot: str = ""
 
 
@@ -212,18 +247,16 @@ class PromptSnapshotResponse(BaseModel):
 
 
 class ImprovementDimensions(BaseModel):
-    verdict_change: ImprovementDimensionStatus = "not_comparable"
-    execution_change: ImprovementDimensionStatus = "not_comparable"
-    syntax_change: ImprovementDimensionStatus = "not_comparable"
-    semantic_change: ImprovementDimensionStatus = "not_comparable"
-    repair_effectiveness: ImprovementDimensionStatus = "not_comparable"
+    syntax_validity_change: ImprovementDimensionStatus = "not_comparable"
+    schema_alignment_change: ImprovementDimensionStatus = "not_comparable"
+    result_correctness_change: ImprovementDimensionStatus = "not_comparable"
+    question_alignment_change: ImprovementDimensionStatus = "not_comparable"
 
 
 class ImprovementAssessment(BaseModel):
     qa_id: str
     current_attempt_no: int = Field(ge=1)
     previous_attempt_no: Optional[int] = Field(default=None, ge=1)
-    status: ImprovementStatus
     summary_zh: str
     dimensions: ImprovementDimensions = Field(default_factory=ImprovementDimensions)
     highlights: List[str] = Field(default_factory=list)
@@ -286,7 +319,7 @@ class RepairPlanEnvelope(BaseModel):
     plan: RepairPlan
 
 
-class QueryGeneratorRepairReceipt(BaseModel):
+class CypherGeneratorAgentRepairReceipt(BaseModel):
     status: str
     plan_id: str
     id: str

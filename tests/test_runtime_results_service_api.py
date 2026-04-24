@@ -36,6 +36,7 @@ def test_runtime_results_center_html_exposes_task_list_and_cypher_quality(monkey
     assert "Runtime Results Center" in response.text
     assert "Cypher 结果与质量" in response.text
     assert "KRSS 诊断摘要" in response.text
+    assert "Testing Service 持久化的 IssueTicket 与 KRSSAnalysisRecord" in response.text
     assert "任务列表" in response.text
     assert "服务运行状态" in response.text
     assert "开始联调" not in response.text
@@ -78,6 +79,12 @@ def test_runtime_results_service_status_endpoint_returns_five_service_cards(monk
     ]
 
 
+def test_runtime_results_service_uses_local_health_client_boundary():
+    import console.runtime_console.app.service as runtime_service_module
+
+    assert runtime_service_module.ServiceHealthClient.__module__ == "console.runtime_console.app.service"
+
+
 def test_runtime_results_tasks_only_include_qa_generator_items(monkeypatch, tmp_path: Path):
     query_dir = tmp_path / "query"
     testing_dir = tmp_path / "testing"
@@ -86,7 +93,7 @@ def test_runtime_results_tasks_only_include_qa_generator_items(monkeypatch, tmp_
     monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(testing_dir))
     monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_REPAIR_DATA_DIR", str(repair_dir))
 
-    from services.query_generator_agent.app.repository import QueryGeneratorRepository
+    from services.cypher_generator_agent.app.repository import QueryGeneratorRepository
     from console.runtime_console.app.main import create_app
 
     query_repository = QueryGeneratorRepository(str(query_dir))
@@ -140,7 +147,7 @@ def test_runtime_results_task_detail_aggregates_cypher_quality_and_repair_trace(
     monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(testing_dir))
     monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_REPAIR_DATA_DIR", str(repair_dir))
 
-    from services.query_generator_agent.app.repository import QueryGeneratorRepository
+    from services.cypher_generator_agent.app.repository import QueryGeneratorRepository
     from services.repair_agent.app.repository import RepairRepository
     from console.runtime_console.app.main import create_app
     from services.testing_agent.app.repository import TestingRepository
@@ -299,14 +306,12 @@ def test_runtime_results_task_detail_aggregates_cypher_quality_and_repair_trace(
             qa_id="qa_fiber_001",
             current_attempt_no=2,
             previous_attempt_no=1,
-            status="improved",
             summary_zh="第 2 轮相较第 1 轮已改善。",
             dimensions=ImprovementDimensions(
-                verdict_change="improved",
-                execution_change="unchanged",
-                syntax_change="unchanged",
-                semantic_change="improved",
-                repair_effectiveness="improved",
+                syntax_validity_change="unchanged",
+                schema_alignment_change="unchanged",
+                result_correctness_change="unchanged",
+                question_alignment_change="improved",
             ),
             highlights=["上一轮问题已不再出现: missing ORDER BY"],
             evidence=["limit mismatch"],
@@ -359,9 +364,12 @@ def test_runtime_results_task_detail_aggregates_cypher_quality_and_repair_trace(
     assert payload["attempt_no"] == 2
     assert payload["stages"]["evaluation"]["status"] == "failed"
     assert payload["stages"]["knowledge_repair"]["status"] == "passed"
-    assert payload["improvement_assessment"]["status"] == "improved"
     assert payload["improvement_assessment"]["previous_attempt_no"] == 1
+    assert payload["improvement_assessment"]["dimensions"]["question_alignment_change"] == "improved"
     assert payload["artifacts"]["repair"]["analysis"]["analysis_id"] == "analysis-ticket-qa_fiber_001"
+    assert payload["artifacts"]["repair"]["issue_ticket"]["input_prompt_snapshot"] == "Fiber prompt snapshot"
+    assert payload["artifacts"]["repair"]["analysis"]["prompt_snapshot"] == "Fiber prompt snapshot"
+    assert payload["artifacts"]["repair"]["analysis"]["prompt_snapshot"] == payload["artifacts"]["repair"]["issue_ticket"]["input_prompt_snapshot"]
     assert payload["artifacts"]["repair"]["analysis"]["primary_knowledge_type"] == "few_shot"
     assert payload["artifacts"]["repair"]["analysis"]["validation_mode"] == "lightweight"
     assert payload["artifacts"]["repair"]["analysis"]["validation_result"]["validated_patch_types"] == ["few_shot"]
@@ -375,7 +383,7 @@ def test_runtime_results_prefers_latest_attempt_artifacts_when_question_points_t
     monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(testing_dir))
     monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_REPAIR_DATA_DIR", str(repair_dir))
 
-    from services.query_generator_agent.app.repository import QueryGeneratorRepository
+    from services.cypher_generator_agent.app.repository import QueryGeneratorRepository
     from console.runtime_console.app.main import create_app
     from services.testing_agent.app.repository import TestingRepository
 

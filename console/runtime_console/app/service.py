@@ -5,26 +5,34 @@ import re
 from pathlib import Path
 from typing import Any
 
-from services.testing_agent.app.clients import ServiceHealthClient
+import httpx
+
+
+class ServiceHealthClient:
+    async def read_health(self, base_url: str, timeout_seconds: float) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+            response = await client.get(f"{base_url.rstrip('/')}/health")
+            response.raise_for_status()
+            return response.json()
 
 
 class RuntimeResultsService:
     def __init__(
         self,
         *,
-        query_generator_data_dir: str,
+        cypher_generator_agent_data_dir: str,
         testing_data_dir: str,
         repair_data_dir: str,
-        query_generator_base_url: str,
+        cypher_generator_agent_base_url: str,
         testing_service_base_url: str,
         repair_service_base_url: str,
         knowledge_ops_base_url: str,
         qa_generator_base_url: str,
         health_client: ServiceHealthClient | None = None,
     ) -> None:
-        self._questions_dir = Path(query_generator_data_dir) / "questions"
-        self._runs_dir = Path(query_generator_data_dir) / "generation_runs"
-        self._attempt_runs_dir = Path(query_generator_data_dir) / "generation_attempts"
+        self._questions_dir = Path(cypher_generator_agent_data_dir) / "questions"
+        self._runs_dir = Path(cypher_generator_agent_data_dir) / "generation_runs"
+        self._attempt_runs_dir = Path(cypher_generator_agent_data_dir) / "generation_attempts"
         self._goldens_dir = Path(testing_data_dir) / "goldens"
         self._submissions_dir = Path(testing_data_dir) / "submissions"
         self._attempt_submissions_dir = Path(testing_data_dir) / "submission_attempts"
@@ -36,7 +44,7 @@ class RuntimeResultsService:
                 "service_key": "cgs",
                 "label_zh": "查询生成服务",
                 "label_en": "Query Generator Service",
-                "base_url": query_generator_base_url,
+                "base_url": cypher_generator_agent_base_url,
                 "port": "8000",
                 "description_zh": "接收问题、拉取提示词并生成 Cypher。",
             },

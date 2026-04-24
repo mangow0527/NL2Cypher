@@ -5,7 +5,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_service_agent_directories_exist() -> None:
-    assert (ROOT / "services" / "query_generator_agent").is_dir()
+    assert (ROOT / "services" / "cypher_generator_agent").is_dir()
+    assert not (ROOT / "services" / "query_generator_agent").exists()
     assert (ROOT / "services" / "testing_agent").is_dir()
     assert (ROOT / "services" / "repair_agent").is_dir()
     assert (ROOT / "console" / "runtime_console").is_dir()
