@@ -7,18 +7,27 @@ import pytest
 from pydantic import ValidationError
 
 from contracts.models import (
-    ActualAnswer,
-    EvaluationDimensions,
-    EvaluationSummary,
-    ExpectedAnswer,
-    IssueTicket,
     KnowledgeRepairSuggestionRequest,
-    TuGraphExecutionResult,
 )
 from services.repair_agent.app.clients import (
-    CGSPromptSnapshotClient,
     KnowledgeOpsRepairApplyClient,
-    OpenAICompatibleKRSSAnalyzer,
+    OpenAICompatibleRepairAnalyzer,
+)
+from services.testing_agent.app.models import (
+    ActualPayload,
+    EvaluationSummary,
+    ExecutionAccuracy,
+    ExecutionResult,
+    GLEUSignal,
+    GrammarMetric,
+    IssueTicket,
+    JaroWinklerSimilaritySignal,
+    PrimaryMetrics,
+    SecondarySignals,
+    SemanticCheck,
+    StrictCheck,
+    ExpectedPayload,
+    GenerationEvidence,
 )
 
 
@@ -103,28 +112,80 @@ def test_knowledge_repair_suggestion_request_rejects_invalid_knowledge_type():
         )
 
 
+def test_repair_agent_clients_do_not_export_cgs_prompt_snapshot_client():
+    from services.repair_agent.app import clients
+
+    assert not hasattr(clients, "CGSPromptSnapshotClient")
+
+
+def _make_ticket(
+    *,
+    ticket_id: str = "ticket-repair-001",
+    id: str = "q-repair",
+    question: str = "Find all nodes",
+    difficulty: str = "L1",
+    expected_cypher: str = "MATCH (n) RETURN n LIMIT 1",
+    generated_cypher: str = "MATCH (n RETURN n",
+    execution_success: bool = False,
+    error_message: str | None = "syntax error",
+    strict_message: str = "syntax error",
+    semantic_message: str = "parser failure",
+    grammar_score: int = 0,
+    parser_error: str | None = "syntax error",
+    execution_accuracy_score: int = 0,
+    similarity_score: float = 0.25,
+    prompt_snapshot: str = "prompt snapshot",
+) -> IssueTicket:
+    return IssueTicket(
+        ticket_id=ticket_id,
+        id=id,
+        question=question,
+        difficulty=difficulty,
+        expected=ExpectedPayload(cypher=expected_cypher, answer=[]),
+        actual=ActualPayload(
+            generated_cypher=generated_cypher,
+            execution=ExecutionResult(success=execution_success, error_message=error_message, row_count=0),
+        ),
+        evaluation=EvaluationSummary(
+            verdict="fail",
+            primary_metrics=PrimaryMetrics(
+                grammar=GrammarMetric(score=grammar_score, parser_error=parser_error, message=parser_error),
+                execution_accuracy=ExecutionAccuracy(
+                    score=execution_accuracy_score,
+                    reason="not_equivalent" if execution_accuracy_score == 0 else "strict_equal",
+                    strict_check=StrictCheck(
+                        status="fail" if execution_accuracy_score == 0 else "pass",
+                        message=strict_message,
+                        order_sensitive=False,
+                        expected_row_count=1,
+                        actual_row_count=0,
+                    ),
+                    semantic_check=SemanticCheck(
+                        status="fail" if execution_accuracy_score == 0 else "pass",
+                        message=semantic_message,
+                        raw_output=None,
+                    ),
+                ),
+            ),
+            secondary_signals=SecondarySignals(
+                gleu=GLEUSignal(score=0.12 if execution_accuracy_score == 0 else 1.0, tokenizer="whitespace", min_n=1, max_n=4),
+                jaro_winkler_similarity=JaroWinklerSimilaritySignal(
+                    score=similarity_score,
+                    normalization="lightweight",
+                    library="jellyfish",
+                ),
+            ),
+        ),
+        generation_evidence=GenerationEvidence(
+            generation_run_id="run-001",
+            attempt_no=1,
+            input_prompt_snapshot=prompt_snapshot,
+        ),
+    )
+
+
 @pytest.mark.asyncio
-async def test_cgs_prompt_snapshot_client_uses_prompt_snapshot_contract(monkeypatch):
-    import httpx
-
-    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
-
-    client = CGSPromptSnapshotClient(base_url="http://127.0.0.1:8000", timeout_seconds=3.0)
-    snapshot = await client.fetch(id="q-123")
-
-    assert snapshot.model_dump() == {
-        "id": "q-123",
-        "attempt_no": 1,
-        "input_prompt_snapshot": "PROMPT SNAPSHOT",
-    }
-    assert _FakeAsyncClient.last_request == {
-        "method": "GET",
-        "url": "http://127.0.0.1:8000/api/v1/questions/q-123/prompt",
-    }
-
-
-@pytest.mark.asyncio
-async def test_openai_compatible_krss_analyzer_uses_only_formal_knowledge_types_in_prompt(monkeypatch):
+async def test_openai_compatible_repair_analyzer_uses_only_formal_knowledge_types_in_prompt(monkeypatch):
     import httpx
 
     _FakeAsyncClient.responses = [
@@ -150,7 +211,7 @@ async def test_openai_compatible_krss_analyzer_uses_only_formal_knowledge_types_
     ]
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
 
-    client = OpenAICompatibleKRSSAnalyzer(
+    client = OpenAICompatibleRepairAnalyzer(
         base_url="http://127.0.0.1:9000",
         api_key="test-key",
         model="test-model",
@@ -158,30 +219,7 @@ async def test_openai_compatible_krss_analyzer_uses_only_formal_knowledge_types_
         temperature=0.1,
     )
 
-    result = await client.diagnose(
-        ticket=IssueTicket.model_construct(
-            id="q-krss",
-            question="Find all nodes",
-            difficulty="L1",
-            expected=ExpectedAnswer(cypher="MATCH (n) RETURN n LIMIT 1", answer=[]),
-            actual=ActualAnswer(
-                generated_cypher="MATCH (n RETURN n",
-                execution=TuGraphExecutionResult(success=False, error_message="syntax error"),
-            ),
-            evaluation=EvaluationSummary(
-                verdict="fail",
-                dimensions=EvaluationDimensions(
-                    syntax_validity="fail",
-                    schema_alignment="fail",
-                    result_correctness="fail",
-                    question_alignment="pass",
-                ),
-                symptom="syntax error",
-                evidence=["parser failure"],
-            ),
-        ),
-        prompt_snapshot="prompt snapshot",
-    )
+    result = await client.diagnose(ticket=_make_ticket(), prompt_snapshot="prompt snapshot")
 
     assert result["primary_knowledge_type"] == "few_shot"
     user_prompt = _FakeAsyncClient.last_request["json"]["messages"][1]["content"]
@@ -192,7 +230,7 @@ async def test_openai_compatible_krss_analyzer_uses_only_formal_knowledge_types_
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_krss_analyzer_disables_thinking_for_json_requests(monkeypatch):
+async def test_openai_compatible_repair_analyzer_disables_thinking_for_json_requests(monkeypatch):
     import httpx
 
     _FakeAsyncClient.responses = [
@@ -219,7 +257,7 @@ async def test_openai_compatible_krss_analyzer_disables_thinking_for_json_reques
     ]
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
 
-    client = OpenAICompatibleKRSSAnalyzer(
+    client = OpenAICompatibleRepairAnalyzer(
         base_url="http://127.0.0.1:9000",
         api_key="test-key",
         model="glm-5.1",
@@ -227,37 +265,14 @@ async def test_openai_compatible_krss_analyzer_disables_thinking_for_json_reques
         temperature=0.1,
     )
 
-    await client.diagnose(
-        ticket=IssueTicket.model_construct(
-            id="q-krss",
-            question="Find all nodes",
-            difficulty="L1",
-            expected=ExpectedAnswer(cypher="MATCH (n) RETURN n LIMIT 1", answer=[]),
-            actual=ActualAnswer(
-                generated_cypher="MATCH (n RETURN n",
-                execution=TuGraphExecutionResult(success=False, error_message="syntax error"),
-            ),
-            evaluation=EvaluationSummary(
-                verdict="fail",
-                dimensions=EvaluationDimensions(
-                    syntax_validity="fail",
-                    schema_alignment="fail",
-                    result_correctness="fail",
-                    question_alignment="pass",
-                ),
-                symptom="syntax error",
-                evidence=["parser failure"],
-            ),
-        ),
-        prompt_snapshot="prompt snapshot",
-    )
+    await client.diagnose(ticket=_make_ticket(), prompt_snapshot="prompt snapshot")
 
     assert _FakeAsyncClient.last_request is not None
     assert _FakeAsyncClient.last_request["json"]["enable_thinking"] is False
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_krss_analyzer_compacts_prompt_snapshot_and_avoids_duplicate_prompt_embedding(monkeypatch):
+async def test_openai_compatible_repair_analyzer_compacts_prompt_snapshot_and_avoids_duplicate_prompt_embedding(monkeypatch):
     import httpx
 
     repeated_line = "- Add business-term mapping guidance and a few_shot example that matches the failed question pattern."
@@ -295,36 +310,14 @@ async def test_openai_compatible_krss_analyzer_compacts_prompt_snapshot_and_avoi
     ]
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
 
-    client = OpenAICompatibleKRSSAnalyzer(
+    client = OpenAICompatibleRepairAnalyzer(
         base_url="http://127.0.0.1:9000",
         api_key="test-key",
         model="test-model",
         timeout_seconds=3.0,
         temperature=0.1,
     )
-    ticket = IssueTicket.model_construct(
-        ticket_id="ticket-krss-compact",
-        id="q-krss",
-        question="Find all nodes",
-        difficulty="L1",
-        expected=ExpectedAnswer(cypher="MATCH (n) RETURN n LIMIT 1", answer=[]),
-        actual=ActualAnswer(
-            generated_cypher="MATCH (n RETURN n",
-            execution=TuGraphExecutionResult(success=False, error_message="syntax error", row_count=0),
-        ),
-        evaluation=EvaluationSummary(
-            verdict="fail",
-            dimensions=EvaluationDimensions(
-                syntax_validity="fail",
-                schema_alignment="fail",
-                result_correctness="fail",
-                question_alignment="pass",
-            ),
-            symptom="syntax error",
-            evidence=["parser failure"],
-        ),
-        input_prompt_snapshot=prompt_snapshot,
-    )
+    ticket = _make_ticket(ticket_id="ticket-repair-compact", prompt_snapshot=prompt_snapshot)
 
     await client.diagnose(ticket=ticket, prompt_snapshot=prompt_snapshot)
 
@@ -336,7 +329,76 @@ async def test_openai_compatible_krss_analyzer_compacts_prompt_snapshot_and_avoi
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_krss_analyzer_logs_exact_llm_call_evidence(monkeypatch, caplog: pytest.LogCaptureFixture):
+async def test_openai_compatible_repair_analyzer_includes_chinese_prompt_evidence_when_fragments_are_empty(monkeypatch):
+    import httpx
+
+    prompt_snapshot = "\n".join(
+        [
+            "## 角色定义",
+            "你是图查询生成器，只能输出 Cypher。",
+            "## 输出格式",
+            "- 返回 JSON 对象，字段包括 cypher、reasoning_summary。",
+            "## 知识片段",
+            "- 协议版本需要通过 (:ProtocolVersion)<-[:HAS_VERSION]-(:Protocol) 匹配。",
+        ]
+    )
+    _FakeAsyncClient.responses = [
+        _FakeResponse(
+            status_code=200,
+            json_data={
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"knowledge_types":["business_knowledge"],'
+                                '"confidence":0.9,'
+                                '"suggestion":"Add protocol-version mapping guidance.",'
+                                '"rationale":"Business mapping drift detected.",'
+                                '"need_validation":false,'
+                                '"candidate_patch_types":["business_knowledge"]}'
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+    ]
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+
+    client = OpenAICompatibleRepairAnalyzer(
+        base_url="http://127.0.0.1:9000",
+        api_key="test-key",
+        model="test-model",
+        timeout_seconds=3.0,
+        temperature=0.1,
+    )
+    ticket = _make_ticket(
+        ticket_id="ticket-repair-chinese",
+        question="查询协议版本对应的隧道",
+        difficulty="L3",
+        expected_cypher="MATCH (p:Protocol)-[:HAS_VERSION]->(v:ProtocolVersion) RETURN p",
+        generated_cypher="MATCH (p:Protocol) RETURN p",
+        execution_success=True,
+        error_message=None,
+        strict_message="Wrong relation path",
+        semantic_message="Generated query ignored protocol-version relation.",
+        grammar_score=1,
+        parser_error=None,
+        similarity_score=0.71,
+        prompt_snapshot=prompt_snapshot,
+    )
+
+    await client.diagnose(ticket=ticket, prompt_snapshot=prompt_snapshot)
+
+    user_prompt = _FakeAsyncClient.last_request["json"]["messages"][1]["content"]
+    assert '"prompt_evidence"' in user_prompt
+    assert "角色定义" in user_prompt
+    assert "协议版本需要通过" in user_prompt
+    assert '"relevant_prompt_fragments": {"system_rules_fragment": "", "business_knowledge_fragment": "", "few_shot_fragment": "", "recent_repair_fragment": ""}' in user_prompt
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_repair_analyzer_logs_exact_llm_call_evidence(monkeypatch, caplog: pytest.LogCaptureFixture):
     import httpx
 
     _FakeAsyncClient.responses = [
@@ -362,35 +424,14 @@ async def test_openai_compatible_krss_analyzer_logs_exact_llm_call_evidence(monk
     ]
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
 
-    client = OpenAICompatibleKRSSAnalyzer(
+    client = OpenAICompatibleRepairAnalyzer(
         base_url="http://127.0.0.1:9000",
         api_key="test-key",
         model="glm-5",
         timeout_seconds=3.0,
         temperature=0.1,
     )
-    ticket = IssueTicket.model_construct(
-        ticket_id="ticket-krss-001",
-        id="q-krss",
-        question="Find all nodes",
-        difficulty="L1",
-        expected=ExpectedAnswer(cypher="MATCH (n) RETURN n LIMIT 1", answer=[]),
-        actual=ActualAnswer(
-            generated_cypher="MATCH (n RETURN n",
-            execution=TuGraphExecutionResult(success=False, error_message="syntax error"),
-        ),
-        evaluation=EvaluationSummary(
-            verdict="fail",
-            dimensions=EvaluationDimensions(
-                syntax_validity="fail",
-                schema_alignment="fail",
-                result_correctness="fail",
-                question_alignment="pass",
-            ),
-            symptom="syntax error",
-            evidence=["parser failure"],
-        ),
-    )
+    ticket = _make_ticket(ticket_id="ticket-repair-001")
 
     caplog.set_level(logging.INFO, logger="repair_service")
 
@@ -399,20 +440,20 @@ async def test_openai_compatible_krss_analyzer_logs_exact_llm_call_evidence(monk
     start = next(record for record in caplog.records if record.message.startswith("llm_call_started"))
     success = next(record for record in caplog.records if record.message.startswith("llm_call_succeeded"))
 
-    assert start.qa_id == "q-krss"
-    assert start.ticket_id == "ticket-krss-001"
+    assert start.qa_id == "q-repair"
+    assert start.ticket_id == "ticket-repair-001"
     assert start.model == "glm-5"
-    assert start.target == "repair.krss_diagnosis"
-    assert "qa_id=q-krss" in start.message
-    assert "ticket_id=ticket-krss-001" in start.message
-    assert success.qa_id == "q-krss"
-    assert success.ticket_id == "ticket-krss-001"
+    assert start.target == "repair.diagnosis"
+    assert "qa_id=q-repair" in start.message
+    assert "ticket_id=ticket-repair-001" in start.message
+    assert success.qa_id == "q-repair"
+    assert success.ticket_id == "ticket-repair-001"
     assert success.model == "glm-5"
     assert success.elapsed_ms >= 0
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_krss_analyzer_retries_after_rate_limit_then_succeeds(monkeypatch):
+async def test_openai_compatible_repair_analyzer_retries_after_rate_limit_then_succeeds(monkeypatch):
     import httpx
 
     rate_limited_response = httpx.Response(
@@ -449,7 +490,7 @@ async def test_openai_compatible_krss_analyzer_retries_after_rate_limit_then_suc
     async def fake_sleep(delay_seconds: float) -> None:
         sleep_calls.append(delay_seconds)
 
-    client = OpenAICompatibleKRSSAnalyzer(
+    client = OpenAICompatibleRepairAnalyzer(
         base_url="http://127.0.0.1:9000",
         api_key="test-key",
         model="glm-5",
@@ -459,28 +500,7 @@ async def test_openai_compatible_krss_analyzer_retries_after_rate_limit_then_suc
         max_retries=1,
         retry_base_delay_seconds=0.2,
     )
-    ticket = IssueTicket.model_construct(
-        ticket_id="ticket-krss-retry",
-        id="q-krss",
-        question="Find all nodes",
-        difficulty="L1",
-        expected=ExpectedAnswer(cypher="MATCH (n) RETURN n LIMIT 1", answer=[]),
-        actual=ActualAnswer(
-            generated_cypher="MATCH (n RETURN n",
-            execution=TuGraphExecutionResult(success=False, error_message="syntax error"),
-        ),
-        evaluation=EvaluationSummary(
-            verdict="fail",
-            dimensions=EvaluationDimensions(
-                syntax_validity="fail",
-                schema_alignment="fail",
-                result_correctness="fail",
-                question_alignment="pass",
-            ),
-            symptom="syntax error",
-            evidence=["parser failure"],
-        ),
-    )
+    ticket = _make_ticket(ticket_id="ticket-repair-retry")
 
     result = await client.diagnose(ticket=ticket, prompt_snapshot="prompt snapshot")
 
@@ -490,7 +510,7 @@ async def test_openai_compatible_krss_analyzer_retries_after_rate_limit_then_suc
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_krss_analyzer_uses_retry_after_header_when_rate_limited(monkeypatch):
+async def test_openai_compatible_repair_analyzer_uses_retry_after_header_when_rate_limited(monkeypatch):
     import httpx
 
     rate_limited_request = httpx.Request("POST", "http://127.0.0.1:9000/chat/completions")
@@ -528,7 +548,7 @@ async def test_openai_compatible_krss_analyzer_uses_retry_after_header_when_rate
     async def fake_sleep(delay_seconds: float) -> None:
         sleep_calls.append(delay_seconds)
 
-    client = OpenAICompatibleKRSSAnalyzer(
+    client = OpenAICompatibleRepairAnalyzer(
         base_url="http://127.0.0.1:9000",
         api_key="test-key",
         model="glm-5",
@@ -538,28 +558,7 @@ async def test_openai_compatible_krss_analyzer_uses_retry_after_header_when_rate
         max_retries=1,
         retry_base_delay_seconds=0.2,
     )
-    ticket = IssueTicket.model_construct(
-        ticket_id="ticket-krss-retry-after",
-        id="q-krss",
-        question="Find all nodes",
-        difficulty="L1",
-        expected=ExpectedAnswer(cypher="MATCH (n) RETURN n LIMIT 1", answer=[]),
-        actual=ActualAnswer(
-            generated_cypher="MATCH (n RETURN n",
-            execution=TuGraphExecutionResult(success=False, error_message="syntax error"),
-        ),
-        evaluation=EvaluationSummary(
-            verdict="fail",
-            dimensions=EvaluationDimensions(
-                syntax_validity="fail",
-                schema_alignment="fail",
-                result_correctness="fail",
-                question_alignment="pass",
-            ),
-            symptom="syntax error",
-            evidence=["parser failure"],
-        ),
-    )
+    ticket = _make_ticket(ticket_id="ticket-repair-retry-after")
 
     result = await client.diagnose(ticket=ticket, prompt_snapshot="prompt snapshot")
 
@@ -569,7 +568,7 @@ async def test_openai_compatible_krss_analyzer_uses_retry_after_header_when_rate
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_krss_analyzer_does_not_retry_non_retryable_400(monkeypatch):
+async def test_openai_compatible_repair_analyzer_does_not_retry_non_retryable_400(monkeypatch):
     import httpx
 
     _FakeAsyncClient.responses = [
@@ -586,7 +585,7 @@ async def test_openai_compatible_krss_analyzer_does_not_retry_non_retryable_400(
     async def fake_sleep(delay_seconds: float) -> None:
         sleep_calls.append(delay_seconds)
 
-    client = OpenAICompatibleKRSSAnalyzer(
+    client = OpenAICompatibleRepairAnalyzer(
         base_url="http://127.0.0.1:9000",
         api_key="test-key",
         model="glm-5",
@@ -596,28 +595,7 @@ async def test_openai_compatible_krss_analyzer_does_not_retry_non_retryable_400(
         max_retries=2,
         retry_base_delay_seconds=0.2,
     )
-    ticket = IssueTicket.model_construct(
-        ticket_id="ticket-krss-no-retry",
-        id="q-krss",
-        question="Find all nodes",
-        difficulty="L1",
-        expected=ExpectedAnswer(cypher="MATCH (n) RETURN n LIMIT 1", answer=[]),
-        actual=ActualAnswer(
-            generated_cypher="MATCH (n RETURN n",
-            execution=TuGraphExecutionResult(success=False, error_message="syntax error"),
-        ),
-        evaluation=EvaluationSummary(
-            verdict="fail",
-            dimensions=EvaluationDimensions(
-                syntax_validity="fail",
-                schema_alignment="fail",
-                result_correctness="fail",
-                question_alignment="pass",
-            ),
-            symptom="syntax error",
-            evidence=["parser failure"],
-        ),
-    )
+    ticket = _make_ticket(ticket_id="ticket-repair-no-retry")
 
     with pytest.raises(httpx.HTTPStatusError):
         await client.diagnose(ticket=ticket, prompt_snapshot="prompt snapshot")
@@ -627,7 +605,7 @@ async def test_openai_compatible_krss_analyzer_does_not_retry_non_retryable_400(
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_krss_analyzer_serializes_llm_calls_when_concurrency_is_one(monkeypatch):
+async def test_openai_compatible_repair_analyzer_serializes_llm_calls_when_concurrency_is_one(monkeypatch):
     import asyncio
     import httpx
 
@@ -672,29 +650,8 @@ async def test_openai_compatible_krss_analyzer_serializes_llm_calls_when_concurr
             )
 
     monkeypatch.setattr(httpx, "AsyncClient", _SerialAsyncClient)
-    ticket = IssueTicket.model_construct(
-        ticket_id="ticket-krss-serialize",
-        id="q-krss",
-        question="Find all nodes",
-        difficulty="L1",
-        expected=ExpectedAnswer(cypher="MATCH (n) RETURN n LIMIT 1", answer=[]),
-        actual=ActualAnswer(
-            generated_cypher="MATCH (n RETURN n",
-            execution=TuGraphExecutionResult(success=False, error_message="syntax error"),
-        ),
-        evaluation=EvaluationSummary(
-            verdict="fail",
-            dimensions=EvaluationDimensions(
-                syntax_validity="fail",
-                schema_alignment="fail",
-                result_correctness="fail",
-                question_alignment="pass",
-            ),
-            symptom="syntax error",
-            evidence=["parser failure"],
-        ),
-    )
-    client = OpenAICompatibleKRSSAnalyzer(
+    ticket = _make_ticket(ticket_id="ticket-repair-serialize")
+    client = OpenAICompatibleRepairAnalyzer(
         base_url="http://127.0.0.1:9000",
         api_key="test-key",
         model="glm-5",
@@ -706,7 +663,7 @@ async def test_openai_compatible_krss_analyzer_serializes_llm_calls_when_concurr
 
     await asyncio.gather(
         client.diagnose(ticket=ticket, prompt_snapshot="prompt snapshot"),
-        client.diagnose(ticket=ticket.model_copy(update={"ticket_id": "ticket-krss-serialize-2"}), prompt_snapshot="prompt snapshot"),
+        client.diagnose(ticket=ticket.model_copy(update={"ticket_id": "ticket-repair-serialize-2"}), prompt_snapshot="prompt snapshot"),
     )
 
     assert _SerialAsyncClient.post_count == 2

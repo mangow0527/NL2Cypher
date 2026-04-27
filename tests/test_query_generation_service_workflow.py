@@ -57,12 +57,8 @@ class TestCypherGeneratorAgentWorkflow:
             "question": "查询所有协议版本对应的隧道名称",
             "generation_run_id": "cypher-run-001",
             "generated_cypher": "MATCH (p:Protocol)-[:HAS_TUNNEL]->(t:Tunnel) RETURN p.version, t.name",
-            "parse_summary": "direct_cypher",
-            "preflight_check": {"accepted": True},
-            "raw_output_snapshot": "MATCH (p:Protocol)-[:HAS_TUNNEL]->(t:Tunnel) RETURN p.version, t.name",
             "input_prompt_snapshot": prompt,
         }
-        assert "attempt_no" not in submission.model_dump()
 
     @pytest.mark.asyncio
     async def test_retries_with_fixed_extra_constraint_after_markdown_wrapped_output(self):
@@ -200,8 +196,26 @@ def test_preflight_rejects_call_clause_even_when_it_is_not_the_start_clause():
     assert result.reason == "unsupported_call"
 
 
+def test_preflight_allows_read_only_call_when_it_is_whitelisted():
+    result = run_preflight_check(
+        "CALL db.labels() YIELD label RETURN label",
+        readonly_call_whitelist={"db.labels"},
+    )
+
+    assert result.accepted is True
+
+
 def test_preflight_allows_semicolon_inside_string_literal():
     result = run_preflight_check('MATCH (n {name: "a;b"}) RETURN n')
+
+    assert result.accepted is True
+
+
+def test_preflight_ignores_semicolons_inside_comments():
+    result = run_preflight_check(
+        "MATCH (n) // this semicolon should be ignored ;\n"
+        "RETURN n /* block ; comment */"
+    )
 
     assert result.accepted is True
 
@@ -214,18 +228,22 @@ def test_preflight_check_enforces_reason_invariant():
         PreflightCheck(accepted=True, reason="empty_output")
 
 
-def test_submission_payload_requires_accepted_preflight_check():
-    with pytest.raises(ValidationError):
-        GeneratedCypherSubmissionRequest(
-            id="qa-001",
-            question="查询协议版本",
-            generation_run_id="cypher-run-001",
-            generated_cypher="MATCH (p:Protocol) RETURN p.version",
-            parse_summary="direct_cypher",
-            preflight_check=PreflightCheck(accepted=False, reason="unsupported_start_clause"),
-            raw_output_snapshot="MATCH (p:Protocol) RETURN p.version",
-            input_prompt_snapshot="prompt",
-        )
+def test_submission_payload_matches_minimal_testing_agent_contract():
+    payload = GeneratedCypherSubmissionRequest(
+        id="qa-001",
+        question="查询协议版本",
+        generation_run_id="cypher-run-001",
+        generated_cypher="MATCH (p:Protocol) RETURN p.version",
+        input_prompt_snapshot="prompt",
+    )
+
+    assert payload.model_dump() == {
+        "id": "qa-001",
+        "question": "查询协议版本",
+        "generation_run_id": "cypher-run-001",
+        "generated_cypher": "MATCH (p:Protocol) RETURN p.version",
+        "input_prompt_snapshot": "prompt",
+    }
 
 
 def test_generation_run_result_enforces_status_reason_invariants():
@@ -246,6 +264,13 @@ def test_generation_run_result_enforces_status_reason_invariants():
             generation_run_id="run-invalid",
             generation_status="service_failed",
             reason="empty_output",
+        )
+
+    with pytest.raises(ValidationError):
+        GenerationRunResult(
+            generation_run_id="run-invalid",
+            generation_status="service_failed",
+            reason="generator_configuration_invalid",
         )
 
     with pytest.raises(ValidationError):

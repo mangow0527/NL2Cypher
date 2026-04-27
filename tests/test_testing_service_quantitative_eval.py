@@ -1,164 +1,89 @@
 from __future__ import annotations
 
-from services.testing_agent.app.evaluation import evaluate_submission, extract_labels
-from contracts.models import TuGraphExecutionResult
+from services.testing_agent.app.grammar import Antlr4CypherParserAdapter
+from services.testing_agent.app.comparison import compare_answers, normalize_value
+from services.testing_agent.app.models import ExecutionResult
+from services.testing_agent.app.summary import build_execution_accuracy
 
 
-def test_result_correctness_ignores_order_when_question_has_no_ordering_requirement():
-    execution = TuGraphExecutionResult(
-        success=True,
-        rows=[{"id": "b"}, {"id": "a"}],
-        row_count=2,
-        error_message=None,
-        elapsed_ms=10,
+def test_strict_compare_ignores_order_when_not_order_sensitive():
+    strict = compare_answers(
+        golden_answer=[{"id": "a"}, {"id": "b"}],
+        actual_answer=[{"id": "b"}, {"id": "a"}],
+        order_sensitive=False,
     )
 
-    result = evaluate_submission(
-        question="查询两个设备ID",
-        expected_cypher="MATCH (n:NetworkElement) RETURN n.id AS id LIMIT 2",
-        expected_answer=[{"id": "a"}, {"id": "b"}],
-        actual_cypher="MATCH (n:NetworkElement) RETURN n.id AS id LIMIT 2",
-        execution=execution,
-        loaded_knowledge_tags=[],
+    assert strict.status == "pass"
+    assert strict.order_sensitive is False
+    assert strict.evidence is None
+
+
+def test_strict_compare_marks_order_mismatch_for_order_sensitive_results():
+    strict = compare_answers(
+        golden_answer=[{"id": "a"}, {"id": "b"}],
+        actual_answer=[{"id": "b"}, {"id": "a"}],
+        order_sensitive=True,
     )
 
-    assert result.dimensions.result_correctness == "pass"
-    assert result.metrics is not None
-    assert result.metrics.result_correctness.result_set_f1 == 1.0
-    assert result.metrics.result_correctness.order_sensitive is False
+    assert strict.status == "fail"
+    assert strict.evidence is not None
+    assert strict.evidence.diff.order_mismatch is True
 
 
-def test_result_correctness_penalizes_partial_row_recall():
-    execution = TuGraphExecutionResult(
-        success=True,
-        rows=[{"id": "a"}, {"id": "b"}],
-        row_count=2,
-        error_message=None,
-        elapsed_ms=10,
+def test_normalize_value_canonicalizes_graph_entities_without_internal_identity():
+    normalized = normalize_value(
+        {
+            "identity": 40,
+            "label": "Tunnel",
+            "properties": {"bandwidth": 1000.0, "id": "tun-1"},
+        }
     )
 
-    result = evaluate_submission(
-        question="查询三个设备ID",
-        expected_cypher="MATCH (n:NetworkElement) RETURN n.id AS id LIMIT 3",
-        expected_answer=[{"id": "a"}, {"id": "b"}, {"id": "c"}],
-        actual_cypher="MATCH (n:NetworkElement) RETURN n.id AS id LIMIT 2",
-        execution=execution,
-        loaded_knowledge_tags=[],
-    )
-
-    assert result.dimensions.result_correctness == "fail"
-    assert result.metrics is not None
-    assert round(result.metrics.result_correctness.result_set_precision, 2) == 1.0
-    assert round(result.metrics.result_correctness.result_set_recall, 2) == 0.67
-    assert round(result.metrics.result_correctness.result_set_f1, 2) == 0.8
-
-
-def test_order_requirement_is_treated_as_order_sensitive():
-    execution = TuGraphExecutionResult(
-        success=True,
-        rows=[{"id": "a"}, {"id": "b"}],
-        row_count=2,
-        error_message=None,
-        elapsed_ms=10,
-    )
-
-    result = evaluate_submission(
-        question="按ID降序查询两个设备ID",
-        expected_cypher="MATCH (n:NetworkElement) RETURN n.id AS id ORDER BY id DESC LIMIT 2",
-        expected_answer=[{"id": "b"}, {"id": "a"}],
-        actual_cypher="MATCH (n:NetworkElement) RETURN n.id AS id LIMIT 2",
-        execution=execution,
-        loaded_knowledge_tags=[],
-    )
-
-    assert result.metrics is not None
-    assert result.metrics.result_correctness.order_sensitive is True
-    assert result.metrics.question_alignment.ordering_limit_match_score == 0.5
-
-
-def test_evaluation_summary_exposes_overall_score_and_projection_signal():
-    execution = TuGraphExecutionResult(
-        success=True,
-        rows=[{"id": "tun-1", "name": "Tunnel 1"}],
-        row_count=1,
-        error_message=None,
-        elapsed_ms=10,
-    )
-
-    result = evaluate_submission(
-        question="查询带宽大于等于1的隧道信息",
-        expected_cypher="MATCH (a:Tunnel) WHERE a.bandwidth >= 1 RETURN a LIMIT 1",
-        expected_answer=[{"a": {"id": "tun-1", "name": "Tunnel 1", "bandwidth": 1000}}],
-        actual_cypher="MATCH (a:Tunnel) WHERE a.bandwidth >= 1 RETURN a.id AS id, a.name AS name LIMIT 1",
-        execution=execution,
-        loaded_knowledge_tags=[],
-    )
-
-    assert result.metrics is not None
-    assert 0.0 <= result.overall_score <= 1.0
-    assert 0.0 <= result.metrics.question_alignment.projection_match_score < 1.0
-
-
-def test_result_correctness_ignores_entity_alias_when_returned_node_is_same():
-    tunnel = {
-        "identity": 40,
-        "label": "Tunnel",
-        "properties": {"id": "tun-mpls-te-1000", "bandwidth": 1000.0},
+    assert normalized == {
+        "__type__": "node",
+        "labels": ["Tunnel"],
+        "properties": {"bandwidth": 1000.0, "id": "tun-1"},
     }
-    execution = TuGraphExecutionResult(
+
+
+def test_execution_accuracy_uses_execution_failed_reason_when_execution_does_not_run_strict_compare():
+    execution_accuracy = build_execution_accuracy(
+        grammar_score=1,
+        strict_check_status="not_run",
+        semantic_check_status="not_run",
+    )
+
+    assert execution_accuracy.score == 0
+    assert execution_accuracy.reason == "execution_failed"
+
+
+def test_execution_result_top_level_shape_matches_design():
+    execution = ExecutionResult(
         success=True,
-        rows=[{"t": tunnel}],
+        rows=[{"id": "a"}],
         row_count=1,
         error_message=None,
-        elapsed_ms=10,
+        elapsed_ms=5,
     )
 
-    result = evaluate_submission(
-        question="查询带宽大于等于1的隧道信息",
-        expected_cypher="MATCH (a:Tunnel) WHERE a.bandwidth >= 1 RETURN a LIMIT 1",
-        expected_answer=[{"a": tunnel}],
-        actual_cypher="MATCH (t:Tunnel) WHERE t.bandwidth >= 1 RETURN t LIMIT 1",
-        execution=execution,
-        loaded_knowledge_tags=[],
-    )
-
-    assert result.metrics is not None
-    assert result.dimensions.result_correctness == "pass"
-    assert result.metrics.result_correctness.result_set_f1 == 1.0
-    assert result.metrics.question_alignment.projection_match_score == 1.0
-
-
-def test_result_correctness_ignores_related_entity_alias_when_key_and_node_are_same():
-    port = {
-        "identity": 70,
-        "label": "Port",
-        "properties": {"id": "port-tun-mpls-te-1000-d0", "name": "Port_0002"},
+    assert execution.model_dump() == {
+        "success": True,
+        "rows": [{"id": "a"}],
+        "row_count": 1,
+        "error_message": None,
+        "elapsed_ms": 5,
     }
-    execution = TuGraphExecutionResult(
-        success=True,
-        rows=[{"key": "link-tun-mpls-te-1000-0", "p": port}],
-        row_count=1,
-        error_message=None,
-        elapsed_ms=10,
-    )
-
-    result = evaluate_submission(
-        question="查询5条链路及其目的端口信息。",
-        expected_cypher="MATCH (a:Link)-[:LINK_DST]->(b:Port) RETURN a.id AS key, b LIMIT 1",
-        expected_answer=[{"key": "link-tun-mpls-te-1000-0", "b": port}],
-        actual_cypher="MATCH (l:Link)-[:LINK_DST]->(p:Port) RETURN l.id AS key, p LIMIT 1",
-        execution=execution,
-        loaded_knowledge_tags=[],
-    )
-
-    assert result.metrics is not None
-    assert result.dimensions.result_correctness == "pass"
-    assert result.metrics.result_correctness.result_set_f1 == 1.0
-    assert result.metrics.question_alignment.projection_match_score == 1.0
 
 
-def test_label_extraction_does_not_treat_relationship_type_as_label():
-    assert extract_labels("MATCH (l:Link)-[:LINK_DST]->(p:Port) RETURN l.id AS key, p LIMIT 5") == [
-        "Link",
-        "Port",
-    ]
+def test_antlr4_cypher_parser_adapter_accepts_basic_readonly_match_query():
+    success, parser_error = Antlr4CypherParserAdapter().parse("MATCH (n) RETURN n")
+
+    assert success is True
+    assert parser_error is None
+
+
+def test_antlr4_cypher_parser_adapter_rejects_obviously_invalid_query():
+    success, parser_error = Antlr4CypherParserAdapter().parse("MATCH (n RETURN n")
+
+    assert success is False
+    assert parser_error is not None

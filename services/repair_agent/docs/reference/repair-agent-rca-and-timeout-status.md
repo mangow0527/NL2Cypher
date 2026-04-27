@@ -52,7 +52,7 @@
 
 代码位置：
 - [services/repair_agent/app/analysis.py](/Users/mangowmac/Desktop/code/NL2Cypher/services/repair_agent/app/analysis.py)
-- `KRSSAnalyzer.analyze(...)`
+- `RepairAnalyzer.analyze(...)`
 
 repair-agent 现在只允许模型在 4 类知识类型里归因：
 - `cypher_syntax`

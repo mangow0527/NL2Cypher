@@ -140,11 +140,13 @@ cypher-generator-agent 会区分三个生成结果概念：
 
 这三个对象也影响重试策略。`raw_output` 为空、无法恢复 Cypher、`parsed_cypher` 未通过提交前 Cypher 基础检查时，cypher-generator-agent 都使用同一个 `reason` 表达失败原因。这个 `reason` 会贯穿检查结果、额外约束和最终失败记录。只有 `generated_cypher` 才能提交 testing-agent。
 
-它的意义是：把“模型说了什么”“cypher-generator-agent 从中恢复出什么”“最终能提交什么”分开，让生成证据、兜底解析、提交前 Cypher 基础检查和后续失败分析各自有清楚的事实来源。repair-agent 可以消费这些证据来判断失败是否应归入 knowledge-agent 知识包缺口；如果证据指向 cypher-generator-agent Prompt 模板、兜底恢复或提交前 Cypher 基础检查缺陷，则不进入 repair-agent 知识修复建议，而应作为 cypher-generator-agent 工程问题处理。
+它的意义是：把“模型说了什么”“cypher-generator-agent 从中恢复出什么”“最终能提交什么”分开，让内部生成排障、兜底解析归因、提交前 Cypher 基础检查和后续失败分析各自有清楚的事实来源。`raw_output`、`parsed_cypher`、`parse_summary` 和 `preflight_check` 属于 cypher-generator-agent 内部运行事实，用于自身工程排障与归因；repair-agent 在正式闭环中消费的是 testing-agent 问题单里的最小 `generation_evidence`，而不是这条内部解析链路的完整对象。
 
 ### 1.7 cypher-generator-agent -> testing-agent 契约
 
 cypher-generator-agent 通过 `GeneratedCypherSubmissionRequest` 向 testing-agent 提交生成结果和生成证据。
+
+这个跨服务契约需要与 `services/testing_agent/docs/testing-agent-design.md` 中的同名契约保持一致。当前 submission 只保留 testing-agent 和 repair-agent 做评测与根因分析真正需要的最小字段；cypher-generator-agent 内部解析链路和提交前检查链路的细节不会随 submission 一起发送。
 
 它包含：
 
@@ -154,12 +156,9 @@ cypher-generator-agent 通过 `GeneratedCypherSubmissionRequest` 向 testing-age
 | `question` | 原始自然语言问题，供评测和 issue ticket 使用 |
 | `generation_run_id` | cypher-generator-agent 本次执行标识，供问题追踪和证据串联 |
 | `generated_cypher` | cypher-generator-agent 认为可提交评测的 Cypher |
-| `parse_summary` | 说明 `generated_cypher` 是如何从模型输出得到的，例如直接输出、JSON 字段解析、fence 代码块提取或兜底恢复。它不参与 testing-agent 主评测打分，用于失败分析时区分“模型本身生成错了”和“cypher-generator-agent 解析/兜底恢复引入了偏差”；如果问题来自 cypher-generator-agent 解析/兜底恢复，不应转成 knowledge-agent 知识修复建议 |
-| `preflight_check` | cypher-generator-agent 提交前 Cypher 基础检查通过结果。提交给 testing-agent 时固定为 `{ "accepted": true }`；失败的 `preflight_check.reason` 只存在于 cypher-generator-agent 内部运行记录中，不会作为可提交生成结果进入 testing-agent。它只说明 cypher-generator-agent 放行了非空、单条语句、只读安全、支持的起始子句和明显语法形态，不代表 Cypher 业务正确，也不参与 testing-agent 主评测打分 |
-| `raw_output_snapshot` | LLM 原始输出快照。它用于回放模型真实返回内容，判断最终 `generated_cypher` 是否忠实来自模型输出，或是否被解析/清洗步骤改变 |
-| `input_prompt_snapshot` | 最终 LLM 输入快照。它主要供 repair-agent 分析 knowledge-agent 知识包、few-shot 和上下文是否诱发失败，testing-agent 不用它计算四维评测分数；其中 cypher-generator-agent LLM Prompt 组装模板是固定系统包装，不作为 repair-agent 修复目标 |
+| `input_prompt_snapshot` | 最终 LLM 输入快照。它主要供 repair-agent 分析 knowledge-agent 知识包、few-shot 和上下文是否诱发失败；其中 cypher-generator-agent LLM Prompt 组装模板是固定系统包装，不作为 repair-agent 修复目标 |
 
-它的意义是：告诉 testing-agent“cypher-generator-agent 这次生成了什么，以及这次生成过程留下了哪些证据”。
+`parse_summary`、`preflight_check` 和 `raw_output_snapshot` 仍然是 cypher-generator-agent 内部生成链路里的运行事实，但不再属于 submission 契约，也不会提交给 testing-agent。
 
 `attempt_no` 不属于 cypher-generator-agent 的职责。cypher-generator-agent 是单纯的生成服务，不记录“这是第几次评测尝试”。testing-agent 在接收 submission 后，根据同一 `id` 的历史记录分配并维护 `attempt_no`。
 
@@ -214,7 +213,6 @@ cypher-generator-agent 通过 `GeneratedCypherSubmissionRequest` 向 testing-age
 | `knowledge_agent_context_unavailable` | 无法从 knowledge-agent 获取上下文，或上下文为空到无法构造生成调用 | 否 |
 | `model_invocation_failed` | LLM 调用失败、超时，或没有产生可读取响应 | 否 |
 | `testing_agent_submission_failed` | 已得到 `generated_cypher`，但提交 testing-agent 失败 | 否 |
-| `generator_configuration_invalid` | cypher-generator-agent 缺少必要配置，无法执行生成流程 | 否 |
 
 服务失败 `reason` 不会追加到 prompt。它们不是模型输出质量问题，重新生成不能直接修复。
 
@@ -254,7 +252,7 @@ cypher-generator-agent 内部最多进行 3 次生成尝试。这里的尝试是
 | 兜底解析 | `raw_output` | `parsed_cypher`、`parse_summary` 或 `reason` | 把模型输出转成可检查的 Cypher 文本 |
 | 提交前 Cypher 基础检查 | `parsed_cypher` | `generated_cypher` 或 `preflight_check.reason` | 检查非空、单条语句、只读安全、支持的起始子句和明显语法形态 |
 | 自我修复重试 | 上次失败的 `GenerationFailure.reason` | 新一轮 `llm_prompt` | 根据固定生成失败 reason 追加 `【额外约束】` 后重新生成 |
-| 提交 testing-agent | `generated_cypher` 和生成证据 | `submission_ref` 或 `service_failed` | 将生成结果交给 testing-agent 执行和评测；提交失败属于服务失败，不重新生成 Cypher |
+| 提交 testing-agent | `generated_cypher` 和生成证据 | `accepted = true` 或 `service_failed` | 将生成结果提交给 testing-agent；`accepted = true` 只表示 submission 已被接收，后续评测由 testing-agent 在其内部链路继续完成 |
 
 ---
 
@@ -691,11 +689,6 @@ cypher-generator-agent 提交：
   "question": "查询所有协议版本对应的隧道名称",
   "generation_run_id": "cypher-run-7b6d9d",
   "generated_cypher": "MATCH (p:Protocol)-[:HAS_TUNNEL]->(t:Tunnel) RETURN p.version, t.name",
-  "parse_summary": "direct_cypher",
-  "preflight_check": {
-    "accepted": true
-  },
-  "raw_output_snapshot": "MATCH (p:Protocol)-[:HAS_TUNNEL]->(t:Tunnel) RETURN p.version, t.name",
   "input_prompt_snapshot": "【任务说明】...\n【用户问题】...\n【knowledge-agent 上下文】..."
 }
 ```
@@ -708,18 +701,13 @@ cypher-generator-agent 提交：
 | `question` | 原始自然语言问题，供评测和 issue ticket 使用 |
 | `generation_run_id` | cypher-generator-agent 本次执行标识，供问题追踪和证据串联 |
 | `generated_cypher` | cypher-generator-agent 认为可提交评测的 Cypher |
-| `parse_summary` | 说明 `generated_cypher` 是如何从模型输出得到的。这个字段的作用是保留生成链路证据，帮助区分模型输出问题和 cypher-generator-agent 结构化解析/兜底恢复问题；如果问题来自 cypher-generator-agent 解析链路，应作为工程缺陷处理，而不是 knowledge-agent 知识修复建议；它不参与 testing-agent 主评测打分 |
-| `preflight_check` | cypher-generator-agent 提交前 Cypher 基础检查通过结果。提交给 testing-agent 时固定为 `{ "accepted": true }`；失败的 `preflight_check.reason` 只存在于 cypher-generator-agent 内部运行记录中，不会作为可提交生成结果进入 testing-agent。这个字段不代表业务正确，也不参与 testing-agent 主评测打分 |
-| `raw_output_snapshot` | LLM 原始输出快照。这个字段的作用是让失败分析可以回放模型真实回答，并与最终 `generated_cypher` 对照 |
 | `input_prompt_snapshot` | 最终 LLM 输入快照。这个字段的作用是支持 repair-agent 分析 knowledge-agent 知识包、few-shot 和上下文是否诱发失败；cypher-generator-agent LLM Prompt 组装模板部分是固定系统模板，不作为业务修复目标；testing-agent 只保存和转交，不据此评分 |
 
 testing-agent 返回：
 
 ```json
 {
-  "testing_submission_id": "eval-submission-1001",
-  "attempt_no": 4,
-  "state": "received_submission_only"
+  "accepted": true
 }
 ```
 
@@ -727,11 +715,9 @@ testing-agent 返回：
 
 | 字段 | 含义 |
 | --- | --- |
-| `testing_submission_id` | testing-agent 内部提交标识 |
-| `attempt_no` | testing-agent 为该问题分配的尝试编号 |
-| `state` | testing-agent 当前评测状态 |
+| `accepted` | 表示 testing-agent 已成功接收该 submission |
 
-到这里，cypher-generator-agent 的主流程结束。testing-agent 的返回值只用于 cypher-generator-agent 确认下游已接收提交、记录临时执行日志或运行观测；它不作为 qa-agent 的输入，也不回传给 qa-agent 驱动状态变化。
+到这里，cypher-generator-agent 的主流程结束。testing-agent 的返回值只用于 cypher-generator-agent 确认下游已接收提交；它不作为 qa-agent 的输入，也不回传给 qa-agent 驱动状态变化。
 
 如果提交 testing-agent 失败，cypher-generator-agent 不重新调用 LLM，也不重新生成 Cypher。提交失败只重试下游提交，避免同一个 `id` 因下游短暂故障产生多条不同 Cypher。
 
@@ -759,7 +745,7 @@ testing-agent 返回：
 
 这是 cypher-generator-agent 的正式外部入口。请求体只保留问题生成所需的最小输入。
 
-该接口的业务契约只定义请求，不定义承载生成结果的响应体。cypher-generator-agent 不把 `generated_cypher`、`generation_status`、`preflight_check` 或 testing-agent 的 `submission_ref` 返回给 qa-agent。生成结果和生成证据只提交给 testing-agent；失败原因只用于 cypher-generator-agent 自身日志、运行观测和工程排障。
+该接口的业务契约只定义请求，不定义承载生成结果的响应体。cypher-generator-agent 不把 `generated_cypher`、`generation_status`、`preflight_check` 或 testing-agent 的接收回执返回给 qa-agent。生成结果和生成证据只提交给 testing-agent；失败原因只用于 cypher-generator-agent 自身日志、运行观测和工程排障。
 
 ```json
 {
@@ -847,7 +833,7 @@ cypher-generator-agent 一次运行只有三类最终结果。运行结果只用
 | `model_generated` | `llm_prompt` | `raw_output` | 获得模型原始输出 |
 | `parsed` | `raw_output` | `parsed_cypher`、`parse_summary` | 得到提交前检查所需的 Cypher 文本 |
 | `preflight_checked` | `parsed_cypher` | `generated_cypher`、`preflight_check` | 确认可提交评测 |
-| `submitted` | `GeneratedCypherSubmissionRequest` | `submission_ref` | testing-agent 已接收生成结果 |
+| `submitted` | `GeneratedCypherSubmissionRequest` | `accepted = true` | testing-agent 已接收生成结果 |
 
 ---
 

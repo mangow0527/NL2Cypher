@@ -36,6 +36,20 @@ class KnowledgeAgentClientTest(unittest.TestCase):
 
         self.assertEqual(context, "Schema: (:Protocol)-[:HAS_TUNNEL]->(:Tunnel)")
 
+    def test_fetch_context_accepts_json_prompt_response(self) -> None:
+        response = httpx.Response(
+            status_code=200,
+            headers={"content-type": "application/json"},
+            json={"prompt": "Schema: (:Protocol)-[:HAS_TUNNEL]->(:Tunnel)"},
+            request=httpx.Request("POST", "http://knowledge-agent/api/knowledge/rag/prompt-package"),
+        )
+        client = KnowledgeAgentClient(base_url="http://knowledge-agent", timeout_seconds=5)
+
+        with patch("services.cypher_generator_agent.app.clients.httpx.AsyncClient", return_value=_FakeAsyncClient(response)):
+            context = asyncio.run(client.fetch_context(id="qa-1", question="查询所有节点"))
+
+        self.assertEqual(context, "Schema: (:Protocol)-[:HAS_TUNNEL]->(:Tunnel)")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -7,7 +7,6 @@ class Settings(BaseSettings):
     app_name: str = "runtime-results-service"
     host: str = "0.0.0.0"
     port: int = 8001
-    cypher_generator_agent_data_dir: str = "data/cypher_generator_agent"
     testing_data_dir: str = "data/testing_service"
     repair_data_dir: str = "data/repair_service"
     poll_interval_seconds: int = 5

@@ -24,7 +24,6 @@ ServiceFailureReason = Literal[
     "knowledge_agent_context_unavailable",
     "model_invocation_failed",
     "testing_agent_submission_failed",
-    "generator_configuration_invalid",
 ]
 
 GenerationStatus = Literal["submitted_to_testing", "generation_failed", "service_failed"]
@@ -60,16 +59,7 @@ class GeneratedCypherSubmissionRequest(BaseModel):
     question: str
     generation_run_id: str
     generated_cypher: str
-    parse_summary: str
-    preflight_check: PreflightCheck
-    raw_output_snapshot: str
     input_prompt_snapshot: str
-
-    @model_validator(mode="after")
-    def validate_submission_preflight_is_accepted(self) -> "GeneratedCypherSubmissionRequest":
-        if not self.preflight_check.accepted:
-            raise ValueError("submission preflight_check must be accepted")
-        return self
 
 
 class GenerationRunResult(BaseModel):

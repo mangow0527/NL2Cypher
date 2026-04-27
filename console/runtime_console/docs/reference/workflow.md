@@ -18,13 +18,12 @@
 - 外部服务发送的 `id + question`
 
 负责：
-- 接收问题并落盘
-- 向 `knowledge-agent` 主动获取 `generation_prompt`
+- 接收问题
+- 向 `knowledge-agent` 主动获取 prompt package
 - 调用模型生成 Cypher
-- 解析输出并做最小守门
-- 保留 `input_prompt_snapshot` 与 `raw_output_snapshot`
+- 解析输出并做提交前 Cypher 基础检查
+- 保留内部生成运行事实，并向 testing-agent 提交最小 submission 契约
 - 向 `testing-agent` 提交生成结果
-- 接收修复计划回执
 
 不负责：
 - 设计 Prompt
@@ -40,23 +39,24 @@
 负责：
   - 存储 Golden Answer
   - 存储生成结果
+  - 分配并维护 `attempt_no`
   - 执行 TuGraph
-  - 做四维评测
+  - 生成 `grammar -> execution -> strict compare -> semantic review -> EvaluationSummary`
   - 失败时创建 `IssueTicket`
-  - 持久化供 repair-agent 展示的 prompt snapshot 输入事实
+  - 持久化供 repair-agent 展示的最小生成证据与 prompt snapshot
   - 向 `repair-agent` 提交问题单
 
 ### repair-agent
 
 输入：
 - `testing-agent` 提交的 `IssueTicket`
-- `testing-agent` 持久化的 `KRSSAnalysisRecord`（其中包含 prompt snapshot）
+- `IssueTicket` 中携带的最小生成证据与 prompt snapshot
 
 负责：
 - 根因分析
 - 必要的对照实验
-- 生成 `RepairPlan`
-- 分发修复计划
+- 生成 `KnowledgeRepairSuggestionRequest`
+- 向 `knowledge-agent` 投递知识修复建议
 
 ## 核心数据流
 
@@ -86,17 +86,11 @@
 }
 ```
 
-- 响应体：
+- 响应：
 
 ```text
-请只返回 cypher 字段
+knowledge-agent 当前正式契约是返回可直接用作上下文材料的 prompt 文本。
 ```
-
-说明：
-
-- `prompt-package` 的正式返回规格是纯文本提示词字符串
-- 不存在 JSON `prompt` 包装格式
-- 如果返回 JSON，对 cypher-generator-agent 来说应视为契约违规
 
 ### 数据流 C：Golden Answer
 
@@ -115,10 +109,15 @@
   "question": "查询网络设备及其端口信息",
   "generation_run_id": "run-001",
   "generated_cypher": "MATCH (ne:NetworkElement)-[:HAS_PORT]->(p:Port) RETURN ne.name, p.name LIMIT 10",
-  "parse_summary": "parsed_json",
-  "guardrail_summary": "accepted",
-  "raw_output_snapshot": "",
   "input_prompt_snapshot": "请只返回 cypher 字段"
+}
+```
+
+- 响应体：
+
+```json
+{
+  "accepted": true
 }
 ```
 
@@ -127,11 +126,11 @@
 - testing-agent -> repair-agent
 - `POST /api/v1/issue-tickets`
 
-### 数据流 F：repair-agent 诊断持久化
+### 数据流 F：知识修复建议投递
 
-- repair-agent -> testing-agent / 修复存储
-- `KRSSAnalysisRecord`
-- 说明：`repair-agent` 诊断结果与 prompt snapshot 一起持久化在 `repair-agent` 记录中，控制台展示时以 `testing-agent` / 修复存储的快照为准，不假设 `repair-agent` 再去 `cypher-generator-agent` 回查
+- repair-agent -> knowledge-agent
+- `POST /api/knowledge/repairs/apply`
+- 说明：repair-agent 以 testing-agent 问题单中的最小生成证据为诊断输入，诊断记录持久化在 repair-agent 自身存储中；运行中心读取 testing-agent submission、IssueTicket 和 repair-agent 分析记录做汇总展示
 
 ## 时序图
 
@@ -147,14 +146,15 @@ sequenceDiagram
     QA->>CG: POST /api/v1/qa/questions {id, question}
     QA->>TS: POST /api/v1/qa/goldens {id, cypher, answer, difficulty}
     CG->>knowledge-agent: POST /api/knowledge/rag/prompt-package {id, question}
-    knowledge-agent-->>CG: plain text prompt string
-    CG->>CG: 调用模型 / 解析 / 最小守门
+    knowledge-agent-->>CG: prompt string or JSON {prompt}
+    CG->>CG: 调用模型 / 解析 / 提交前 Cypher 基础检查
     CG->>TS: POST /api/v1/evaluations/submissions
     TS->>TG: 执行 generated_cypher
     TG-->>TS: execution result
     TS->>TS: 评测
     alt 评测失败
         TS->>RS: POST /api/v1/issue-tickets
+        RS->>knowledge-agent: POST /api/knowledge/repairs/apply
     end
 ```
 
@@ -164,29 +164,27 @@ sequenceDiagram
 
 `cypher-generator-agent` 只维护“生成阶段处理状态”：
 
-- `received`
-- `prompt_fetch_failed`
-- `prompt_ready`
-- `model_invocation_failed`
-- `output_parsing_failed`
-- `guardrail_rejected`
 - `submitted_to_testing`
-- `failed`
+- `generation_failed`
+- `service_failed`
 
 说明：
 - `submitted_to_testing` 不等于业务通过
 - 最终业务通过/失败由 `testing-agent` 给出
+- `parse_summary`、`preflight_check` 和 `raw_output_snapshot` 仍然存在，但它们属于 cypher-generator-agent 内部运行事实，不属于跨服务 submission 契约
 
 ### testing-agent
 
 - `received_golden_only`
-- `waiting_for_golden`
+- `received_submission_only`
 - `ready_to_evaluate`
-- `passed`
+- `repair_pending`
+- `repair_submission_failed`
 - `issue_ticket_created`
+- `passed`
 
 ## 说明
 
 如果需要更细的 `cypher-generator-agent` 边界、字段定义和接口示例，请以
-[Cypher_Generation_Service_Design.md](/Users/mangowmac/Desktop/code/NL2Cypher/services/query_generator_agent/docs/Cypher_Generation_Service_Design.md)
+[cypher-generator-agent-design.md](/Users/mangowmac/Desktop/code/NL2Cypher/services/cypher_generator_agent/docs/cypher-generator-agent-design.md)
 为准。

@@ -15,7 +15,6 @@ from .models import (
     GeneratedCypherSubmissionRequest,
     GenerationFailureReason,
     GenerationRunResult,
-    PreflightCheck,
     QAQuestionRequest,
 )
 from .parser import parse_model_output
@@ -49,11 +48,13 @@ class CypherGeneratorAgentService:
         llm_client: CypherModelInvoker,
         testing_client: GeneratedCypherSubmitter,
         generation_run_id_factory: Callable[[], str] | None = None,
+        readonly_call_whitelist: set[str] | None = None,
     ) -> None:
         self.knowledge_client = knowledge_client
         self.llm_client = llm_client
         self.testing_client = testing_client
         self.generation_run_id_factory = generation_run_id_factory or (lambda: str(uuid4()))
+        self.readonly_call_whitelist = readonly_call_whitelist or set()
 
     async def ingest_question(self, request: QAQuestionRequest) -> GenerationRunResult:
         generation_run_id = self.generation_run_id_factory()
@@ -105,7 +106,10 @@ class CypherGeneratorAgentService:
                 last_reason = parsed.reason
                 continue
 
-            preflight_check = run_preflight_check(parsed.parsed_cypher)
+            preflight_check = run_preflight_check(
+                parsed.parsed_cypher,
+                readonly_call_whitelist=self.readonly_call_whitelist,
+            )
             if not preflight_check.accepted:
                 last_reason = preflight_check.reason
                 continue
@@ -115,9 +119,6 @@ class CypherGeneratorAgentService:
                 question=request.question,
                 generation_run_id=generation_run_id,
                 generated_cypher=parsed.parsed_cypher,
-                parse_summary=parsed.parse_summary,
-                preflight_check=PreflightCheck(accepted=True),
-                raw_output_snapshot=raw_output,
                 input_prompt_snapshot=llm_prompt,
             )
             try:
@@ -160,6 +161,7 @@ def build_workflow_service(settings: Settings) -> CypherGeneratorAgentService:
             base_url=settings.testing_agent_url,
             timeout_seconds=settings.request_timeout_seconds,
         ),
+        readonly_call_whitelist=set(settings.readonly_call_whitelist),
     )
 
 

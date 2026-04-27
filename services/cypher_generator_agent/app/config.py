@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     llm_api_key: Optional[str] = None
     llm_model: Optional[str] = None
     llm_temperature: float = 0.1
+    readonly_call_whitelist: tuple[str, ...] = ()
 
     model_config = SettingsConfigDict(
         env_prefix="CYPHER_GENERATOR_AGENT_",

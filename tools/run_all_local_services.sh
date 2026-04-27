@@ -69,7 +69,7 @@ done
 echo "running:"
 echo "  cypher-generator-agent    http://127.0.0.1:8000"
 echo "  testing-agent            http://127.0.0.1:8001"
-echo "  repair-agent (KRSS)      http://127.0.0.1:8002"
+echo "  repair-agent      http://127.0.0.1:8002"
 echo "  knowledge_ops            http://127.0.0.1:8010"
 echo "  qa_agent                 http://127.0.0.1:8020"
 echo

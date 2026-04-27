@@ -14,9 +14,9 @@ import httpx
 class ServiceCommunicationTester:
     def __init__(self):
         self.services = {
-            "query_generator": "http://localhost:8000",
-            "testing": "http://localhost:8003",
-            "repair": "http://localhost:8002"
+            "cypher-generator-agent": "http://localhost:8000",
+            "testing-agent": "http://localhost:8003",
+            "repair-agent": "http://localhost:8002",
         }
         self.timeout = 30.0
 
@@ -34,11 +34,7 @@ class ServiceCommunicationTester:
             "id": task_id,
             "question": question_text,
             "generation_run_id": generation_run_id,
-            "attempt_no": 1,
             "generated_cypher": generated_cypher,
-            "parse_summary": "communication_test_payload",
-            "guardrail_summary": "accepted",
-            "raw_output_snapshot": "",
             "input_prompt_snapshot": input_prompt_snapshot,
         }
 
@@ -56,31 +52,28 @@ class ServiceCommunicationTester:
                     print(f"❌ {service_name}: 健康检查失败 - {e}")
         return results
 
-    async def test_query_generator(self) -> Dict[str, Any]:
-        """测试查询语句生成服务"""
+    async def test_cypher_generator_agent(self) -> Dict[str, Any]:
+        """测试 cypher-generator-agent 提交入口。"""
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             try:
-                # 提交问题
                 payload = {
                     "id": "comm-test-001",
-                    "question": "查询网络设备及其端口"
+                    "question": "查询网络设备及其端口",
                 }
-                
+
                 response = await client.post(
-                    f"{self.services['query_generator']}/api/v1/qa/questions",
-                    json=payload
+                    f"{self.services['cypher-generator-agent']}/api/v1/qa/questions",
+                    json=payload,
                 )
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    print("✅ 查询语句生成服务: 问题提交成功")
-                    return {"success": True, "result": result}
-                else:
-                    print(f"❌ 查询语句生成服务: 提交失败 - {response.status_code}")
-                    return {"success": False, "error": response.text}
-                    
+
+                if response.status_code == 204:
+                    print("✅ cypher-generator-agent: QA 任务接收成功")
+                    return {"success": True, "status_code": 204}
+
+                print(f"❌ cypher-generator-agent: 提交失败 - {response.status_code}")
+                return {"success": False, "error": response.text}
             except Exception as e:
-                print(f"❌ 查询语句生成服务: 连接失败 - {e}")
+                print(f"❌ cypher-generator-agent: 连接失败 - {e}")
                 return {"success": False, "error": str(e)}
 
     async def test_testing_service_golden(self) -> Dict[str, Any]:
@@ -95,8 +88,8 @@ class ServiceCommunicationTester:
                 }
                 
                 response = await client.post(
-                    f"{self.services['testing']}/api/v1/qa/goldens",
-                    json=payload
+                    f"{self.services['testing-agent']}/api/v1/qa/goldens",
+                    json=payload,
                 )
                 
                 if response.status_code == 200:
@@ -130,27 +123,13 @@ class ServiceCommunicationTester:
                 )
                 
                 response = await client.post(
-                    f"{self.services['testing']}/api/v1/evaluations/submissions",
-                    json=payload
+                    f"{self.services['testing-agent']}/api/v1/evaluations/submissions",
+                    json=payload,
                 )
-                
+
                 if response.status_code == 200:
                     result = response.json()
                     print("✅ 测试服务: 查询结果提交成功")
-                    
-                    # 检查是否创建了问题单
-                    if result.get("status") == "issue_ticket_created":
-                        ticket_id = result.get("issue_ticket_id")
-                        if ticket_id:
-                            # 获取问题单详情
-                            ticket_response = await client.get(
-                                f"{self.services['testing']}/api/v1/issues/{ticket_id}"
-                            )
-                            if ticket_response.status_code == 200:
-                                ticket_data = ticket_response.json()
-                                print(f"✅ 测试服务: 问题单创建成功 - {ticket_id}")
-                                return {"success": True, "ticket_id": ticket_id, "ticket_data": ticket_data}
-                    
                     return {"success": True, "result": result}
                 else:
                     print(f"❌ 测试服务: 查询结果提交失败 - {response.status_code}")
@@ -181,8 +160,8 @@ class ServiceCommunicationTester:
                 
                 # 提交到修复服务
                 response = await client.post(
-                    f"{self.services['repair']}/api/v1/issue-tickets",
-                    json=ticket_data
+                    f"{self.services['repair-agent']}/api/v1/issue-tickets",
+                    json=ticket_data,
                 )
                 
                 if response.status_code == 200:
@@ -210,8 +189,8 @@ class ServiceCommunicationTester:
             return False
         
         # 2. 测试查询生成服务
-        print("\n2. 测试查询语句生成服务")
-        query_result = await self.test_query_generator()
+        print("\n2. 测试 cypher-generator-agent")
+        query_result = await self.test_cypher_generator_agent()
         
         # 3. 测试测试服务
         print("\n3. 测试测试服务")
@@ -233,7 +212,7 @@ class ServiceCommunicationTester:
         print("\n📊 测试结果总结:")
         test_results = [
             ("服务健康检查", all(health_results.values())),
-            ("查询语句生成", query_result.get("success", False)),
+            ("cypher-generator-agent 提交入口", query_result.get("success", False)),
             ("标准答案提交", golden_result.get("success", False)),
             ("生成结果提交", submission_result.get("success", False)),
             ("修复服务处理", repair_result.get("success", False))

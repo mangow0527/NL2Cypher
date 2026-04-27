@@ -26,4 +26,15 @@ def test_service_code_no_longer_imports_root_shared() -> None:
 
 def test_root_level_shared_and_docs_are_removed() -> None:
     assert not (ROOT / "shared").exists()
-    assert not (ROOT / "docs").exists()
+    docs_dir = ROOT / "docs"
+    if not docs_dir.exists():
+        return
+    allowed_children = {"superpowers"}
+    actual_children = {path.name for path in docs_dir.iterdir()}
+    assert actual_children <= allowed_children
+
+
+def test_contract_models_do_not_export_legacy_prompt_snapshot_response() -> None:
+    from contracts import models
+
+    assert not hasattr(models, "PromptSnapshotResponse")

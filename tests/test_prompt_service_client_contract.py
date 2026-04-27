@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional
 import pytest
 
 from services.cypher_generator_agent.app.clients import KnowledgeAgentClient, TestingAgentClient
-from services.cypher_generator_agent.app.models import GeneratedCypherSubmissionRequest, PreflightCheck
+from services.cypher_generator_agent.app.models import GeneratedCypherSubmissionRequest
 
 
 class _FakeResponse:
@@ -62,12 +62,12 @@ async def test_knowledge_agent_client_uses_context_contract(monkeypatch):
 class _JsonContextResponse(_FakeResponse):
     def __init__(self) -> None:
         super().__init__(
-            text='{"context":"KNOWLEDGE_AGENT_CONTEXT"}',
+            text='{"prompt":"KNOWLEDGE_AGENT_CONTEXT"}',
             headers={"content-type": "application/json"},
         )
 
     def json(self) -> Dict[str, Any]:
-        return {"context": "KNOWLEDGE_AGENT_CONTEXT"}
+        return {"prompt": "KNOWLEDGE_AGENT_CONTEXT"}
 
 
 class _JsonContextAsyncClient(_FakeAsyncClient):
@@ -77,10 +77,40 @@ class _JsonContextAsyncClient(_FakeAsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_knowledge_agent_client_rejects_json_context_response(monkeypatch):
+async def test_knowledge_agent_client_accepts_json_prompt_response(monkeypatch):
     import httpx
 
     monkeypatch.setattr(httpx, "AsyncClient", _JsonContextAsyncClient)
+
+    client = KnowledgeAgentClient(base_url="http://127.0.0.1:8010", timeout_seconds=3.0)
+
+    context = await client.fetch_context(id="qa-001", question="查询网络设备名称")
+
+    assert context == "KNOWLEDGE_AGENT_CONTEXT"
+
+
+class _InvalidJsonContextResponse(_FakeResponse):
+    def __init__(self) -> None:
+        super().__init__(
+            text='{"context":"KNOWLEDGE_AGENT_CONTEXT"}',
+            headers={"content-type": "application/json"},
+        )
+
+    def json(self) -> Dict[str, Any]:
+        return {"context": "KNOWLEDGE_AGENT_CONTEXT"}
+
+
+class _InvalidJsonContextAsyncClient(_FakeAsyncClient):
+    async def post(self, url: str, *, json: Dict[str, Any]) -> _FakeResponse:
+        type(self).last_request = {"url": url, "json": json}
+        return _InvalidJsonContextResponse()
+
+
+@pytest.mark.asyncio
+async def test_knowledge_agent_client_rejects_json_without_prompt_field(monkeypatch):
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", _InvalidJsonContextAsyncClient)
 
     client = KnowledgeAgentClient(base_url="http://127.0.0.1:8010", timeout_seconds=3.0)
 
@@ -88,29 +118,36 @@ async def test_knowledge_agent_client_rejects_json_context_response(monkeypatch)
         await client.fetch_context(id="qa-001", question="查询网络设备名称")
 
 
-class _TextAckResponse(_FakeResponse):
-    def __init__(self) -> None:
+class _JsonAckResponse(_FakeResponse):
+    def __init__(self, payload: Optional[Dict[str, Any]] = None) -> None:
         super().__init__(
-            text="accepted",
-            headers={"content-type": "text/plain; charset=utf-8"},
+            text='{"accepted": true}',
+            headers={"content-type": "application/json"},
         )
-        self.content = b"accepted"
+        self.content = self.text.encode("utf-8")
+        self._payload = payload or {"accepted": True}
 
     def json(self) -> Dict[str, Any]:
-        raise RuntimeError("cypher-generator-agent should not parse testing-agent ack body")
+        return self._payload
 
 
-class _TextAckAsyncClient(_FakeAsyncClient):
+class _JsonAckAsyncClient(_FakeAsyncClient):
     async def post(self, url: str, *, json: Dict[str, Any]) -> _FakeResponse:
         type(self).last_request = {"url": url, "json": json}
-        return _TextAckResponse()
+        return _JsonAckResponse()
+
+
+class _RejectedAckAsyncClient(_FakeAsyncClient):
+    async def post(self, url: str, *, json: Dict[str, Any]) -> _FakeResponse:
+        type(self).last_request = {"url": url, "json": json}
+        return _JsonAckResponse({"accepted": False})
 
 
 @pytest.mark.asyncio
-async def test_testing_agent_client_treats_success_status_as_success_without_parsing_body(monkeypatch):
+async def test_testing_agent_client_requires_accepted_ack_payload(monkeypatch):
     import httpx
 
-    monkeypatch.setattr(httpx, "AsyncClient", _TextAckAsyncClient)
+    monkeypatch.setattr(httpx, "AsyncClient", _JsonAckAsyncClient)
 
     client = TestingAgentClient(base_url="http://127.0.0.1:8003", timeout_seconds=3.0)
     payload = GeneratedCypherSubmissionRequest(
@@ -118,16 +155,32 @@ async def test_testing_agent_client_treats_success_status_as_success_without_par
         question="查询协议版本",
         generation_run_id="cypher-run-001",
         generated_cypher="MATCH (p:Protocol) RETURN p.version",
-        parse_summary="direct_cypher",
-        preflight_check=PreflightCheck(accepted=True),
-        raw_output_snapshot="MATCH (p:Protocol) RETURN p.version",
         input_prompt_snapshot="prompt",
     )
 
     result = await client.submit(payload)
 
-    assert result == {}
-    assert _TextAckAsyncClient.last_request == {
+    assert result == {"accepted": True}
+    assert _JsonAckAsyncClient.last_request == {
         "url": "http://127.0.0.1:8003/api/v1/evaluations/submissions",
         "json": payload.model_dump(),
     }
+
+
+@pytest.mark.asyncio
+async def test_testing_agent_client_rejects_non_accepted_ack_payload(monkeypatch):
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", _RejectedAckAsyncClient)
+
+    client = TestingAgentClient(base_url="http://127.0.0.1:8003", timeout_seconds=3.0, max_submit_attempts=1)
+    payload = GeneratedCypherSubmissionRequest(
+        id="qa-001",
+        question="查询协议版本",
+        generation_run_id="cypher-run-001",
+        generated_cypher="MATCH (p:Protocol) RETURN p.version",
+        input_prompt_snapshot="prompt",
+    )
+
+    with pytest.raises(ValueError, match="testing-agent submission ack contract violation"):
+        await client.submit(payload)

@@ -12,11 +12,11 @@
 
 1. `cypher-generator-agent`（端口 `8000`）
    - 接收 `id + question`
-   - 主动向 `knowledge-agent` 获取 `prompt`
+   - 主动向 `knowledge-agent` 获取 prompt package
    - 调用模型生成 Cypher
    - 保留 `id + prompt` 与原始输出快照
    - 将生成结果提交给 `testing-agent`
-2. `testing-agent`（端口 `8001`）
+2. `testing-agent`（端口 `8003`）
    - 接收 Golden Answer（标准答案）
    - 接收 `cypher-generator-agent` 提交的 Cypher
    - 负责执行 TuGraph
@@ -24,7 +24,7 @@
 3. `repair-agent`（端口 `8002`）
    - 接收问题单
    - 做根因分析与对照实验
-   - 产出修复计划
+   - 产出知识修复建议并投递给 `knowledge-agent`
 4. `knowledge-agent`（端口 `8010`）
    - 提供 Cypher 生成所需的知识上下文
    - 接收并应用知识修复建议
@@ -46,7 +46,7 @@
 控制台入口：
 
 - cypher-generator-agent: [http://localhost:8000/console](http://localhost:8000/console)
-- testing-agent: [http://localhost:8001/health](http://localhost:8001/health)
+- testing-agent: [http://localhost:8003/health](http://localhost:8003/health)
 - repair-agent: [http://localhost:8002/console](http://localhost:8002/console)
 - knowledge-agent: [http://localhost:8010/health](http://localhost:8010/health)
 - qa-agent: [http://localhost:8020/health](http://localhost:8020/health)
@@ -59,7 +59,7 @@
 4. `cypher-generator-agent` 把 `generated_cypher + generation evidence` 提交给 `testing-agent`
 5. `testing-agent` 执行 TuGraph，等待或合并对应的 Golden Answer
 6. `testing-agent` 完成评测，失败时创建 `IssueTicket`
-7. `repair-agent` 基于问题单生成 `RepairPlan`
+7. `repair-agent` 基于问题单生成 `KnowledgeRepairSuggestionRequest` 并尝试投递给 `knowledge-agent`
 
 ## 主要接口
 
@@ -83,7 +83,7 @@ curl -X POST http://localhost:8000/api/v1/qa/questions \
 提交 Golden Answer：
 
 ```bash
-curl -X POST http://localhost:8001/api/v1/qa/goldens \
+curl -X POST http://localhost:8003/api/v1/qa/goldens \
   -H "Content-Type: application/json" \
   -d '{
     "id": "qa-001",
@@ -96,18 +96,13 @@ curl -X POST http://localhost:8001/api/v1/qa/goldens \
 提交生成结果给 `testing-agent`：
 
 ```bash
-curl -X POST http://localhost:8001/api/v1/evaluations/submissions \
+curl -X POST http://localhost:8003/api/v1/evaluations/submissions \
   -H "Content-Type: application/json" \
   -d '{
     "id": "qa-001",
     "question": "查询网络设备及其端口信息",
     "generation_run_id": "run-001",
     "generated_cypher": "MATCH (ne:NetworkElement)-[:HAS_PORT]->(p:Port) RETURN ne.name, p.name LIMIT 10",
-    "parse_summary": "parsed_json",
-    "preflight_check": {
-      "accepted": true
-    },
-    "raw_output_snapshot": "",
     "input_prompt_snapshot": "请只返回 cypher 字段"
   }'
 ```
@@ -115,13 +110,13 @@ curl -X POST http://localhost:8001/api/v1/evaluations/submissions \
 查询评测状态：
 
 ```bash
-curl http://localhost:8001/api/v1/evaluations/qa-001
+curl http://localhost:8003/api/v1/evaluations/qa-001
 ```
 
 查询问题单：
 
 ```bash
-curl http://localhost:8001/api/v1/issues/{ticket_id}
+curl http://localhost:8003/api/v1/issues/{ticket_id}
 ```
 
 ## 配置说明
@@ -172,7 +167,7 @@ curl http://localhost:8001/api/v1/issues/{ticket_id}
 
 - `cypher-generator-agent` 不执行 TuGraph；执行职责由 `testing-agent` 承担。
 - `cypher-generator-agent` 输出的是“生成阶段处理状态”，不是最终业务评测结果。
-- 根因分析依赖 `id + input_prompt_snapshot + raw_output_snapshot`，这些字段不得删除。
+- 跨服务 submission 契约依赖 `id + question + generation_run_id + generated_cypher + input_prompt_snapshot`，不要把 cypher-generator-agent 内部字段重新放回 testing-agent 契约。
 - 若文档与
   [cypher-generator-agent-design.md](/Users/mangowmac/Desktop/code/NL2Cypher/services/cypher_generator_agent/docs/cypher-generator-agent-design.md)
   冲突，以该设计文档为准。

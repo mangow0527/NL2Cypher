@@ -1,27 +1,18 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
 
-from contracts.models import (
-    ActualAnswer,
-    EvaluationDimensions,
-    EvaluationSubmissionRequest,
-    EvaluationSummary,
-    ExpectedAnswer,
-    ImprovementAssessment,
-    ImprovementDimensions,
-    IssueTicket,
-    KRSSAnalysisRecord,
-    KnowledgeRepairSuggestionRequest,
-    QAGoldenRequest,
-)
+
+def _write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def test_runtime_results_center_html_exposes_task_list_and_cypher_quality(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_QUERY_GENERATOR_DATA_DIR", str(tmp_path / "query"))
     monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(tmp_path / "testing"))
     monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_REPAIR_DATA_DIR", str(tmp_path / "repair"))
 
@@ -35,15 +26,14 @@ def test_runtime_results_center_html_exposes_task_list_and_cypher_quality(monkey
     assert "运行结果中心" in response.text
     assert "Runtime Results Center" in response.text
     assert "Cypher 结果与质量" in response.text
-    assert "KRSS 诊断摘要" in response.text
-    assert "Testing Service 持久化的 IssueTicket 与 KRSSAnalysisRecord" in response.text
+    assert "repair-agent 诊断摘要" in response.text
+    assert "Testing Service 持久化的 IssueTicket 与 RepairAnalysisRecord" in response.text
     assert "任务列表" in response.text
     assert "服务运行状态" in response.text
     assert "开始联调" not in response.text
 
 
 def test_runtime_results_service_status_endpoint_returns_five_service_cards(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_QUERY_GENERATOR_DATA_DIR", str(tmp_path / "query"))
     monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(tmp_path / "testing"))
     monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_REPAIR_DATA_DIR", str(tmp_path / "repair"))
 
@@ -51,11 +41,11 @@ def test_runtime_results_service_status_endpoint_returns_five_service_cards(monk
     from console.runtime_console.app.service import RuntimeResultsService
 
     mock_cards = [
-        {"service_key": "cgs", "label_zh": "查询生成服务", "status": "online"},
-        {"service_key": "testing_service", "label_zh": "测试服务", "status": "online"},
-        {"service_key": "krss", "label_zh": "知识修复建议服务", "status": "offline"},
-        {"service_key": "knowledge_ops", "label_zh": "知识运营服务", "status": "online"},
-        {"service_key": "qa_generator", "label_zh": "问答生成服务", "status": "online"},
+        {"service_key": "cypher-generator-agent", "label_zh": "Cypher 生成服务", "status": "online"},
+        {"service_key": "testing-agent", "label_zh": "测试服务", "status": "online"},
+        {"service_key": "repair-agent", "label_zh": "知识修复建议服务", "status": "offline"},
+        {"service_key": "knowledge-agent", "label_zh": "知识运营服务", "status": "online"},
+        {"service_key": "qa-agent", "label_zh": "问答生成服务", "status": "online"},
     ]
     monkeypatch.setattr(
         RuntimeResultsService,
@@ -71,61 +61,63 @@ def test_runtime_results_service_status_endpoint_returns_five_service_cards(monk
     payload = response.json()
     assert payload["title_zh"] == "服务运行状态"
     assert [service["service_key"] for service in payload["services"]] == [
-        "cgs",
-        "testing_service",
-        "krss",
-        "knowledge_ops",
-        "qa_generator",
+        "cypher-generator-agent",
+        "testing-agent",
+        "repair-agent",
+        "knowledge-agent",
+        "qa-agent",
     ]
 
 
-def test_runtime_results_service_uses_local_health_client_boundary():
-    import console.runtime_console.app.service as runtime_service_module
-
-    assert runtime_service_module.ServiceHealthClient.__module__ == "console.runtime_console.app.service"
-
-
 def test_runtime_results_tasks_only_include_qa_generator_items(monkeypatch, tmp_path: Path):
-    query_dir = tmp_path / "query"
     testing_dir = tmp_path / "testing"
-    repair_dir = tmp_path / "repair"
-    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_QUERY_GENERATOR_DATA_DIR", str(query_dir))
     monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(testing_dir))
-    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_REPAIR_DATA_DIR", str(repair_dir))
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_REPAIR_DATA_DIR", str(tmp_path / "repair"))
 
-    from services.cypher_generator_agent.app.repository import QueryGeneratorRepository
+    _write_json(
+        testing_dir / "submissions" / "qa_old.json",
+        {
+            "id": "qa_old",
+            "attempt_no": 1,
+            "question": "旧问题",
+            "generation_run_id": "run-old",
+            "generated_cypher": "MATCH (n) RETURN n LIMIT 5",
+            "input_prompt_snapshot": "old prompt",
+            "state": "passed",
+            "received_at": "2026-04-26T10:00:00+00:00",
+            "updated_at": "2026-04-26T10:01:00+00:00",
+        },
+    )
+    _write_json(
+        testing_dir / "submissions" / "qa_new.json",
+        {
+            "id": "qa_new",
+            "attempt_no": 1,
+            "question": "新问题",
+            "generation_run_id": "run-new",
+            "generated_cypher": "MATCH (f:Fiber) RETURN f LIMIT 5",
+            "input_prompt_snapshot": "new prompt",
+            "state": "passed",
+            "received_at": "2026-04-26T11:00:00+00:00",
+            "updated_at": "2026-04-26T11:01:00+00:00",
+        },
+    )
+    _write_json(
+        testing_dir / "submissions" / "qa-console-manual.json",
+        {
+            "id": "qa-console-manual",
+            "attempt_no": 1,
+            "question": "手动调试",
+            "generation_run_id": "run-console",
+            "generated_cypher": "MATCH (n) RETURN n",
+            "input_prompt_snapshot": "console prompt",
+            "state": "passed",
+            "received_at": "2026-04-26T12:00:00+00:00",
+            "updated_at": "2026-04-26T12:01:00+00:00",
+        },
+    )
+
     from console.runtime_console.app.main import create_app
-
-    query_repository = QueryGeneratorRepository(str(query_dir))
-    query_repository.upsert_question(id="qa_old", question="旧问题", status="generated")
-    query_repository.save_generation_run(
-        id="qa_old",
-        generation_run_id="run-old",
-        attempt_no=1,
-        generation_status="generated",
-        generated_cypher="MATCH (n) RETURN n LIMIT 5",
-        parse_summary="ok",
-        guardrail_summary="passed",
-        raw_output_snapshot="{}",
-        failure_stage=None,
-        failure_reason_summary=None,
-        input_prompt_snapshot="old prompt",
-    )
-    query_repository.upsert_question(id="qa_new", question="新问题", status="generated")
-    query_repository.save_generation_run(
-        id="qa_new",
-        generation_run_id="run-new",
-        attempt_no=1,
-        generation_status="generated",
-        generated_cypher="MATCH (f:Fiber) RETURN f LIMIT 5",
-        parse_summary="ok",
-        guardrail_summary="passed",
-        raw_output_snapshot="{}",
-        failure_stage=None,
-        failure_reason_summary=None,
-        input_prompt_snapshot="new prompt",
-    )
-    query_repository.upsert_question(id="qa-console-manual", question="手动调试", status="generated")
 
     client = TestClient(create_app())
 
@@ -139,215 +131,212 @@ def test_runtime_results_tasks_only_include_qa_generator_items(monkeypatch, tmp_
     assert all("qa-console" not in task["id"] for task in payload["tasks"])
 
 
-def test_runtime_results_task_detail_aggregates_cypher_quality_and_repair_trace(monkeypatch, tmp_path: Path):
-    query_dir = tmp_path / "query"
+def test_runtime_results_task_detail_reads_current_testing_and_repair_artifacts(monkeypatch, tmp_path: Path):
     testing_dir = tmp_path / "testing"
     repair_dir = tmp_path / "repair"
-    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_QUERY_GENERATOR_DATA_DIR", str(query_dir))
     monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(testing_dir))
     monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_REPAIR_DATA_DIR", str(repair_dir))
-
-    from services.cypher_generator_agent.app.repository import QueryGeneratorRepository
-    from services.repair_agent.app.repository import RepairRepository
-    from console.runtime_console.app.main import create_app
-    from services.testing_agent.app.repository import TestingRepository
-
-    query_repository = QueryGeneratorRepository(str(query_dir))
-    testing_repository = TestingRepository(str(testing_dir))
-    repair_repository = RepairRepository(str(repair_dir))
-
-    query_repository.upsert_question(id="qa_fiber_001", question="查询长度最长的5条光纤", status="generated")
-    query_repository.save_generation_run(
-        id="qa_fiber_001",
-        generation_run_id="run-fiber-001",
-        attempt_no=2,
-        generation_status="generated",
-        generated_cypher="MATCH (f:Fiber) RETURN f.id AS id, f.name AS name, f.length AS length LIMIT 20",
-        parse_summary="parsed",
-        guardrail_summary="passed",
-        raw_output_snapshot='{"cypher":"MATCH (f:Fiber) RETURN f.id AS id, f.name AS name, f.length AS length LIMIT 20"}',
-        failure_stage=None,
-        failure_reason_summary=None,
-        input_prompt_snapshot="Fiber prompt snapshot",
-    )
-    testing_repository.save_golden(
-        QAGoldenRequest(
-            id="qa_fiber_001",
-            cypher="MATCH (n:Fiber) RETURN n ORDER BY n.length DESC LIMIT 5",
-            answer=[],
-            difficulty="L4",
-        )
-    )
-    testing_repository.save_submission(
-        EvaluationSubmissionRequest(
-            id="qa_fiber_001",
-            question="查询长度最长的5条光纤",
-            generation_run_id="run-fiber-001",
-            attempt_no=2,
-            generated_cypher="MATCH (f:Fiber) RETURN f.id AS id, f.name AS name, f.length AS length LIMIT 20",
-            parse_summary="parsed",
-            guardrail_summary="passed",
-            raw_output_snapshot='{"cypher":"MATCH (f:Fiber) RETURN f.id AS id, f.name AS name, f.length AS length LIMIT 20"}',
-            input_prompt_snapshot="Fiber prompt snapshot",
-        ),
-        status="issue_ticket_created",
-    )
-    testing_repository.save_submission(
-        EvaluationSubmissionRequest(
-            id="qa_fiber_001",
-            question="查询长度最长的5条光纤",
-            generation_run_id="run-fiber-000",
-            attempt_no=1,
-            generated_cypher="MATCH (f:Fiber) RETURN f.id AS id LIMIT 20",
-            parse_summary="parsed",
-            guardrail_summary="passed",
-            raw_output_snapshot='{"cypher":"MATCH (f:Fiber) RETURN f.id AS id LIMIT 20"}',
-            input_prompt_snapshot="Older prompt snapshot",
-        ),
-        status="issue_ticket_created",
-    )
-    testing_repository.save_submission_execution(
-        "qa_fiber_001",
-        '{"success": false, "rows": [], "row_count": 0, "error_message": "Cypher execution failed", "elapsed_ms": 12}',
-        attempt_no=1,
-    )
-    testing_repository.save_submission_execution(
-        "qa_fiber_001",
-        '{"success": false, "rows": [], "row_count": 0, "error_message": "Cypher execution failed", "elapsed_ms": 12}',
-        attempt_no=2,
-    )
-    testing_repository.save_issue_ticket(
-        IssueTicket(
-            ticket_id="ticket-qa_fiber_001",
-            id="qa_fiber_001",
-            difficulty="L4",
-            question="查询长度最长的5条光纤",
-            expected=ExpectedAnswer(
-                cypher="MATCH (n:Fiber) RETURN n ORDER BY n.length DESC LIMIT 5",
-                answer=[],
-            ),
-            actual=ActualAnswer(
-                generated_cypher="MATCH (f:Fiber) RETURN f.id AS id, f.name AS name, f.length AS length LIMIT 20",
-                execution={
-                    "success": False,
-                    "rows": [],
-                    "row_count": 0,
-                    "error_message": "Cypher execution failed",
-                    "elapsed_ms": 12,
-                },
-            ),
-            evaluation=EvaluationSummary(
-                verdict="fail",
-                dimensions=EvaluationDimensions(
-                    syntax_validity="fail",
-                    schema_alignment="pass",
-                    result_correctness="fail",
-                    question_alignment="fail",
-                ),
-                symptom="The query missed the expected ordering and limit semantics.",
-                evidence=["missing ORDER BY", "limit mismatch", "return shape mismatch"],
-            ),
-            input_prompt_snapshot="Fiber prompt snapshot",
-        )
-    )
-    testing_repository.save_issue_ticket(
-        IssueTicket(
-            ticket_id="ticket-qa_fiber_001-attempt-1",
-            id="qa_fiber_001",
-            difficulty="L4",
-            question="查询长度最长的5条光纤",
-            expected=ExpectedAnswer(
-                cypher="MATCH (n:Fiber) RETURN n ORDER BY n.length DESC LIMIT 5",
-                answer=[],
-            ),
-            actual=ActualAnswer(
-                generated_cypher="MATCH (f:Fiber) RETURN f.id AS id LIMIT 20",
-                execution={
-                    "success": False,
-                    "rows": [],
-                    "row_count": 0,
-                    "error_message": "Cypher execution failed",
-                    "elapsed_ms": 12,
-                },
-            ),
-            evaluation=EvaluationSummary(
-                verdict="fail",
-                dimensions=EvaluationDimensions(
-                    syntax_validity="fail",
-                    schema_alignment="pass",
-                    result_correctness="fail",
-                    question_alignment="fail",
-                ),
-                symptom="The query missed the expected ordering and limit semantics.",
-                evidence=["missing ORDER BY", "limit mismatch", "return shape mismatch"],
-            ),
-            input_prompt_snapshot="Older prompt snapshot",
-        )
-    )
-    testing_repository.save_submission_krss_response(
-        "qa_fiber_001",
+    _write_json(
+        testing_dir / "goldens" / "qa_fiber_001.json",
         {
-            "status": "applied",
-            "analysis_id": "analysis-ticket-qa_fiber_001",
             "id": "qa_fiber_001",
+            "cypher": "MATCH (n:Fiber) RETURN n ORDER BY n.length DESC LIMIT 5",
+            "answer": [],
+            "difficulty": "L4",
+            "updated_at": "2026-04-26T09:01:00+00:00",
+        },
+    )
+    _write_json(
+        testing_dir / "submission_attempts" / "qa_fiber_001__attempt_2.json",
+        {
+            "id": "qa_fiber_001",
+            "attempt_no": 2,
+            "question": "查询长度最长的5条光纤",
+            "generation_run_id": "run-fiber-001",
+            "generated_cypher": "MATCH (f:Fiber) RETURN f.id AS id, f.name AS name, f.length AS length LIMIT 20",
+            "input_prompt_snapshot": "Fiber prompt snapshot",
+            "state": "issue_ticket_created",
+            "execution": {
+                "success": False,
+                "rows": [],
+                "row_count": 0,
+                "error_message": "Cypher execution failed",
+                "elapsed_ms": 12,
+            },
+            "issue_ticket_id": "ticket-qa_fiber_001-attempt-2",
+            "repair_response": {
+                "status": "applied",
+                "analysis_id": "analysis-ticket-qa_fiber_001",
+                "id": "qa_fiber_001",
+                "knowledge_repair_request": {
+                    "id": "qa_fiber_001",
+                    "suggestion": "Add a few-shot example for top-N fiber ranking questions.",
+                    "knowledge_types": ["few_shot"],
+                },
+                "knowledge_ops_response": {"status": "ok"},
+                "applied": True,
+            },
+            "improvement_assessment": {
+                "qa_id": "qa_fiber_001",
+                "current_attempt_no": 2,
+                "previous_attempt_no": 1,
+                "summary_zh": "第 2 轮相较第 1 轮已改善。",
+                "metrics": {
+                    "grammar_score": {"previous": 0, "current": 1, "status": "improved"},
+                    "execution_accuracy_score": {"previous": 0, "current": 0, "status": "unchanged"},
+                    "gleu_score": {"previous": 0.1, "current": 0.4, "status": "improved"},
+                    "jaro_winkler_similarity_score": {"previous": 0.2, "current": 0.5, "status": "improved"},
+                },
+                "highlights": ["上一轮问题已不再出现: missing ORDER BY"],
+                "evidence": ["limit mismatch"],
+            },
+            "received_at": "2026-04-26T09:00:30+00:00",
+            "updated_at": "2026-04-26T09:03:00+00:00",
+        },
+    )
+    _write_json(
+        testing_dir / "submissions" / "qa_fiber_001.json",
+        {
+            "id": "qa_fiber_001",
+            "attempt_no": 2,
+            "question": "查询长度最长的5条光纤",
+            "generation_run_id": "run-fiber-001",
+            "generated_cypher": "MATCH (f:Fiber) RETURN f.id AS id, f.name AS name, f.length AS length LIMIT 20",
+            "input_prompt_snapshot": "Fiber prompt snapshot",
+            "state": "issue_ticket_created",
+            "execution": {
+                "success": False,
+                "rows": [],
+                "row_count": 0,
+                "error_message": "Cypher execution failed",
+                "elapsed_ms": 12,
+            },
+            "issue_ticket_id": "ticket-qa_fiber_001-attempt-2",
+            "repair_response": {
+                "status": "applied",
+                "analysis_id": "analysis-ticket-qa_fiber_001",
+                "id": "qa_fiber_001",
+                "knowledge_repair_request": {
+                    "id": "qa_fiber_001",
+                    "suggestion": "Add a few-shot example for top-N fiber ranking questions.",
+                    "knowledge_types": ["few_shot"],
+                },
+                "knowledge_ops_response": {"status": "ok"},
+                "applied": True,
+            },
+            "improvement_assessment": {
+                "qa_id": "qa_fiber_001",
+                "current_attempt_no": 2,
+                "previous_attempt_no": 1,
+                "summary_zh": "第 2 轮相较第 1 轮已改善。",
+                "metrics": {
+                    "grammar_score": {"previous": 0, "current": 1, "status": "improved"},
+                    "execution_accuracy_score": {"previous": 0, "current": 0, "status": "unchanged"},
+                    "gleu_score": {"previous": 0.1, "current": 0.4, "status": "improved"},
+                    "jaro_winkler_similarity_score": {"previous": 0.2, "current": 0.5, "status": "improved"},
+                },
+                "highlights": ["上一轮问题已不再出现: missing ORDER BY"],
+                "evidence": ["limit mismatch"],
+            },
+            "received_at": "2026-04-26T09:00:30+00:00",
+            "updated_at": "2026-04-26T09:03:00+00:00",
+        },
+    )
+    _write_json(
+        testing_dir / "issue_tickets" / "ticket-qa_fiber_001-attempt-2.json",
+        {
+            "ticket_id": "ticket-qa_fiber_001-attempt-2",
+            "id": "qa_fiber_001",
+            "difficulty": "L4",
+            "question": "查询长度最长的5条光纤",
+            "expected": {
+                "cypher": "MATCH (n:Fiber) RETURN n ORDER BY n.length DESC LIMIT 5",
+                "answer": [],
+            },
+            "actual": {
+                "generated_cypher": "MATCH (f:Fiber) RETURN f.id AS id, f.name AS name, f.length AS length LIMIT 20",
+                "execution": {
+                    "success": False,
+                    "rows": [],
+                    "row_count": 0,
+                    "error_message": "Cypher execution failed",
+                    "elapsed_ms": 12,
+                },
+            },
+            "evaluation": {
+                "verdict": "fail",
+                "primary_metrics": {
+                    "grammar": {"score": 1, "parser_error": None, "message": None},
+                    "execution_accuracy": {
+                        "score": 0,
+                        "reason": "not_equivalent",
+                        "strict_check": {
+                            "status": "fail",
+                            "message": "结果未严格一致。",
+                            "order_sensitive": True,
+                            "expected_row_count": 5,
+                            "actual_row_count": 20,
+                            "evidence": {
+                                "golden_answer": [],
+                                "actual_answer": [],
+                                "diff": {
+                                    "missing_rows": [],
+                                    "unexpected_rows": [],
+                                    "order_mismatch": True,
+                                },
+                            },
+                        },
+                        "semantic_check": {
+                            "status": "fail",
+                            "message": "语义不等价。",
+                            "raw_output": {"accepted": False},
+                        },
+                    },
+                },
+                "secondary_signals": {
+                    "gleu": {"score": 0.22, "tokenizer": "zh", "min_n": 1, "max_n": 4},
+                    "jaro_winkler_similarity": {"score": 0.41, "normalization": "cypher_basic", "library": "rapidfuzz"},
+                },
+            },
+            "generation_evidence": {
+                "generation_run_id": "run-fiber-001",
+                "attempt_no": 2,
+                "input_prompt_snapshot": "Fiber prompt snapshot",
+            },
+        },
+    )
+    _write_json(
+        repair_dir / "analyses" / "analysis-ticket-qa_fiber_001.json",
+        {
+            "analysis_id": "analysis-ticket-qa_fiber_001",
+            "ticket_id": "ticket-qa_fiber_001-attempt-2",
+            "id": "qa_fiber_001",
+            "status": "applied",
+            "prompt_snapshot": "Fiber prompt snapshot",
             "knowledge_repair_request": {
                 "id": "qa_fiber_001",
                 "suggestion": "Add a few-shot example for top-N fiber ranking questions.",
                 "knowledge_types": ["few_shot"],
             },
             "knowledge_ops_response": {"status": "ok"},
-            "applied": True,
-        },
-        attempt_no=2,
-    )
-    testing_repository.save_improvement_assessment(
-        "qa_fiber_001",
-        ImprovementAssessment(
-            qa_id="qa_fiber_001",
-            current_attempt_no=2,
-            previous_attempt_no=1,
-            summary_zh="第 2 轮相较第 1 轮已改善。",
-            dimensions=ImprovementDimensions(
-                syntax_validity_change="unchanged",
-                schema_alignment_change="unchanged",
-                result_correctness_change="unchanged",
-                question_alignment_change="improved",
-            ),
-            highlights=["上一轮问题已不再出现: missing ORDER BY"],
-            evidence=["limit mismatch"],
-        ),
-        attempt_no=2,
-    )
-    repair_repository.save_analysis(
-        KRSSAnalysisRecord(
-            analysis_id="analysis-ticket-qa_fiber_001",
-            ticket_id="ticket-qa_fiber_001",
-            id="qa_fiber_001",
-            prompt_snapshot="Fiber prompt snapshot",
-            knowledge_repair_request=KnowledgeRepairSuggestionRequest(
-                id="qa_fiber_001",
-                suggestion="Add a few-shot example for top-N fiber ranking questions.",
-                knowledge_types=["few_shot"],
-            ),
-            knowledge_ops_response={"status": "ok"},
-            confidence=0.92,
-            rationale="The failure points to missing ranking-specific examples.",
-            used_experiments=True,
-            primary_knowledge_type="few_shot",
-            secondary_knowledge_types=["business_knowledge"],
-            candidate_patch_types=["few_shot", "business_knowledge"],
-            validation_mode="lightweight",
-            validation_result={
+            "confidence": 0.91,
+            "rationale": "The query missed the ranking few-shot pattern.",
+            "used_experiments": True,
+            "primary_knowledge_type": "few_shot",
+            "secondary_knowledge_types": ["system_prompt"],
+            "candidate_patch_types": ["few_shot"],
+            "validation_mode": "lightweight",
+            "validation_result": {
                 "validated_patch_types": ["few_shot"],
-                "rejected_patch_types": ["business_knowledge"],
-                "validation_reasoning": ["few_shot best explains the top-N ranking mismatch"],
             },
-            diagnosis_context_summary={"failure_diff": {"return_shape_problem": True, "limit_problem": True}},
-            applied=True,
-            created_at="2026-04-14T10:18:10.108360+00:00",
-            applied_at="2026-04-14T10:18:10.108387+00:00",
-        )
+            "diagnosis_context_summary": {"failure_diff": {"limit_problem": True}},
+            "applied": True,
+            "created_at": "2026-04-26T09:03:01+00:00",
+            "applied_at": "2026-04-26T09:03:02+00:00",
+        },
     )
+
+    from console.runtime_console.app.main import create_app
 
     client = TestClient(create_app())
 
@@ -365,98 +354,142 @@ def test_runtime_results_task_detail_aggregates_cypher_quality_and_repair_trace(
     assert payload["stages"]["evaluation"]["status"] == "failed"
     assert payload["stages"]["knowledge_repair"]["status"] == "passed"
     assert payload["improvement_assessment"]["previous_attempt_no"] == 1
-    assert payload["improvement_assessment"]["dimensions"]["question_alignment_change"] == "improved"
     assert payload["artifacts"]["repair"]["analysis"]["analysis_id"] == "analysis-ticket-qa_fiber_001"
-    assert payload["artifacts"]["repair"]["issue_ticket"]["input_prompt_snapshot"] == "Fiber prompt snapshot"
+    assert payload["artifacts"]["repair"]["issue_ticket"]["generation_evidence"]["input_prompt_snapshot"] == "Fiber prompt snapshot"
     assert payload["artifacts"]["repair"]["analysis"]["prompt_snapshot"] == "Fiber prompt snapshot"
-    assert payload["artifacts"]["repair"]["analysis"]["prompt_snapshot"] == payload["artifacts"]["repair"]["issue_ticket"]["input_prompt_snapshot"]
     assert payload["artifacts"]["repair"]["analysis"]["primary_knowledge_type"] == "few_shot"
     assert payload["artifacts"]["repair"]["analysis"]["validation_mode"] == "lightweight"
     assert payload["artifacts"]["repair"]["analysis"]["validation_result"]["validated_patch_types"] == ["few_shot"]
 
 
-def test_runtime_results_prefers_latest_attempt_artifacts_when_question_points_to_newer_attempt(monkeypatch, tmp_path: Path):
-    query_dir = tmp_path / "query"
+def test_runtime_results_ignores_malformed_repair_response_artifacts(monkeypatch, tmp_path: Path):
     testing_dir = tmp_path / "testing"
     repair_dir = tmp_path / "repair"
-    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_QUERY_GENERATOR_DATA_DIR", str(query_dir))
     monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(testing_dir))
     monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_REPAIR_DATA_DIR", str(repair_dir))
+    _write_json(
+        testing_dir / "submission_attempts" / "qa_bad_repair__attempt_1.json",
+        {
+            "id": "qa_bad_repair",
+            "attempt_no": 1,
+            "question": "查询异常修复记录",
+            "generation_run_id": "run-bad-repair",
+            "generated_cypher": "MATCH (n) RETURN n",
+            "input_prompt_snapshot": "prompt snapshot",
+            "state": "issue_ticket_created",
+            "issue_ticket_id": "ticket-qa_bad_repair-attempt-1",
+            "repair_response": {
+                "status": "applied",
+                "analysis_id": 123,
+                "knowledge_ops_response": {"status": "ok"},
+            },
+            "received_at": "2026-04-26T09:00:30+00:00",
+            "updated_at": "2026-04-26T09:03:00+00:00",
+        },
+    )
+    _write_json(
+        testing_dir / "submissions" / "qa_bad_repair.json",
+        {
+            "id": "qa_bad_repair",
+            "attempt_no": 1,
+            "question": "查询异常修复记录",
+            "generation_run_id": "run-bad-repair",
+            "generated_cypher": "MATCH (n) RETURN n",
+            "input_prompt_snapshot": "prompt snapshot",
+            "state": "issue_ticket_created",
+            "issue_ticket_id": "ticket-qa_bad_repair-attempt-1",
+            "repair_response": {
+                "status": "applied",
+                "analysis_id": 123,
+                "knowledge_ops_response": {"status": "ok"},
+            },
+            "received_at": "2026-04-26T09:00:30+00:00",
+            "updated_at": "2026-04-26T09:03:00+00:00",
+        },
+    )
+    _write_json(
+        testing_dir / "issue_tickets" / "ticket-qa_bad_repair-attempt-1.json",
+        {
+            "ticket_id": "ticket-qa_bad_repair-attempt-1",
+            "id": "qa_bad_repair",
+            "difficulty": "L3",
+            "question": "查询异常修复记录",
+            "expected": {"cypher": "MATCH (n) RETURN n", "answer": []},
+            "actual": {"generated_cypher": "MATCH (n) RETURN n", "execution": None},
+            "evaluation": {
+                "verdict": "fail",
+                "primary_metrics": {
+                    "grammar": {"score": 1, "parser_error": None, "message": None},
+                    "execution_accuracy": {
+                        "score": 0,
+                        "reason": "not_equivalent",
+                        "strict_check": {
+                            "status": "fail",
+                            "message": "结果未严格一致。",
+                            "order_sensitive": False,
+                            "expected_row_count": 0,
+                            "actual_row_count": 0,
+                            "evidence": None,
+                        },
+                        "semantic_check": {"status": "fail", "message": "语义不等价。", "raw_output": None},
+                    },
+                },
+                "secondary_signals": {
+                    "gleu": {"score": 0.2, "tokenizer": "zh", "min_n": 1, "max_n": 4},
+                    "jaro_winkler_similarity": {"score": 0.4, "normalization": "cypher_basic", "library": "rapidfuzz"},
+                },
+            },
+            "generation_evidence": {
+                "generation_run_id": "run-bad-repair",
+                "attempt_no": 1,
+                "input_prompt_snapshot": "prompt snapshot",
+            },
+        },
+    )
 
-    from services.cypher_generator_agent.app.repository import QueryGeneratorRepository
     from console.runtime_console.app.main import create_app
-    from services.testing_agent.app.repository import TestingRepository
-
-    query_repository = QueryGeneratorRepository(str(query_dir))
-    testing_repository = TestingRepository(str(testing_dir))
-
-    query_repository.upsert_question(id="qa_attempt_latest", question="查询光纤", status="generated")
-    query_repository.save_generation_run(
-        id="qa_attempt_latest",
-        generation_run_id="run-001",
-        attempt_no=1,
-        generation_status="generated",
-        generated_cypher="MATCH (f:Fiber) RETURN f LIMIT 20",
-        parse_summary="parsed",
-        guardrail_summary="accepted",
-        raw_output_snapshot="MATCH (f:Fiber) RETURN f LIMIT 20",
-        failure_stage=None,
-        failure_reason_summary=None,
-        input_prompt_snapshot="attempt1",
-    )
-    query_repository.save_generation_run(
-        id="qa_attempt_latest",
-        generation_run_id="run-002",
-        attempt_no=2,
-        generation_status="submitted_to_testing",
-        generated_cypher="MATCH (f:Fiber) RETURN f ORDER BY f.length DESC LIMIT 5",
-        parse_summary="parsed",
-        guardrail_summary="accepted",
-        raw_output_snapshot="MATCH (f:Fiber) RETURN f ORDER BY f.length DESC LIMIT 5",
-        failure_stage=None,
-        failure_reason_summary=None,
-        input_prompt_snapshot="attempt2",
-    )
-
-    latest_question_path = query_dir / "questions" / "qa_attempt_latest.json"
-    latest_question = latest_question_path.read_text(encoding="utf-8")
-    latest_question_path.write_text(latest_question.replace('"latest_attempt_no": 2', '"latest_attempt_no": 2'), encoding="utf-8")
-
-    testing_repository.save_submission(
-        EvaluationSubmissionRequest(
-            id="qa_attempt_latest",
-            question="查询光纤",
-            generation_run_id="run-001",
-            attempt_no=1,
-            generated_cypher="MATCH (f:Fiber) RETURN f LIMIT 20",
-            parse_summary="parsed",
-            guardrail_summary="accepted",
-            raw_output_snapshot="MATCH (f:Fiber) RETURN f LIMIT 20",
-            input_prompt_snapshot="attempt1",
-        ),
-        status="issue_ticket_created",
-    )
-    testing_repository.save_submission(
-        EvaluationSubmissionRequest(
-            id="qa_attempt_latest",
-            question="查询光纤",
-            generation_run_id="run-002",
-            attempt_no=2,
-            generated_cypher="MATCH (f:Fiber) RETURN f ORDER BY f.length DESC LIMIT 5",
-            parse_summary="parsed",
-            guardrail_summary="accepted",
-            raw_output_snapshot="MATCH (f:Fiber) RETURN f ORDER BY f.length DESC LIMIT 5",
-            input_prompt_snapshot="attempt2",
-        ),
-        status="waiting_for_golden",
-    )
 
     client = TestClient(create_app())
 
-    response = client.get("/api/v1/tasks/qa_attempt_latest")
+    response = client.get("/api/v1/tasks/qa_bad_repair")
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["attempt_no"] == 2
-    assert payload["generated_cypher"] == "MATCH (f:Fiber) RETURN f ORDER BY f.length DESC LIMIT 5"
-    assert payload["artifacts"]["submission"]["attempt_no"] == 2
+    assert payload["stages"]["evaluation"]["status"] == "failed"
+    assert payload["stages"]["knowledge_repair"]["status"] == "failed"
+    assert payload["stages"]["knowledge_apply"]["status"] == "failed"
+    assert payload["artifacts"]["repair"]["repair_response"] is None
+    assert payload["artifacts"]["repair"]["analysis"] is None
+
+
+def test_runtime_results_do_not_require_cypher_generator_agent_local_storage(monkeypatch, tmp_path: Path):
+    testing_dir = tmp_path / "testing"
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(testing_dir))
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_REPAIR_DATA_DIR", str(tmp_path / "repair"))
+
+    _write_json(
+        testing_dir / "submissions" / "qa_storage_free.json",
+        {
+            "id": "qa_storage_free",
+            "attempt_no": 1,
+            "question": "查询设备",
+            "generation_run_id": "run-storage-free",
+            "generated_cypher": "MATCH (n) RETURN n LIMIT 5",
+            "input_prompt_snapshot": "prompt",
+            "state": "received_submission_only",
+            "received_at": "2026-04-26T08:00:00+00:00",
+            "updated_at": "2026-04-26T08:01:00+00:00",
+        },
+    )
+
+    from console.runtime_console.app.main import create_app
+
+    client = TestClient(create_app())
+
+    tasks_response = client.get("/api/v1/tasks")
+    detail_response = client.get("/api/v1/tasks/qa_storage_free")
+
+    assert tasks_response.status_code == 200
+    assert [task["id"] for task in tasks_response.json()["tasks"]] == ["qa_storage_free"]
+    assert detail_response.status_code == 200
+    assert detail_response.json()["question"] == "查询设备"

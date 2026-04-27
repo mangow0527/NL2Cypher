@@ -16,7 +16,6 @@ def create_app() -> FastAPI:
     ui_dir = Path(__file__).resolve().parents[1] / "ui"
     app.mount("/ui", StaticFiles(directory=ui_dir), name="runtime-results-ui")
     results_service = RuntimeResultsService(
-        cypher_generator_agent_data_dir=runtime_settings.cypher_generator_agent_data_dir,
         testing_data_dir=runtime_settings.testing_data_dir,
         repair_data_dir=runtime_settings.repair_data_dir,
         cypher_generator_agent_base_url=runtime_settings.cypher_generator_agent_base_url,

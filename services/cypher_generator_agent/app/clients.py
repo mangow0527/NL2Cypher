@@ -176,7 +176,11 @@ class KnowledgeAgentClient:
             )
             content_type = response.headers.get("content-type", "")
             if "application/json" in content_type.lower():
-                raise ValueError("knowledge-agent context contract violation: expected text/plain context response")
+                payload = response.json()
+                prompt = payload.get("prompt")
+                if not isinstance(prompt, str) or not prompt.strip():
+                    raise ValueError("knowledge-agent context contract violation: expected text/plain or JSON prompt response")
+                return prompt.strip()
             context = response.text.strip()
             if not context:
                 raise ValueError("knowledge-agent context contract violation: empty context response")
@@ -240,4 +244,7 @@ class TestingAgentClient:
                     "elapsed_ms": elapsed_ms,
                 },
             )
-            return {}
+            ack = response.json()
+            if not isinstance(ack, dict) or ack.get("accepted") is not True:
+                raise ValueError("testing-agent submission ack contract violation: expected {'accepted': true}")
+            return {"accepted": True}

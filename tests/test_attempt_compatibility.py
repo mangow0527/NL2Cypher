@@ -1,100 +1,82 @@
 from __future__ import annotations
 
-import json
+import pytest
 
-from contracts.models import EvaluationSubmissionRequest
-from services.testing_agent.app.repository import TestingRepository as TestingRepo
-
-TestingRepo.__test__ = False
+from services.testing_agent.app.models import GeneratedCypherSubmissionRequest
+from services.testing_agent.app.repository import TestingRepository
 
 
-def test_testing_repository_archives_legacy_latest_submission_before_attempt_two(tmp_path):
-    repository = TestingRepo(str(tmp_path / "testing"))
-    latest_path = tmp_path / "testing" / "submissions" / "qa_legacy.json"
-    latest_path.parent.mkdir(parents=True, exist_ok=True)
-    latest_path.write_text(
-        json.dumps(
-            {
-                "id": "qa_legacy",
-                "question": "旧题",
-                "generation_run_id": "run-001",
-                "generated_cypher": "MATCH (n) RETURN n LIMIT 5",
-                "parse_summary": "parsed",
-                "guardrail_summary": "accepted",
-                "raw_output_snapshot": "MATCH (n) RETURN n LIMIT 5",
-                "input_prompt_snapshot": "legacy prompt",
-                "execution_json": None,
-                "issue_ticket_id": None,
-                "krss_response": None,
-                "improvement_assessment": None,
-                "status": "waiting_for_golden",
-                "received_at": "2026-04-14T00:00:00+00:00",
-                "updated_at": "2026-04-14T00:00:00+00:00",
-            },
-            ensure_ascii=False,
-            indent=2,
+def test_repository_assigns_attempt_numbers_for_new_submissions(tmp_path):
+    repository = TestingRepository(str(tmp_path / "testing"))
+
+    first_attempt = repository.save_submission(
+        GeneratedCypherSubmissionRequest(
+            id="qa-001",
+            question="查询设备",
+            generation_run_id="run-001",
+            generated_cypher="MATCH (n) RETURN n",
+            input_prompt_snapshot="prompt-1",
         ),
-        encoding="utf-8",
+        state="received_submission_only",
     )
-
-    repository.save_submission(
-        EvaluationSubmissionRequest(
-            id="qa_legacy",
-            question="旧题",
+    second_attempt = repository.save_submission(
+        GeneratedCypherSubmissionRequest(
+            id="qa-001",
+            question="查询设备",
             generation_run_id="run-002",
-            attempt_no=2,
-            generated_cypher="MATCH (n) RETURN n LIMIT 3",
-            parse_summary="parsed",
-            guardrail_summary="accepted",
-            raw_output_snapshot="MATCH (n) RETURN n LIMIT 3",
-            input_prompt_snapshot="new prompt",
+            generated_cypher="MATCH (n) RETURN n LIMIT 1",
+            input_prompt_snapshot="prompt-2",
         ),
-        status="ready_to_evaluate",
+        state="received_submission_only",
     )
 
-    previous = repository.get_submission_attempt("qa_legacy", 1)
-    current = repository.get_submission_attempt("qa_legacy", 2)
-
-    assert previous is not None
-    assert previous["generation_run_id"] == "run-001"
-    assert previous["attempt_no"] == 1
-    assert current is not None
-    assert current["generation_run_id"] == "run-002"
-    assert current["attempt_no"] == 2
+    assert first_attempt.attempt_no == 1
+    assert second_attempt.attempt_no == 2
+    assert repository.get_submission_attempt("qa-001", 1)["generation_run_id"] == "run-001"
+    assert repository.get_submission_attempt("qa-001", 2)["generation_run_id"] == "run-002"
 
 
-def test_testing_repository_treats_identical_submission_as_idempotent(tmp_path):
-    repository = TestingRepo(str(tmp_path / "testing"))
-    request = EvaluationSubmissionRequest(
-        id="qa_same",
-        question="重复提交",
+def test_repository_treats_identical_submission_as_idempotent(tmp_path):
+    repository = TestingRepository(str(tmp_path / "testing"))
+    request = GeneratedCypherSubmissionRequest(
+        id="qa-001",
+        question="查询设备",
         generation_run_id="run-001",
-        attempt_no=1,
-        generated_cypher="MATCH (n) RETURN n LIMIT 5",
-        parse_summary="parsed",
-        guardrail_summary="accepted",
-        raw_output_snapshot="MATCH (n) RETURN n LIMIT 5",
-        input_prompt_snapshot="prompt snapshot",
+        generated_cypher="MATCH (n) RETURN n",
+        input_prompt_snapshot="prompt-1",
     )
 
-    created = repository.save_submission(request, status="issue_ticket_created")
-    repository.save_submission_execution(
-        "qa_same",
-        '{"success": true, "rows": [{"id": "x"}], "row_count": 1, "error_message": null, "elapsed_ms": 3}',
-        attempt_no=1,
-    )
-    repository.mark_submission_issue_ticket_created(
-        "qa_same",
-        "ticket-qa_same-attempt-1",
-        attempt_no=1,
+    first = repository.save_submission(request, state="received_submission_only")
+    duplicate = repository.save_submission(request, state="ready_to_evaluate")
+
+    assert first.attempt_no == 1
+    assert duplicate.attempt_no == 1
+    assert duplicate.created is False
+    latest = repository.get_submission("qa-001")
+    assert latest["state"] == "received_submission_only"
+
+
+def test_repository_rejects_conflicting_submission_for_same_generation_run_id(tmp_path):
+    repository = TestingRepository(str(tmp_path / "testing"))
+    repository.save_submission(
+        GeneratedCypherSubmissionRequest(
+            id="qa-001",
+            question="查询设备",
+            generation_run_id="run-001",
+            generated_cypher="MATCH (n) RETURN n",
+            input_prompt_snapshot="prompt-1",
+        ),
+        state="received_submission_only",
     )
 
-    duplicate_created = repository.save_submission(request, status="ready_to_evaluate")
-    submission = repository.get_submission_attempt("qa_same", 1)
-
-    assert created is True
-    assert duplicate_created is False
-    assert submission is not None
-    assert submission["status"] == "issue_ticket_created"
-    assert submission["issue_ticket_id"] == "ticket-qa_same-attempt-1"
-    assert submission["execution_json"] is not None
+    with pytest.raises(ValueError, match="Submission conflict"):
+        repository.save_submission(
+            GeneratedCypherSubmissionRequest(
+                id="qa-001",
+                question="查询设备",
+                generation_run_id="run-001",
+                generated_cypher="MATCH (n) RETURN n LIMIT 1",
+                input_prompt_snapshot="prompt-2",
+            ),
+            state="received_submission_only",
+        )

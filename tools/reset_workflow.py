@@ -21,30 +21,27 @@ def main() -> int:
         print("qa_id is empty")
         return 2
 
-    ticket_id = f"ticket-{qa_id}"
-    analysis_id = f"analysis-{ticket_id}"
-
     root = Path(__file__).resolve().parents[1]
+    deleted = 0
     paths = [
-        root / "data/cypher_generator_agent/questions" / f"{qa_id}.json",
-        root / "data/cypher_generator_agent/generation_runs" / f"{qa_id}.json",
         root / "data/testing_service/goldens" / f"{qa_id}.json",
         root / "data/testing_service/submissions" / f"{qa_id}.json",
-        root / "data/testing_service/issue_tickets" / f"{ticket_id}.json",
-        root / "data/repair_service/analyses" / f"{analysis_id}.json",
-        root / "data/repair_service/outbound_apply" / f"{analysis_id}.json",
     ]
+    paths.extend(root.glob(f"data/testing_service/submission_attempts/{qa_id}__attempt_*.json"))
+    paths.extend(root.glob(f"data/testing_service/issue_tickets/ticket-{qa_id}-attempt-*.json"))
+    paths.extend(root.glob(f"data/repair_service/analyses/analysis-ticket-{qa_id}-attempt-*.json"))
+    paths.extend(root.glob(f"data/repair_service/analyses/analysis-ticket-{qa_id}.json"))
+    paths.extend(root.glob(f"data/repair_service/outbound_apply/analysis-ticket-{qa_id}-attempt-*.json"))
+    paths.extend(root.glob(f"data/repair_service/outbound_apply/analysis-ticket-{qa_id}.json"))
 
-    deleted = 0
     for p in paths:
         if p.exists():
             _rm(p)
             deleted += 1
 
-    print(f"deleted={deleted} qa_id={qa_id} ticket_id={ticket_id} analysis_id={analysis_id}")
+    print(f"deleted={deleted} qa_id={qa_id}")
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
