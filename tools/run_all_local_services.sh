@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+declare -a pids=()
 
 cleanup() {
   for pid in "${pids[@]:-}"; do
@@ -42,10 +43,33 @@ if [ -n "${TESTING_SERVICE_LLM_MODEL:-}" ]; then
   export OPENAI_MODEL="${TESTING_SERVICE_LLM_MODEL}"
 fi
 
-( cd third_party/knowledge-agent/backend && APP_HOST=0.0.0.0 APP_PORT=8010 python run_api.py ) &
-pids+=("$!")
-( cd third_party/qa-agent && APP_HOST=0.0.0.0 APP_PORT=8020 TEST_AGENT_HOST=127.0.0.1 TEST_AGENT_QUESTION_PORT=8000 TEST_AGENT_GOLDEN_PORT=8001 .venv/bin/python run_api.py ) &
-pids+=("$!")
+KNOWLEDGE_AGENT_ROOT="${KNOWLEDGE_AGENT_ROOT:-}"
+QA_AGENT_ROOT="${QA_AGENT_ROOT:-}"
+
+health_ports=(8000 8001 8002)
+
+if [ -n "${KNOWLEDGE_AGENT_ROOT}" ]; then
+  (
+    cd "${KNOWLEDGE_AGENT_ROOT}/backend" &&
+      APP_HOST=0.0.0.0 APP_PORT=8010 python run_api.py
+  ) &
+  pids+=("$!")
+  health_ports+=(8010)
+else
+  echo "⚠️  skipping knowledge-agent startup: KNOWLEDGE_AGENT_ROOT not set"
+fi
+
+if [ -n "${QA_AGENT_ROOT}" ]; then
+  (
+    cd "${QA_AGENT_ROOT}" &&
+      APP_HOST=0.0.0.0 APP_PORT=8020 TEST_AGENT_HOST=127.0.0.1 TEST_AGENT_QUESTION_PORT=8000 TEST_AGENT_GOLDEN_PORT=8001 .venv/bin/python run_api.py
+  ) &
+  pids+=("$!")
+  health_ports+=(8020)
+else
+  echo "⚠️  skipping qa-agent startup: QA_AGENT_ROOT not set"
+fi
+
 python -m uvicorn services.repair_agent.app.main:app --host 0.0.0.0 --port 8002 &
 pids+=("$!")
 python -m uvicorn services.testing_agent.app.main:app --host 0.0.0.0 --port 8001 &
@@ -55,12 +79,12 @@ pids+=("$!")
 
 for _ in $(seq 1 30); do
   ok=0
-  for p in 8000 8001 8002 8010 8020; do
+  for p in "${health_ports[@]}"; do
     if curl -s --max-time 1 "http://127.0.0.1:${p}/health" >/dev/null; then
       ok=$((ok + 1))
     fi
   done
-  if [ "$ok" -eq 5 ]; then
+  if [ "$ok" -eq "${#health_ports[@]}" ]; then
     break
   fi
   sleep 1
@@ -70,11 +94,15 @@ echo "running:"
 echo "  cypher-generator-agent    http://127.0.0.1:8000"
 echo "  testing-agent            http://127.0.0.1:8001"
 echo "  repair-agent      http://127.0.0.1:8002"
-echo "  knowledge_ops            http://127.0.0.1:8010"
-echo "  qa_agent                 http://127.0.0.1:8020"
+if [ -n "${KNOWLEDGE_AGENT_ROOT}" ]; then
+  echo "  knowledge-agent          http://127.0.0.1:8010"
+fi
+if [ -n "${QA_AGENT_ROOT}" ]; then
+  echo "  qa-agent                 http://127.0.0.1:8020"
+fi
 echo
 echo "health:"
-for p in 8000 8001 8002 8010 8020; do
+for p in "${health_ports[@]}"; do
   echo -n "  ${p} -> "
   curl -s --max-time 2 "http://127.0.0.1:${p}/health" 2>/dev/null || echo DOWN
   echo
