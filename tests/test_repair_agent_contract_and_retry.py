@@ -10,8 +10,8 @@ from contracts.models import (
     KnowledgeRepairSuggestionRequest,
 )
 from services.repair_agent.app.clients import (
-    KnowledgeOpsRepairApplyClient,
-    OpenAICompatibleRepairAnalyzer,
+    KnowledgeAgentRepairApplyClient,
+    OpenAIChatCompletionRepairAnalyzer,
 )
 from services.testing_agent.app.models import (
     ActualPayload,
@@ -103,6 +103,30 @@ def reset_fake_async_client_state():
     _FakeAsyncClient.post_count = 0
 
 
+def _repairable_diagnosis_json(
+    primary_knowledge_type: str = "few_shot",
+    *,
+    secondary_knowledge_types: Optional[List[str]] = None,
+    suggestion: str = "补充一个标准的 few_shot 示例。",
+    rationale: str = "当前失败体现出示例迁移不足。",
+) -> str:
+    return (
+        "{"
+        '"repairable":true,'
+        '"non_repairable_reason":"",'
+        f'"primary_knowledge_type":"{primary_knowledge_type}",'
+        f'"secondary_knowledge_types":{json_dumps_list(secondary_knowledge_types or [])},'
+        '"confidence":0.9,'
+        f'"suggestion":"{suggestion}",'
+        f'"rationale":"{rationale}"'
+        "}"
+    )
+
+
+def json_dumps_list(values: List[str]) -> str:
+    return "[" + ",".join(f'"{value}"' for value in values) + "]"
+
+
 def test_knowledge_repair_suggestion_request_rejects_invalid_knowledge_type():
     with pytest.raises(ValidationError):
         KnowledgeRepairSuggestionRequest(
@@ -110,12 +134,6 @@ def test_knowledge_repair_suggestion_request_rejects_invalid_knowledge_type():
             suggestion="Use a tighter schema hint.",
             knowledge_types=["not-a-real-knowledge-type"],
         )
-
-
-def test_repair_agent_clients_do_not_export_cgs_prompt_snapshot_client():
-    from services.repair_agent.app import clients
-
-    assert not hasattr(clients, "CGSPromptSnapshotClient")
 
 
 def _make_ticket(
@@ -185,7 +203,7 @@ def _make_ticket(
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_repair_analyzer_uses_only_formal_knowledge_types_in_prompt(monkeypatch):
+async def test_openai_chat_repair_analyzer_uses_only_formal_knowledge_types_in_prompt(monkeypatch):
     import httpx
 
     _FakeAsyncClient.responses = [
@@ -195,14 +213,7 @@ async def test_openai_compatible_repair_analyzer_uses_only_formal_knowledge_type
                 "choices": [
                     {
                         "message": {
-                            "content": (
-                                '{"knowledge_types":["few_shot"],'
-                                '"confidence":0.9,'
-                                '"suggestion":"Add a canonical few_shot example.",'
-                                '"rationale":"Few-shot drift detected.",'
-                                '"need_validation":false,'
-                                '"candidate_patch_types":["few_shot"]}'
-                            )
+                            "content": _repairable_diagnosis_json()
                         }
                     }
                 ]
@@ -211,7 +222,7 @@ async def test_openai_compatible_repair_analyzer_uses_only_formal_knowledge_type
     ]
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
 
-    client = OpenAICompatibleRepairAnalyzer(
+    client = OpenAIChatCompletionRepairAnalyzer(
         base_url="http://127.0.0.1:9000",
         api_key="test-key",
         model="test-model",
@@ -222,7 +233,17 @@ async def test_openai_compatible_repair_analyzer_uses_only_formal_knowledge_type
     result = await client.diagnose(ticket=_make_ticket(), prompt_snapshot="prompt snapshot")
 
     assert result["primary_knowledge_type"] == "few_shot"
+    assert "知识修复诊断器" in result["_system_prompt"]
+    assert "IssueTicketSummary:" in result["_user_prompt"]
+    assert "DiagnosisContext:" in result["_user_prompt"]
+    assert result["_raw_output"] == _repairable_diagnosis_json()
     user_prompt = _FakeAsyncClient.last_request["json"]["messages"][1]["content"]
+    assert "诊断顺序" in user_prompt
+    assert "generation_evidence" in user_prompt
+    assert "execution_accuracy.strict_check" in user_prompt
+    assert "secondary_signals.gleu" in user_prompt
+    assert "知识类型选择规则" in user_prompt
+    assert "判断 prompt_evidence 的规则" in user_prompt
     formal_types_line = user_prompt.splitlines()[-1]
     assert "cypher_syntax, few_shot, system_prompt, business_knowledge" in formal_types_line
     assert "few-shot" not in formal_types_line
@@ -230,7 +251,7 @@ async def test_openai_compatible_repair_analyzer_uses_only_formal_knowledge_type
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_repair_analyzer_disables_thinking_for_json_requests(monkeypatch):
+async def test_openai_chat_repair_analyzer_rejects_incomplete_diagnosis_schema(monkeypatch):
     import httpx
 
     _FakeAsyncClient.responses = [
@@ -241,13 +262,12 @@ async def test_openai_compatible_repair_analyzer_disables_thinking_for_json_requ
                     {
                         "message": {
                             "content": (
-                                '{"primary_knowledge_type":"few_shot",'
-                                '"secondary_knowledge_types":["system_prompt"],'
-                                '"candidate_patch_types":["few_shot"],'
+                                '{"repairable":true,'
+                                '"non_repairable_reason":"",'
+                                '"primary_knowledge_type":"few_shot",'
+                                '"secondary_knowledge_types":[],'
                                 '"confidence":0.9,'
-                                '"suggestion":"Add a canonical few_shot example.",'
-                                '"rationale":"Few-shot drift detected.",'
-                                '"need_validation":false}'
+                                '"suggestion":"Add a canonical few_shot example."}'
                             )
                         }
                     }
@@ -257,7 +277,82 @@ async def test_openai_compatible_repair_analyzer_disables_thinking_for_json_requ
     ]
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
 
-    client = OpenAICompatibleRepairAnalyzer(
+    client = OpenAIChatCompletionRepairAnalyzer(
+        base_url="http://127.0.0.1:9000",
+        api_key="test-key",
+        model="test-model",
+        timeout_seconds=3.0,
+        temperature=0.1,
+    )
+
+    with pytest.raises(ValueError, match="missing required diagnosis fields"):
+        await client.diagnose(ticket=_make_ticket(), prompt_snapshot="prompt snapshot")
+
+    request_json = _FakeAsyncClient.last_request["json"]
+    system_prompt = request_json["messages"][0]["content"]
+    user_prompt = request_json["messages"][1]["content"]
+    assert "repairable" in system_prompt
+    assert "non_repairable_reason" in system_prompt
+    assert "repairable" in user_prompt
+    assert "non_repairable_reason" in user_prompt
+
+
+@pytest.mark.asyncio
+async def test_openai_chat_repair_analyzer_rejects_english_diagnosis_text(monkeypatch):
+    import httpx
+
+    _FakeAsyncClient.responses = [
+        _FakeResponse(
+            status_code=200,
+            json_data={
+                "choices": [
+                    {
+                        "message": {
+                            "content": _repairable_diagnosis_json(
+                                suggestion="Add a canonical few_shot example.",
+                                rationale="Few-shot drift detected.",
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+    ]
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+
+    client = OpenAIChatCompletionRepairAnalyzer(
+        base_url="http://127.0.0.1:9000",
+        api_key="test-key",
+        model="test-model",
+        timeout_seconds=3.0,
+        temperature=0.1,
+    )
+
+    with pytest.raises(ValueError, match="Chinese diagnosis text"):
+        await client.diagnose(ticket=_make_ticket(), prompt_snapshot="prompt snapshot")
+
+
+@pytest.mark.asyncio
+async def test_openai_chat_repair_analyzer_disables_thinking_for_json_requests(monkeypatch):
+    import httpx
+
+    _FakeAsyncClient.responses = [
+        _FakeResponse(
+            status_code=200,
+            json_data={
+                "choices": [
+                    {
+                        "message": {
+                            "content": _repairable_diagnosis_json(secondary_knowledge_types=["system_prompt"])
+                        }
+                    }
+                ]
+            },
+        )
+    ]
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+
+    client = OpenAIChatCompletionRepairAnalyzer(
         base_url="http://127.0.0.1:9000",
         api_key="test-key",
         model="glm-5.1",
@@ -272,7 +367,7 @@ async def test_openai_compatible_repair_analyzer_disables_thinking_for_json_requ
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_repair_analyzer_compacts_prompt_snapshot_and_avoids_duplicate_prompt_embedding(monkeypatch):
+async def test_openai_chat_repair_analyzer_compacts_prompt_snapshot_and_avoids_duplicate_prompt_embedding(monkeypatch):
     import httpx
 
     repeated_line = "- Add business-term mapping guidance and a few_shot example that matches the failed question pattern."
@@ -294,14 +389,7 @@ async def test_openai_compatible_repair_analyzer_compacts_prompt_snapshot_and_av
                 "choices": [
                     {
                         "message": {
-                            "content": (
-                                '{"knowledge_types":["few_shot"],'
-                                '"confidence":0.9,'
-                                '"suggestion":"Add a canonical few_shot example.",'
-                                '"rationale":"Few-shot drift detected.",'
-                                '"need_validation":false,'
-                                '"candidate_patch_types":["few_shot"]}'
-                            )
+                            "content": _repairable_diagnosis_json()
                         }
                     }
                 ]
@@ -310,7 +398,7 @@ async def test_openai_compatible_repair_analyzer_compacts_prompt_snapshot_and_av
     ]
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
 
-    client = OpenAICompatibleRepairAnalyzer(
+    client = OpenAIChatCompletionRepairAnalyzer(
         base_url="http://127.0.0.1:9000",
         api_key="test-key",
         model="test-model",
@@ -329,7 +417,7 @@ async def test_openai_compatible_repair_analyzer_compacts_prompt_snapshot_and_av
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_repair_analyzer_includes_chinese_prompt_evidence_when_fragments_are_empty(monkeypatch):
+async def test_openai_chat_repair_analyzer_includes_chinese_prompt_evidence_when_fragments_are_empty(monkeypatch):
     import httpx
 
     prompt_snapshot = "\n".join(
@@ -350,13 +438,12 @@ async def test_openai_compatible_repair_analyzer_includes_chinese_prompt_evidenc
                     {
                         "message": {
                             "content": (
-                                '{"knowledge_types":["business_knowledge"],'
-                                '"confidence":0.9,'
-                                '"suggestion":"Add protocol-version mapping guidance.",'
-                                '"rationale":"Business mapping drift detected.",'
-                                '"need_validation":false,'
-                                '"candidate_patch_types":["business_knowledge"]}'
-                            )
+                                    _repairable_diagnosis_json(
+                                        primary_knowledge_type="business_knowledge",
+                                        suggestion="补充协议版本映射的业务知识说明。",
+                                        rationale="当前失败体现出协议版本关系路径知识缺失。",
+                                    )
+                                )
                         }
                     }
                 ]
@@ -365,7 +452,7 @@ async def test_openai_compatible_repair_analyzer_includes_chinese_prompt_evidenc
     ]
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
 
-    client = OpenAICompatibleRepairAnalyzer(
+    client = OpenAIChatCompletionRepairAnalyzer(
         base_url="http://127.0.0.1:9000",
         api_key="test-key",
         model="test-model",
@@ -398,7 +485,7 @@ async def test_openai_compatible_repair_analyzer_includes_chinese_prompt_evidenc
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_repair_analyzer_logs_exact_llm_call_evidence(monkeypatch, caplog: pytest.LogCaptureFixture):
+async def test_openai_chat_repair_analyzer_logs_exact_llm_call_evidence(monkeypatch, caplog: pytest.LogCaptureFixture):
     import httpx
 
     _FakeAsyncClient.responses = [
@@ -408,14 +495,7 @@ async def test_openai_compatible_repair_analyzer_logs_exact_llm_call_evidence(mo
                 "choices": [
                     {
                         "message": {
-                            "content": (
-                                '{"knowledge_types":["few_shot"],'
-                                '"confidence":0.9,'
-                                '"suggestion":"Add a canonical few_shot example.",'
-                                '"rationale":"Few-shot drift detected.",'
-                                '"need_validation":false,'
-                                '"candidate_patch_types":["few_shot"]}'
-                            )
+                            "content": _repairable_diagnosis_json()
                         }
                     }
                 ]
@@ -424,7 +504,7 @@ async def test_openai_compatible_repair_analyzer_logs_exact_llm_call_evidence(mo
     ]
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
 
-    client = OpenAICompatibleRepairAnalyzer(
+    client = OpenAIChatCompletionRepairAnalyzer(
         base_url="http://127.0.0.1:9000",
         api_key="test-key",
         model="glm-5",
@@ -453,7 +533,7 @@ async def test_openai_compatible_repair_analyzer_logs_exact_llm_call_evidence(mo
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_repair_analyzer_retries_after_rate_limit_then_succeeds(monkeypatch):
+async def test_openai_chat_repair_analyzer_retries_after_rate_limit_then_succeeds(monkeypatch):
     import httpx
 
     rate_limited_response = httpx.Response(
@@ -469,14 +549,7 @@ async def test_openai_compatible_repair_analyzer_retries_after_rate_limit_then_s
                 "choices": [
                     {
                         "message": {
-                            "content": (
-                                '{"knowledge_types":["few_shot"],'
-                                '"confidence":0.9,'
-                                '"suggestion":"Add a canonical few_shot example.",'
-                                '"rationale":"Few-shot drift detected.",'
-                                '"need_validation":false,'
-                                '"candidate_patch_types":["few_shot"]}'
-                            )
+                            "content": _repairable_diagnosis_json()
                         }
                     }
                 ]
@@ -490,7 +563,7 @@ async def test_openai_compatible_repair_analyzer_retries_after_rate_limit_then_s
     async def fake_sleep(delay_seconds: float) -> None:
         sleep_calls.append(delay_seconds)
 
-    client = OpenAICompatibleRepairAnalyzer(
+    client = OpenAIChatCompletionRepairAnalyzer(
         base_url="http://127.0.0.1:9000",
         api_key="test-key",
         model="glm-5",
@@ -510,7 +583,7 @@ async def test_openai_compatible_repair_analyzer_retries_after_rate_limit_then_s
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_repair_analyzer_uses_retry_after_header_when_rate_limited(monkeypatch):
+async def test_openai_chat_repair_analyzer_uses_retry_after_header_when_rate_limited(monkeypatch):
     import httpx
 
     rate_limited_request = httpx.Request("POST", "http://127.0.0.1:9000/chat/completions")
@@ -527,14 +600,7 @@ async def test_openai_compatible_repair_analyzer_uses_retry_after_header_when_ra
                 "choices": [
                     {
                         "message": {
-                            "content": (
-                                '{"knowledge_types":["few_shot"],'
-                                '"confidence":0.9,'
-                                '"suggestion":"Add a canonical few_shot example.",'
-                                '"rationale":"Few-shot drift detected.",'
-                                '"need_validation":false,'
-                                '"candidate_patch_types":["few_shot"]}'
-                            )
+                            "content": _repairable_diagnosis_json()
                         }
                     }
                 ]
@@ -548,7 +614,7 @@ async def test_openai_compatible_repair_analyzer_uses_retry_after_header_when_ra
     async def fake_sleep(delay_seconds: float) -> None:
         sleep_calls.append(delay_seconds)
 
-    client = OpenAICompatibleRepairAnalyzer(
+    client = OpenAIChatCompletionRepairAnalyzer(
         base_url="http://127.0.0.1:9000",
         api_key="test-key",
         model="glm-5",
@@ -568,7 +634,7 @@ async def test_openai_compatible_repair_analyzer_uses_retry_after_header_when_ra
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_repair_analyzer_does_not_retry_non_retryable_400(monkeypatch):
+async def test_openai_chat_repair_analyzer_does_not_retry_non_retryable_400(monkeypatch):
     import httpx
 
     _FakeAsyncClient.responses = [
@@ -585,7 +651,7 @@ async def test_openai_compatible_repair_analyzer_does_not_retry_non_retryable_40
     async def fake_sleep(delay_seconds: float) -> None:
         sleep_calls.append(delay_seconds)
 
-    client = OpenAICompatibleRepairAnalyzer(
+    client = OpenAIChatCompletionRepairAnalyzer(
         base_url="http://127.0.0.1:9000",
         api_key="test-key",
         model="glm-5",
@@ -605,7 +671,7 @@ async def test_openai_compatible_repair_analyzer_does_not_retry_non_retryable_40
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_repair_analyzer_serializes_llm_calls_when_concurrency_is_one(monkeypatch):
+async def test_openai_chat_repair_analyzer_serializes_llm_calls_when_concurrency_is_one(monkeypatch):
     import asyncio
     import httpx
 
@@ -635,14 +701,7 @@ async def test_openai_compatible_repair_analyzer_serializes_llm_calls_when_concu
                     "choices": [
                         {
                             "message": {
-                                "content": (
-                                    '{"knowledge_types":["few_shot"],'
-                                    '"confidence":0.9,'
-                                    '"suggestion":"Add a canonical few_shot example.",'
-                                    '"rationale":"Few-shot drift detected.",'
-                                    '"need_validation":false,'
-                                    '"candidate_patch_types":["few_shot"]}'
-                                )
+                                "content": _repairable_diagnosis_json()
                             }
                         }
                     ]
@@ -651,7 +710,7 @@ async def test_openai_compatible_repair_analyzer_serializes_llm_calls_when_concu
 
     monkeypatch.setattr(httpx, "AsyncClient", _SerialAsyncClient)
     ticket = _make_ticket(ticket_id="ticket-repair-serialize")
-    client = OpenAICompatibleRepairAnalyzer(
+    client = OpenAIChatCompletionRepairAnalyzer(
         base_url="http://127.0.0.1:9000",
         api_key="test-key",
         model="glm-5",
@@ -671,7 +730,7 @@ async def test_openai_compatible_repair_analyzer_serializes_llm_calls_when_concu
 
 
 @pytest.mark.asyncio
-async def test_knowledge_ops_repair_apply_client_retries_until_http_200(monkeypatch):
+async def test_knowledge_agent_repair_apply_client_retries_until_http_200(monkeypatch):
     import httpx
 
     _FakeAsyncClient.responses = [
@@ -686,7 +745,7 @@ async def test_knowledge_ops_repair_apply_client_retries_until_http_200(monkeypa
     async def fake_sleep(delay_seconds: float) -> None:
         sleep_calls.append(delay_seconds)
 
-    client = KnowledgeOpsRepairApplyClient(
+    client = KnowledgeAgentRepairApplyClient(
         apply_url="http://127.0.0.1:8010/api/knowledge/repairs/apply",
         timeout_seconds=3.0,
         sleep_fn=fake_sleep,
@@ -714,7 +773,7 @@ async def test_knowledge_ops_repair_apply_client_retries_until_http_200(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_knowledge_ops_repair_apply_client_retries_202_or_204_until_later_200(monkeypatch):
+async def test_knowledge_agent_repair_apply_client_retries_202_or_204_until_later_200(monkeypatch):
     import httpx
 
     _FakeAsyncClient.responses = [
@@ -728,7 +787,7 @@ async def test_knowledge_ops_repair_apply_client_retries_202_or_204_until_later_
     async def fake_sleep(delay_seconds: float) -> None:
         sleep_calls.append(delay_seconds)
 
-    client = KnowledgeOpsRepairApplyClient(
+    client = KnowledgeAgentRepairApplyClient(
         apply_url="http://127.0.0.1:8010/api/knowledge/repairs/apply",
         timeout_seconds=3.0,
         sleep_fn=fake_sleep,
@@ -746,7 +805,7 @@ async def test_knowledge_ops_repair_apply_client_retries_202_or_204_until_later_
 
 
 @pytest.mark.asyncio
-async def test_knowledge_ops_repair_apply_client_does_not_retry_4xx(monkeypatch):
+async def test_knowledge_agent_repair_apply_client_does_not_retry_4xx(monkeypatch):
     import httpx
 
     _FakeAsyncClient.responses = [_FakeResponse(status_code=422)]
@@ -757,7 +816,7 @@ async def test_knowledge_ops_repair_apply_client_does_not_retry_4xx(monkeypatch)
     async def fake_sleep(delay_seconds: float) -> None:
         sleep_calls.append(delay_seconds)
 
-    client = KnowledgeOpsRepairApplyClient(
+    client = KnowledgeAgentRepairApplyClient(
         apply_url="http://127.0.0.1:8010/api/knowledge/repairs/apply",
         timeout_seconds=3.0,
         sleep_fn=fake_sleep,
@@ -777,7 +836,7 @@ async def test_knowledge_ops_repair_apply_client_does_not_retry_4xx(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_knowledge_ops_repair_apply_client_retries_after_transport_exception(monkeypatch):
+async def test_knowledge_agent_repair_apply_client_retries_after_transport_exception(monkeypatch):
     import httpx
 
     _FakeAsyncClient.responses = []
@@ -792,7 +851,7 @@ async def test_knowledge_ops_repair_apply_client_retries_after_transport_excepti
     async def fake_sleep(delay_seconds: float) -> None:
         sleep_calls.append(delay_seconds)
 
-    client = KnowledgeOpsRepairApplyClient(
+    client = KnowledgeAgentRepairApplyClient(
         apply_url="http://127.0.0.1:8010/api/knowledge/repairs/apply",
         timeout_seconds=3.0,
         sleep_fn=fake_sleep,
@@ -810,7 +869,7 @@ async def test_knowledge_ops_repair_apply_client_retries_after_transport_excepti
 
 
 @pytest.mark.asyncio
-async def test_knowledge_ops_repair_apply_client_reuses_single_async_client(monkeypatch):
+async def test_knowledge_agent_repair_apply_client_reuses_single_async_client(monkeypatch):
     import httpx
 
     _FakeAsyncClient.responses = [
@@ -824,7 +883,7 @@ async def test_knowledge_ops_repair_apply_client_reuses_single_async_client(monk
     async def fake_sleep(delay_seconds: float) -> None:
         sleep_calls.append(delay_seconds)
 
-    client = KnowledgeOpsRepairApplyClient(
+    client = KnowledgeAgentRepairApplyClient(
         apply_url="http://127.0.0.1:8010/api/knowledge/repairs/apply",
         timeout_seconds=3.0,
         sleep_fn=fake_sleep,
@@ -840,3 +899,83 @@ async def test_knowledge_ops_repair_apply_client_reuses_single_async_client(monk
 
     assert _FakeAsyncClient.init_count == 1
     assert sleep_calls == [0.04]
+
+
+@pytest.mark.asyncio
+async def test_knowledge_agent_repair_apply_client_stops_after_max_attempts(monkeypatch):
+    import httpx
+
+    _FakeAsyncClient.responses = [
+        _FakeResponse(status_code=500),
+        _FakeResponse(status_code=502),
+        _FakeResponse(status_code=503),
+    ]
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+
+    sleep_calls: List[float] = []
+
+    async def fake_sleep(delay_seconds: float) -> None:
+        sleep_calls.append(delay_seconds)
+
+    client = KnowledgeAgentRepairApplyClient(
+        apply_url="http://127.0.0.1:8010/api/knowledge/repairs/apply",
+        timeout_seconds=3.0,
+        sleep_fn=fake_sleep,
+        retry_delay_seconds=0.04,
+        max_attempts=3,
+    )
+    payload = KnowledgeRepairSuggestionRequest(
+        id="q-max-attempts",
+        suggestion="Stop retrying after configured attempts.",
+        knowledge_types=["business_knowledge"],
+    )
+
+    with pytest.raises(RuntimeError, match="failed after 3 attempts"):
+        await client.apply(payload)
+
+    assert _FakeAsyncClient.post_count == 3
+    assert sleep_calls == [0.04, 0.04]
+
+
+@pytest.mark.asyncio
+async def test_knowledge_agent_repair_apply_client_returns_paused_when_apply_is_disabled(monkeypatch):
+    import httpx
+
+    _FakeAsyncClient.responses = [
+        _FakeResponse(
+            status_code=503,
+            json_data={
+                "code": "KNOWLEDGE_REPAIR_APPLY_DISABLED",
+                "message": "Knowledge repair apply is disabled.",
+            },
+        )
+    ]
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+
+    sleep_calls: List[float] = []
+
+    async def fake_sleep(delay_seconds: float) -> None:
+        sleep_calls.append(delay_seconds)
+
+    client = KnowledgeAgentRepairApplyClient(
+        apply_url="http://127.0.0.1:8010/api/knowledge/repairs/apply",
+        timeout_seconds=3.0,
+        sleep_fn=fake_sleep,
+        retry_delay_seconds=0.04,
+        max_attempts=3,
+    )
+    payload = KnowledgeRepairSuggestionRequest(
+        id="q-apply-disabled",
+        suggestion="Pause cleanly when knowledge-agent rejects writes.",
+        knowledge_types=["business_knowledge"],
+    )
+
+    result = await client.apply(payload)
+
+    assert result == {
+        "status": "paused",
+        "code": "KNOWLEDGE_REPAIR_APPLY_DISABLED",
+        "message": "Knowledge repair apply is disabled.",
+    }
+    assert _FakeAsyncClient.post_count == 1
+    assert sleep_calls == []

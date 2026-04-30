@@ -38,8 +38,6 @@ class _DeterministicRepairDiagnosisClient:
                 "confidence": 0.9,
                 "suggestion": "Add Cypher syntax guardrails and parser-oriented examples.",
                 "rationale": "The parser failed before semantic evaluation.",
-                "need_validation": False,
-                "candidate_patch_types": [],
             }
 
         if failure_diff["entity_or_relation_problem"]:
@@ -49,8 +47,6 @@ class _DeterministicRepairDiagnosisClient:
                 "confidence": 0.85,
                 "suggestion": "Add a few_shot example that matches the failed question pattern.",
                 "rationale": "The query missed the intended relation path.",
-                "need_validation": True,
-                "candidate_patch_types": ["few_shot", "business_knowledge"],
             }
 
         return {
@@ -59,8 +55,6 @@ class _DeterministicRepairDiagnosisClient:
             "confidence": 0.8,
             "suggestion": "Tighten the system prompt so future generations preserve the output contract.",
             "rationale": "Fallback deterministic diagnosis.",
-            "need_validation": False,
-            "candidate_patch_types": [],
         }
 
 
@@ -152,7 +146,7 @@ def test_issue_ticket_route_returns_formal_repair_response(monkeypatch):
             "suggestion": "Add a few_shot example that matches the failed question pattern.",
             "knowledge_types": ["few_shot"],
         },
-        "knowledge_ops_response": None,
+        "knowledge_agent_response": None,
         "applied": True,
     }
 
@@ -164,17 +158,12 @@ async def test_repair_service_uses_prompt_snapshot_embedded_in_issue_ticket():
     analysis_result.id = ticket.id
     analysis_result.confidence = 0.91
     analysis_result.rationale = "Prompt misses protocol-version mapping guidance"
-    analysis_result.used_experiments = True
     analysis_result.primary_knowledge_type = "few_shot"
     analysis_result.secondary_knowledge_types = ["business_knowledge"]
-    analysis_result.candidate_patch_types = ["few_shot", "business_knowledge"]
-    analysis_result.validation_mode = "lightweight"
-    analysis_result.validation_result = {
-        "validated_patch_types": ["few_shot"],
-        "rejected_patch_types": ["business_knowledge"],
-        "validation_reasoning": ["few_shot best explains the mismatch"],
-    }
     analysis_result.diagnosis_context_summary = {"failure_diff": {"entity_or_relation_problem": True}}
+    analysis_result.system_prompt_snapshot = "SYSTEM PROMPT SNAPSHOT"
+    analysis_result.user_prompt_snapshot = "USER PROMPT SNAPSHOT"
+    analysis_result.raw_output = '{"repairable": true}'
     analysis_result.to_request.return_value = KnowledgeRepairSuggestionRequest(
         id=ticket.id,
         suggestion="Add a few_shot example that matches the failed question pattern.",
@@ -203,9 +192,12 @@ async def test_repair_service_uses_prompt_snapshot_embedded_in_issue_ticket():
             knowledge_types=["few_shot"],
         )
     )
-    repository.save_analysis.assert_called_once()
-    saved_record = repository.save_analysis.call_args.args[0]
+    assert repository.save_analysis.call_count == 2
+    saved_record = repository.save_analysis.call_args_list[-1].args[0]
     assert saved_record.prompt_snapshot == "GenerationEvidence prompt snapshot from Testing Service"
+    assert saved_record.system_prompt_snapshot == "SYSTEM PROMPT SNAPSHOT"
+    assert saved_record.user_prompt_snapshot == "USER PROMPT SNAPSHOT"
+    assert saved_record.raw_output == '{"repairable": true}'
     assert response == RepairIssueTicketResponse(
         status="applied",
         analysis_id="analysis-ticket-001",
@@ -215,9 +207,109 @@ async def test_repair_service_uses_prompt_snapshot_embedded_in_issue_ticket():
             suggestion="Add a few_shot example that matches the failed question pattern.",
             knowledge_types=["few_shot"],
         ),
-        knowledge_ops_response={"ok": True},
+        knowledge_agent_response={"ok": True},
         applied=True,
     )
+
+
+@pytest.mark.asyncio
+async def test_repair_service_persists_analysis_before_apply_failure():
+    ticket = _make_issue_ticket()
+    analysis_result = MagicMock()
+    analysis_result.id = ticket.id
+    analysis_result.confidence = 0.91
+    analysis_result.rationale = "Prompt misses protocol-version mapping guidance"
+    analysis_result.primary_knowledge_type = "few_shot"
+    analysis_result.secondary_knowledge_types = ["business_knowledge"]
+    analysis_result.diagnosis_context_summary = {"failure_diff": {"entity_or_relation_problem": True}}
+    analysis_result.system_prompt_snapshot = "SYSTEM PROMPT SNAPSHOT"
+    analysis_result.user_prompt_snapshot = "USER PROMPT SNAPSHOT"
+    analysis_result.raw_output = '{"repairable": true}'
+    analysis_result.to_request.return_value = KnowledgeRepairSuggestionRequest(
+        id=ticket.id,
+        suggestion="Add a few_shot example that matches the failed question pattern.",
+        knowledge_types=["few_shot"],
+    )
+    analyzer = AsyncMock()
+    analyzer.analyze.return_value = analysis_result
+    apply_client = AsyncMock()
+    apply_client.apply.side_effect = RuntimeError("apply blocked")
+    repository = MagicMock()
+    repository.get_analysis.return_value = None
+
+    service = RepairService(
+        repository=repository,
+        analyzer=analyzer,
+        apply_client=apply_client,
+    )
+
+    with pytest.raises(RuntimeError, match="apply blocked"):
+        await service.create_issue_ticket_response(ticket)
+
+    assert repository.save_analysis.call_count == 2
+    pending_record = repository.save_analysis.call_args_list[0].args[0]
+    saved_record = repository.save_analysis.call_args_list[-1].args[0]
+    assert pending_record.status == "analysis_pending"
+    assert pending_record.applied is False
+    assert saved_record.status == "apply_failed"
+    assert saved_record.prompt_snapshot == "GenerationEvidence prompt snapshot from Testing Service"
+    assert saved_record.system_prompt_snapshot == "SYSTEM PROMPT SNAPSHOT"
+    assert saved_record.user_prompt_snapshot == "USER PROMPT SNAPSHOT"
+    assert saved_record.raw_output == '{"repairable": true}'
+    assert saved_record.knowledge_agent_response is None
+    assert saved_record.applied is False
+
+
+@pytest.mark.asyncio
+async def test_repair_service_returns_paused_when_knowledge_agent_apply_is_disabled():
+    ticket = _make_issue_ticket()
+    analysis_result = MagicMock()
+    analysis_result.id = ticket.id
+    analysis_result.confidence = 0.91
+    analysis_result.rationale = "Knowledge repair is valid but apply is disabled."
+    analysis_result.primary_knowledge_type = "business_knowledge"
+    analysis_result.secondary_knowledge_types = []
+    analysis_result.diagnosis_context_summary = {"failure_diff": {"entity_or_relation_problem": True}}
+    analysis_result.system_prompt_snapshot = "SYSTEM PROMPT SNAPSHOT"
+    analysis_result.user_prompt_snapshot = "USER PROMPT SNAPSHOT"
+    analysis_result.raw_output = '{"repairable": true}'
+    analysis_result.to_request.return_value = KnowledgeRepairSuggestionRequest(
+        id=ticket.id,
+        suggestion="Add business knowledge for disabled apply scenario.",
+        knowledge_types=["business_knowledge"],
+    )
+    analyzer = AsyncMock()
+    analyzer.analyze.return_value = analysis_result
+    apply_client = AsyncMock()
+    apply_client.apply.return_value = {
+        "status": "paused",
+        "code": "KNOWLEDGE_REPAIR_APPLY_DISABLED",
+        "message": "Knowledge repair apply is disabled.",
+    }
+    repository = MagicMock()
+    repository.get_analysis.return_value = None
+
+    service = RepairService(
+        repository=repository,
+        analyzer=analyzer,
+        apply_client=apply_client,
+    )
+
+    response = await service.create_issue_ticket_response(ticket)
+
+    assert response.status == "repair_apply_paused"
+    assert response.applied is False
+    assert response.knowledge_agent_response == {
+        "status": "paused",
+        "code": "KNOWLEDGE_REPAIR_APPLY_DISABLED",
+        "message": "Knowledge repair apply is disabled.",
+    }
+    assert repository.save_analysis.call_count == 2
+    saved_record = repository.save_analysis.call_args_list[-1].args[0]
+    assert saved_record.status == "repair_apply_paused"
+    assert saved_record.applied is False
+    assert saved_record.applied_at == ""
+    assert saved_record.knowledge_agent_response == response.knowledge_agent_response
 
 
 @pytest.mark.asyncio
@@ -229,20 +321,18 @@ async def test_repair_service_is_idempotent_when_analysis_exists():
         id=ticket.id,
         status="applied",
         prompt_snapshot="cached prompt",
+        system_prompt_snapshot="cached system prompt",
+        user_prompt_snapshot="cached user prompt",
         knowledge_repair_request=KnowledgeRepairSuggestionRequest(
             id=ticket.id,
             suggestion="cached suggestion",
             knowledge_types=["system_prompt"],
         ),
-        knowledge_ops_response={"ok": True},
+        knowledge_agent_response={"ok": True},
         confidence=0.9,
         rationale="cached",
-        used_experiments=False,
         primary_knowledge_type="system_prompt",
         secondary_knowledge_types=[],
-        candidate_patch_types=[],
-        validation_mode="disabled",
-        validation_result={"validated_patch_types": [], "rejected_patch_types": []},
         diagnosis_context_summary={},
         applied=True,
         created_at="2026-01-01T00:00:00Z",
@@ -269,7 +359,7 @@ async def test_repair_service_is_idempotent_when_analysis_exists():
         analysis_id=existing.analysis_id,
         id=existing.id,
         knowledge_repair_request=existing.knowledge_repair_request,
-        knowledge_ops_response=existing.knowledge_ops_response,
+        knowledge_agent_response=existing.knowledge_agent_response,
         applied=True,
     )
 
@@ -289,17 +379,11 @@ async def test_repair_service_uses_ticket_scoped_analysis_id_uniqueness():
     analysis_result.id = first_ticket.id
     analysis_result.confidence = 0.91
     analysis_result.rationale = "Prompt misses protocol-version mapping guidance"
-    analysis_result.used_experiments = True
     analysis_result.primary_knowledge_type = "few_shot"
     analysis_result.secondary_knowledge_types = ["business_knowledge"]
-    analysis_result.candidate_patch_types = ["few_shot", "business_knowledge"]
-    analysis_result.validation_mode = "lightweight"
-    analysis_result.validation_result = {
-        "validated_patch_types": ["few_shot"],
-        "rejected_patch_types": ["business_knowledge"],
-        "validation_reasoning": ["few_shot best explains the mismatch"],
-    }
     analysis_result.diagnosis_context_summary = {"failure_diff": {"entity_or_relation_problem": True}}
+    analysis_result.system_prompt_snapshot = "SYSTEM PROMPT SNAPSHOT"
+    analysis_result.user_prompt_snapshot = "USER PROMPT SNAPSHOT"
     analysis_result.to_request.return_value = KnowledgeRepairSuggestionRequest(
         id=first_ticket.id,
         suggestion="Add a few_shot example that matches the failed question pattern.",
@@ -333,6 +417,8 @@ def test_get_repair_analysis_endpoint_returns_record(monkeypatch):
         id="q-001",
         status="applied",
         prompt_snapshot="Prompt snapshot from testing-agent",
+        system_prompt_snapshot="System prompt snapshot from repair-agent",
+        user_prompt_snapshot="User prompt snapshot from repair-agent",
         knowledge_repair_request=KnowledgeRepairSuggestionRequest(
             id="q-001",
             suggestion="Add a few_shot example that matches the failed question pattern.",
@@ -340,12 +426,8 @@ def test_get_repair_analysis_endpoint_returns_record(monkeypatch):
         ),
         confidence=0.91,
         rationale="Prompt misses protocol-version mapping guidance",
-        used_experiments=True,
         primary_knowledge_type="few_shot",
         secondary_knowledge_types=["business_knowledge"],
-        candidate_patch_types=["few_shot", "business_knowledge"],
-        validation_mode="lightweight",
-        validation_result={"validated_patch_types": ["few_shot"], "rejected_patch_types": ["business_knowledge"]},
         diagnosis_context_summary={"failure_diff": {"entity_or_relation_problem": True}},
         applied=True,
         created_at="2026-04-13T00:00:00+00:00",
@@ -384,6 +466,95 @@ async def test_repair_service_deterministic_diagnosis_uses_formal_contract_types
     request = apply_client.apply.await_args.args[0]
     assert request.knowledge_types == ["few_shot"]
     assert response.knowledge_repair_request.knowledge_types == ["few_shot"]
+
+
+@pytest.mark.asyncio
+async def test_repair_service_marks_record_applied_only_after_apply_success():
+    ticket = _make_issue_ticket()
+    analysis_result = MagicMock()
+    analysis_result.id = ticket.id
+    analysis_result.confidence = 0.91
+    analysis_result.rationale = "Prompt misses protocol-version mapping guidance"
+    analysis_result.primary_knowledge_type = "few_shot"
+    analysis_result.secondary_knowledge_types = ["business_knowledge"]
+    analysis_result.diagnosis_context_summary = {"failure_diff": {"entity_or_relation_problem": True}}
+    analysis_result.system_prompt_snapshot = "SYSTEM PROMPT SNAPSHOT"
+    analysis_result.user_prompt_snapshot = "USER PROMPT SNAPSHOT"
+    analysis_result.repairable = True
+    analysis_result.non_repairable_reason = ""
+    analysis_result.to_request.return_value = KnowledgeRepairSuggestionRequest(
+        id=ticket.id,
+        suggestion="Add a few_shot example that matches the failed question pattern.",
+        knowledge_types=["few_shot"],
+    )
+    analyzer = AsyncMock()
+    analyzer.analyze.return_value = analysis_result
+    repository = MagicMock()
+    repository.get_analysis.return_value = None
+
+    async def apply_after_pending_record(_request):
+        pending_record = repository.save_analysis.call_args.args[0]
+        assert pending_record.status == "analysis_pending"
+        assert pending_record.applied is False
+        return {"ok": True}
+
+    apply_client = AsyncMock()
+    apply_client.apply.side_effect = apply_after_pending_record
+
+    service = RepairService(
+        repository=repository,
+        analyzer=analyzer,
+        apply_client=apply_client,
+    )
+
+    response = await service.create_issue_ticket_response(ticket)
+
+    assert response.status == "applied"
+    assert response.applied is True
+    assert repository.save_analysis.call_count == 2
+    final_record = repository.save_analysis.call_args_list[-1].args[0]
+    assert final_record.status == "applied"
+    assert final_record.applied is True
+
+
+@pytest.mark.asyncio
+async def test_repair_service_skips_apply_for_non_repairable_diagnosis():
+    ticket = _make_issue_ticket()
+    analysis_result = MagicMock()
+    analysis_result.id = ticket.id
+    analysis_result.confidence = 0.88
+    analysis_result.rationale = "The failure points to testing-agent evaluator behavior."
+    analysis_result.primary_knowledge_type = "system_prompt"
+    analysis_result.secondary_knowledge_types = []
+    analysis_result.diagnosis_context_summary = {"failure_diff": {"syntax_problem": False}}
+    analysis_result.system_prompt_snapshot = "SYSTEM PROMPT SNAPSHOT"
+    analysis_result.user_prompt_snapshot = "USER PROMPT SNAPSHOT"
+    analysis_result.repairable = False
+    analysis_result.non_repairable_reason = "testing-agent evaluator bug"
+    analyzer = AsyncMock()
+    analyzer.analyze.return_value = analysis_result
+    apply_client = AsyncMock()
+    repository = MagicMock()
+    repository.get_analysis.return_value = None
+
+    service = RepairService(
+        repository=repository,
+        analyzer=analyzer,
+        apply_client=apply_client,
+    )
+
+    response = await service.create_issue_ticket_response(ticket)
+
+    apply_client.apply.assert_not_awaited()
+    repository.save_analysis.assert_called_once()
+    saved_record = repository.save_analysis.call_args.args[0]
+    assert saved_record.status == "not_repairable"
+    assert saved_record.applied is False
+    assert saved_record.knowledge_repair_request is None
+    assert saved_record.non_repairable_reason == "testing-agent evaluator bug"
+    assert response.status == "not_repairable"
+    assert response.applied is False
+    assert response.knowledge_repair_request is None
 
 
 @pytest.mark.asyncio
@@ -432,20 +603,20 @@ def test_health_and_status_routes_follow_repair_agent_contract(monkeypatch):
     assert "knowledge_agent_apply_url" in status.json()
 
 
-def test_repair_service_no_longer_accepts_prompt_snapshot_client_compat_arg():
+def test_repair_service_constructor_exposes_current_dependencies_only():
     signature = inspect.signature(RepairService)
 
     assert "prompt_snapshot_client" not in signature.parameters
 
 
-def test_repair_agent_models_do_not_export_prompt_snapshot_response():
-    from services.repair_agent.app import models
+def test_repair_agent_models_export_current_response_contract_only():
+    from services.repair_agent.app.models import RepairIssueTicketResponse
 
-    assert not hasattr(models, "PromptSnapshotResponse")
-
-
-def test_legacy_repair_plan_read_path_is_not_exposed():
-    with TestClient(app) as client:
-        response = client.get("/api/v1/repair-plans/analysis-ticket-001")
-
-    assert response.status_code == 404
+    assert set(RepairIssueTicketResponse.model_fields) == {
+        "status",
+        "analysis_id",
+        "id",
+        "knowledge_repair_request",
+        "knowledge_agent_response",
+        "applied",
+    }

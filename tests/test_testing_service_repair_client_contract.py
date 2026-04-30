@@ -4,7 +4,6 @@ from typing import Any, Dict, Optional
 
 import pytest
 
-from services.repair_agent.app.models import RepairIssueTicketResponse
 from services.testing_agent.app.clients import RepairServiceClient
 from services.testing_agent.app.models import (
     ActualPayload,
@@ -16,6 +15,7 @@ from services.testing_agent.app.models import (
     IssueTicket,
     JaroWinklerSimilaritySignal,
     PrimaryMetrics,
+    RepairAgentResponse,
     SecondarySignals,
     SemanticCheck,
     StrictCheck,
@@ -61,7 +61,7 @@ class _FakeAsyncClient:
                     "suggestion": "Add relation guidance.",
                     "knowledge_types": ["few_shot"],
                 },
-                "knowledge_ops_response": {"status": "ok"},
+                "knowledge_agent_response": {"status": "ok"},
                 "applied": True,
             }
         )
@@ -116,7 +116,7 @@ async def test_repair_service_client_validates_formal_repair_response(monkeypatc
 
     response = await client.submit_issue_ticket(_make_issue_ticket())
 
-    assert isinstance(response, RepairIssueTicketResponse)
+    assert isinstance(response, RepairAgentResponse)
     assert response.analysis_id == "analysis-ticket-qa-001-attempt-1"
     assert response.knowledge_repair_request.knowledge_types == ["few_shot"]
     assert _FakeAsyncClient.last_request is not None

@@ -33,6 +33,26 @@ def test_ingest_question_returns_no_business_response_body(monkeypatch):
     service.ingest_question.assert_awaited_once()
 
 
+def test_generator_status_returns_file_knowledge_context_fields(monkeypatch):
+    monkeypatch.setattr(
+        "services.cypher_generator_agent.app.main.get_generator_status",
+        lambda: {
+            "llm_enabled": False,
+            "active_mode": "disabled",
+            "knowledge_context_source": "file",
+            "knowledge_docs_dir_configured": True,
+            "testing_agent_configured": True,
+        },
+    )
+
+    response = client.get("/api/v1/generator/status")
+
+    assert response.status_code == 200
+    assert response.json()["knowledge_context_source"] == "file"
+    assert response.json()["knowledge_docs_dir_configured"] is True
+    assert "knowledge_agent_configured" not in response.json()
+
+
 def test_legacy_runtime_and_repair_endpoints_are_not_exposed():
     assert client.get("/api/v1/questions/qa-001").status_code == 404
     assert client.get("/api/v1/questions/qa-001/prompt").status_code == 404

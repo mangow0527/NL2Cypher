@@ -8,7 +8,7 @@ from pydantic import ValidationError
 
 from services.cypher_generator_agent.app.clients import (
     CypherLLMClient,
-    OpenAICompatibleCypherGenerator,
+    OpenAIChatCompletionCypherGenerator,
 )
 from services.cypher_generator_agent.app.config import Settings as CypherGeneratorAgentSettings
 from services.repair_agent.app.config import Settings as RepairServiceSettings
@@ -36,22 +36,19 @@ def test_testing_service_requires_complete_llm_configuration(monkeypatch: pytest
         TestingServiceSettings(_env_file=None)
 
 
-def test_repair_service_accepts_legacy_model_env_name(monkeypatch: pytest.MonkeyPatch):
+def test_repair_service_requires_current_model_env_name(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("REPAIR_SERVICE_LLM_ENABLED", "true")
     monkeypatch.setenv("REPAIR_SERVICE_LLM_BASE_URL", "https://example.com/v1")
     monkeypatch.setenv("REPAIR_SERVICE_LLM_API_KEY", "secret")
-    monkeypatch.setenv("REPAIR_SERVICE_LLM_MODEL", "glm-5")
     monkeypatch.delenv("REPAIR_SERVICE_LLM_MODEL_NAME", raising=False)
 
-    settings = RepairServiceSettings(_env_file=None)
-
-    assert settings.llm_enabled is True
-    assert settings.llm_model_name == "glm-5"
+    with pytest.raises(ValidationError):
+        RepairServiceSettings(_env_file=None)
 
 
 @pytest.mark.asyncio
 async def test_cypher_generator_agent_raises_when_llm_call_fails():
-    llm_generator = AsyncMock(spec=OpenAICompatibleCypherGenerator)
+    llm_generator = AsyncMock(spec=OpenAIChatCompletionCypherGenerator)
     llm_generator.generate_from_prompt.side_effect = RuntimeError("llm offline")
     client = CypherLLMClient(llm_generator=llm_generator)
 
@@ -65,7 +62,7 @@ async def test_cypher_generator_agent_raises_when_llm_call_fails():
 
 @pytest.mark.asyncio
 async def test_cypher_generator_agent_logs_exact_llm_call_evidence(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture):
-    client = OpenAICompatibleCypherGenerator(
+    client = OpenAIChatCompletionCypherGenerator(
         base_url="https://example.com/v1",
         api_key="secret",
         model="qwen-test",

@@ -12,7 +12,7 @@
 
 1. `cypher-generator-agent`（端口 `8000`）
    - 接收 `id + question`
-   - 主动向 `knowledge-agent` 获取 prompt package
+   - 从配置的知识文档目录全量加载 Cypher 生成上下文
    - 调用模型生成 Cypher
    - 保留 `id + prompt` 与原始输出快照
    - 将生成结果提交给 `testing-agent`
@@ -23,7 +23,7 @@
    - 完成评测并在失败时产出问题单
 3. `repair-agent`（端口 `8002`）
    - 接收问题单
-   - 做根因分析与对照实验
+   - 判断失败是否属于 knowledge-agent 知识缺口
    - 产出知识修复建议并投递给 `knowledge-agent`
 4. `knowledge-agent`（端口 `8010`）
    - 提供 Cypher 生成所需的知识上下文
@@ -32,7 +32,7 @@
    - 提供自然语言问题与黄金样本
 
 当前 `cypher-generator-agent` 的正式职责定义以
-[cypher-generator-agent-design.md](/Users/mangowmac/Desktop/code/NL2Cypher/services/cypher_generator_agent/docs/cypher-generator-agent-design.md)
+[cypher-generator-agent-design.md](services/cypher_generator_agent/docs/cypher-generator-agent-design.md)
 为准。
 
 ## 快速开始
@@ -54,7 +54,7 @@
 ## 当前工作流
 
 1. `qa-agent` 向 `cypher-generator-agent` 提交 `id + question`
-2. `cypher-generator-agent` 向 `knowledge-agent` 拉取当前可用 `prompt`
+2. `cypher-generator-agent` 从 `CYPHER_GENERATOR_AGENT_KNOWLEDGE_DOCS_DIR` 加载知识文档上下文
 3. `cypher-generator-agent` 调用模型生成 Cypher，并保留 `input_prompt_snapshot`
 4. `cypher-generator-agent` 把 `generated_cypher + generation evidence` 提交给 `testing-agent`
 5. `testing-agent` 执行 TuGraph，等待或合并对应的 Golden Answer
@@ -103,7 +103,10 @@ curl -X POST http://localhost:8003/api/v1/evaluations/submissions \
     "question": "查询网络设备及其端口信息",
     "generation_run_id": "run-001",
     "generated_cypher": "MATCH (ne:NetworkElement)-[:HAS_PORT]->(p:Port) RETURN ne.name, p.name LIMIT 10",
-    "input_prompt_snapshot": "请只返回 cypher 字段"
+    "input_prompt_snapshot": "请只返回 cypher 字段",
+    "last_llm_raw_output": "MATCH (ne:NetworkElement)-[:HAS_PORT]->(p:Port) RETURN ne.name, p.name LIMIT 10",
+    "generation_retry_count": 0,
+    "generation_failure_reasons": []
   }'
 ```
 
@@ -126,13 +129,13 @@ curl http://localhost:8003/api/v1/issues/{ticket_id}
 - `CYPHER_GENERATOR_AGENT_HOST`
 - `CYPHER_GENERATOR_AGENT_PORT`
 - `CYPHER_GENERATOR_AGENT_TESTING_AGENT_URL`
-- `CYPHER_GENERATOR_AGENT_KNOWLEDGE_AGENT_URL`
+- `CYPHER_GENERATOR_AGENT_KNOWLEDGE_DOCS_DIR`
 - `CYPHER_GENERATOR_AGENT_LLM_ENABLED`
 - `CYPHER_GENERATOR_AGENT_LLM_PROVIDER`
 - `CYPHER_GENERATOR_AGENT_LLM_BASE_URL`
 - `CYPHER_GENERATOR_AGENT_LLM_API_KEY`
 - `CYPHER_GENERATOR_AGENT_LLM_MODEL`
-- 说明：该服务默认要求启用 LLM，缺少以上任一关键配置会直接启动失败，不再回退到启发式生成。
+- 说明：该服务默认要求启用 LLM，缺少以上任一关键配置会直接启动失败。
 
 ### testing-agent 环境变量
 
@@ -154,14 +157,14 @@ curl http://localhost:8003/api/v1/issues/{ticket_id}
 
 - `REPAIR_SERVICE_HOST`
 - `REPAIR_SERVICE_PORT`
-- `REPAIR_SERVICE_QUERY_GENERATOR_SERVICE_URL`
-- `REPAIR_SERVICE_KNOWLEDGE_OPS_REPAIRS_APPLY_URL`
+- `REPAIR_SERVICE_KNOWLEDGE_AGENT_REPAIRS_APPLY_URL`
+- `REPAIR_SERVICE_KNOWLEDGE_AGENT_REPAIRS_APPLY_CAPTURE_DIR`
+- `REPAIR_SERVICE_KNOWLEDGE_AGENT_REPAIRS_APPLY_MAX_ATTEMPTS`
 - `REPAIR_SERVICE_LLM_ENABLED`
 - `REPAIR_SERVICE_LLM_BASE_URL`
 - `REPAIR_SERVICE_LLM_API_KEY`
 - `REPAIR_SERVICE_LLM_MODEL_NAME`
-- 兼容旧变量：`REPAIR_SERVICE_LLM_MODEL`
-- 说明：该服务默认要求启用 LLM，缺少关键配置会直接启动失败，不再回退到 deterministic repair-agent 诊断。
+- 说明：该服务默认要求启用 LLM，缺少关键配置会直接启动失败。
 
 ## 维护说明
 

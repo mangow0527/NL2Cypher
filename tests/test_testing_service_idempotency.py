@@ -4,8 +4,13 @@ import asyncio
 import pytest
 
 from services.testing_agent.app.grammar import GrammarChecker
-from services.repair_agent.app.models import RepairIssueTicketResponse
-from services.testing_agent.app.models import ExecutionResult, GeneratedCypherSubmissionRequest, QAGoldenRequest
+from services.testing_agent.app.models import (
+    ExecutionResult,
+    GeneratedCypherSubmissionRequest,
+    GenerationRunFailureReport,
+    QAGoldenRequest,
+    RepairAgentResponse,
+)
 from services.testing_agent.app.repository import TestingRepository
 from services.testing_agent.app.service import TestingAgentService
 
@@ -43,7 +48,7 @@ class StubRepairClient:
         self.tickets.append(ticket)
         if self.should_fail:
             raise RuntimeError("repair offline")
-        return RepairIssueTicketResponse(
+        return RepairAgentResponse(
             status="applied",
             analysis_id=f"analysis-{ticket.ticket_id}",
             id=ticket.id,
@@ -52,7 +57,7 @@ class StubRepairClient:
                 "suggestion": "Add relation guidance.",
                 "knowledge_types": ["few_shot"],
             },
-            knowledge_ops_response={"status": "ok"},
+            knowledge_agent_response={"status": "ok"},
             applied=True,
         )
 
@@ -114,6 +119,7 @@ async def test_failed_submission_includes_minimal_generation_evidence_in_issue_t
             generation_run_id="run-001",
             generated_cypher="MATCHH (n) RETURN n",
             input_prompt_snapshot="prompt-1",
+            last_llm_raw_output="MATCHH (n) RETURN n",
         )
     )
 
@@ -125,8 +131,13 @@ async def test_failed_submission_includes_minimal_generation_evidence_in_issue_t
         "generation_run_id": "run-001",
         "attempt_no": 1,
         "input_prompt_snapshot": "prompt-1",
+        "last_llm_raw_output": "MATCHH (n) RETURN n",
+        "generation_status": "generated",
+        "failure_reason": None,
+        "generation_retry_count": 0,
+        "generation_failure_reasons": [],
     }
-    repair_response = RepairIssueTicketResponse.model_validate(latest["repair_response"])
+    repair_response = RepairAgentResponse.model_validate(latest["repair_response"])
     assert repair_response.analysis_id == "analysis-ticket-qa-001-attempt-1"
     assert repair_response.knowledge_repair_request.knowledge_types == ["few_shot"]
 
@@ -147,6 +158,7 @@ async def test_duplicate_submission_reuses_existing_attempt_without_creating_new
         generation_run_id="run-001",
         generated_cypher="MATCH (n) RETURN n",
         input_prompt_snapshot="prompt-1",
+        last_llm_raw_output="MATCH (n) RETURN n",
     )
 
     first = await service.ingest_submission(request)
@@ -177,6 +189,7 @@ async def test_repair_submission_failure_marks_state_after_receipt(tmp_path):
             generation_run_id="run-001",
             generated_cypher="MATCHH (n) RETURN n",
             input_prompt_snapshot="prompt-1",
+            last_llm_raw_output="MATCHH (n) RETURN n",
         )
     )
 
@@ -185,8 +198,72 @@ async def test_repair_submission_failure_marks_state_after_receipt(tmp_path):
     assert latest["state"] == "repair_submission_failed"
 
 
+@pytest.mark.asyncio
+async def test_generation_failed_duplicate_reuses_existing_attempt_and_preserves_failure_evidence(tmp_path):
+    repository, service = make_service(
+        tmp_path,
+        parser_success=True,
+        execution_result=ExecutionResult(success=True, rows=[{"id": "a"}], row_count=1, error_message=None, elapsed_ms=1),
+    )
+    repository.save_golden(
+        QAGoldenRequest(id="qa-gen-dup", cypher="MATCH (n) RETURN n", answer=[{"id": "a"}], difficulty="L3")
+    )
+    report = GenerationRunFailureReport(
+        id="qa-gen-dup",
+        question="查询设备",
+        generation_run_id="run-gen-failed",
+        input_prompt_snapshot="prompt-1",
+        last_llm_raw_output="MATCHH (n) RETURN n",
+        generation_status="generation_failed",
+        failure_reason="generation_retry_exhausted",
+        last_generation_failure_reason="no_cypher_found",
+        generation_retry_count=2,
+        generation_failure_reasons=["no_cypher_found", "no_cypher_found", "no_cypher_found"],
+        parsed_cypher=None,
+        gate_passed=False,
+    )
+
+    first = await service.ingest_generation_failure(report)
+    duplicate = await service.ingest_generation_failure(report)
+
+    assert first.accepted is True
+    assert duplicate.accepted is True
+    latest = await wait_for_state(repository, "qa-gen-dup", "issue_ticket_created")
+    assert len(repository.list_submission_attempts("qa-gen-dup")) == 1
+    assert latest["last_llm_raw_output"] == "MATCHH (n) RETURN n"
+    assert latest["generation_status"] == "generation_failed"
+    assert latest["failure_reason"] == "generation_retry_exhausted"
+    assert latest["generation_retry_count"] == 2
+    assert latest["generation_failure_reasons"] == ["no_cypher_found", "no_cypher_found", "no_cypher_found"]
+
+
 def test_testing_agent_models_do_not_export_legacy_submission_aliases():
     from services.testing_agent.app import models
 
     assert not hasattr(models, "EvaluationSubmissionRequest")
     assert not hasattr(models, "EvaluationSubmissionResponse")
+
+
+@pytest.mark.asyncio
+async def test_service_failed_report_is_visible_in_evaluation_status(tmp_path):
+    repository, service = make_service(tmp_path, parser_success=True)
+    report = GenerationRunFailureReport(
+        id="qa-service-failed",
+        question="查询设备",
+        generation_run_id="run-service-failed",
+        input_prompt_snapshot="",
+        last_llm_raw_output="",
+        generation_status="service_failed",
+        failure_reason="model_invocation_failed",
+        generation_retry_count=0,
+        generation_failure_reasons=[],
+        parsed_cypher=None,
+        gate_passed=False,
+    )
+
+    await service.ingest_generation_failure(report)
+
+    status = service.get_evaluation_status("qa-service-failed")
+    assert status.attempts == []
+    assert status.generation_failures[0]["generation_status"] == "service_failed"
+    assert status.generation_failures[0]["failure_reason"] == "model_invocation_failed"

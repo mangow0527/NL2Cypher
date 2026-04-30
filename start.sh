@@ -5,7 +5,7 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
 RUN_DIR="${PROJECT_ROOT}/run"
 LOG_DIR="${PROJECT_ROOT}/logs"
-PYTHON_BIN="${PYTHON_BIN:-${PROJECT_ROOT}/.venv/bin/python}"
+PYTHON_BIN="${PYTHON_BIN:-}"
 HOST="${APP_HOST:-0.0.0.0}"
 
 mkdir -p "${PROJECT_ROOT}/data" "${RUN_DIR}" "${LOG_DIR}"
@@ -14,6 +14,16 @@ if [ -f "${PROJECT_ROOT}/.env" ]; then
   set -a
   . "${PROJECT_ROOT}/.env"
   set +a
+fi
+
+if [ -z "${PYTHON_BIN}" ]; then
+  if [ -x "${PROJECT_ROOT}/.venv/bin/python" ] && "${PROJECT_ROOT}/.venv/bin/python" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1; then
+    PYTHON_BIN="${PROJECT_ROOT}/.venv/bin/python"
+  elif command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="$(command -v python3)"
+  else
+    PYTHON_BIN="${PROJECT_ROOT}/.venv/bin/python"
+  fi
 fi
 
 if [ ! -x "${PYTHON_BIN}" ]; then

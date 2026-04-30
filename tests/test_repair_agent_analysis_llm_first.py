@@ -85,38 +85,22 @@ class _HighConfidenceDiagnosisClient:
     async def diagnose(self, context: Dict[str, Any]) -> Dict[str, Any]:
         self.calls.append(context)
         return {
+            "repairable": True,
+            "non_repairable_reason": "",
             "primary_knowledge_type": "few_shot",
             "secondary_knowledge_types": ["business_knowledge"],
             "confidence": 0.93,
             "suggestion": "Add a few-shot example showing how Service connects to Tunnel.",
             "rationale": "The prompt missed a key relation pattern.",
-            "need_validation": True,
-            "candidate_patch_types": ["few_shot", "business_knowledge"],
         }
 
 
 @pytest.mark.asyncio
-async def test_repair_analyzer_runs_llm_first_and_optional_validation():
+async def test_repair_analyzer_runs_llm_first_and_returns_normalized_diagnosis():
     client = _HighConfidenceDiagnosisClient()
-    experiment_calls: List[Dict[str, Any]] = []
-
-    async def experiment_runner(ticket: IssueTicket, context: Dict[str, Any], patch_type: str, diagnosis: Dict[str, Any]) -> Dict[str, Any]:
-        experiment_calls.append(
-            {
-                "ticket_id": ticket.id,
-                "patch_type": patch_type,
-                "question": context["question"],
-                "primary_knowledge_type": diagnosis["primary_knowledge_type"],
-            }
-        )
-        if patch_type == "few_shot":
-            return {"improved": True, "confidence": 0.97, "reason": "few_shot best explains the failure diff"}
-        return {"improved": False, "confidence": 0.12, "reason": "business knowledge already present"}
 
     analyzer = RepairAnalyzer(
         diagnosis_client=client,
-        min_confidence_for_direct_return=0.8,
-        experiment_runner=experiment_runner,
     )
 
     result = await analyzer.analyze(_make_ticket(), "PROMPT SNAPSHOT\nappendix: unrelated noise")
@@ -125,14 +109,9 @@ async def test_repair_analyzer_runs_llm_first_and_optional_validation():
     assert result.knowledge_types == ["few_shot"]
     assert result.primary_knowledge_type == "few_shot"
     assert result.secondary_knowledge_types == ["business_knowledge"]
-    assert result.candidate_patch_types == ["few_shot", "business_knowledge"]
-    assert result.validation_mode == "lightweight"
-    assert result.validation_result["validated_patch_types"] == ["few_shot"]
-    assert result.validation_result["rejected_patch_types"] == ["business_knowledge"]
     assert result.suggestion == "Add a few-shot example showing how Service connects to Tunnel."
-    assert result.confidence == pytest.approx(0.97)
+    assert result.confidence == pytest.approx(0.93)
     assert result.rationale == "The prompt missed a key relation pattern."
-    assert result.used_experiments is True
     assert result.to_request().model_dump() == {
         "id": "q-repair-1",
         "suggestion": "Add a few-shot example showing how Service connects to Tunnel.",
@@ -142,40 +121,56 @@ async def test_repair_analyzer_runs_llm_first_and_optional_validation():
     assert client.calls[0]["failure_diff"]["entity_or_relation_problem"] is True
     assert client.calls[0]["evaluation_summary"]["verdict"] == "fail"
     assert "appendix: unrelated noise" not in json.dumps(client.calls[0], ensure_ascii=False)
-    assert experiment_calls == [
-        {
-            "ticket_id": "q-repair-1",
-            "patch_type": "few_shot",
-            "question": "Which services use tunnel T1?",
-            "primary_knowledge_type": "few_shot",
-        },
-        {
-            "ticket_id": "q-repair-1",
-            "patch_type": "business_knowledge",
-            "question": "Which services use tunnel T1?",
-            "primary_knowledge_type": "few_shot",
-        },
-    ]
 
 
 class _MalformedConfidenceDiagnosisClient:
     async def diagnose(self, context: Dict[str, Any]) -> Dict[str, Any]:
         assert context["question"] == "Which services use tunnel T1?"
         return {
+            "repairable": True,
+            "non_repairable_reason": "",
             "primary_knowledge_type": "bad_type",
             "secondary_knowledge_types": ["unknown_type"],
             "confidence": float("nan"),
             "suggestion": "Keep the repair guidance focused on the tunnel relation.",
             "rationale": "Bad confidence payload should not leak through.",
-            "need_validation": False,
         }
+
+
+class _NonRepairableDiagnosisClient:
+    async def diagnose(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        assert context["question"] == "Which services use tunnel T1?"
+        return {
+            "repairable": False,
+            "non_repairable_reason": "cypher-generator-agent output protocol bug",
+            "primary_knowledge_type": "system_prompt",
+            "secondary_knowledge_types": [],
+            "confidence": 0.82,
+            "suggestion": "Do not create a knowledge-agent repair for this failure.",
+            "rationale": "The evidence points to generator protocol handling, not missing knowledge.",
+        }
+
+
+@pytest.mark.asyncio
+async def test_repair_analyzer_preserves_non_repairable_decision():
+    analyzer = RepairAnalyzer(
+        diagnosis_client=_NonRepairableDiagnosisClient(),
+    )
+
+    result = await analyzer.analyze(_make_ticket(), "PROMPT SNAPSHOT")
+
+    assert result.repairable is False
+    assert result.non_repairable_reason == "cypher-generator-agent output protocol bug"
+    assert result.primary_knowledge_type == "system_prompt"
+    assert result.knowledge_types == ["system_prompt"]
+    with pytest.raises(ValueError, match="not repairable"):
+        result.to_request()
 
 
 @pytest.mark.asyncio
 async def test_repair_analyzer_clamps_and_sanitizes_malformed_confidence_values():
     analyzer = RepairAnalyzer(
         diagnosis_client=_MalformedConfidenceDiagnosisClient(),
-        min_confidence_for_direct_return=0.8,
     )
 
     result = await analyzer.analyze(_make_ticket(), "PROMPT SNAPSHOT")
@@ -185,7 +180,6 @@ async def test_repair_analyzer_clamps_and_sanitizes_malformed_confidence_values(
     assert result.knowledge_types == ["system_prompt"]
     assert result.primary_knowledge_type == "system_prompt"
     assert result.secondary_knowledge_types == []
-    assert result.validation_mode == "disabled"
     assert result.suggestion == "Keep the repair guidance focused on the tunnel relation."
     assert result.to_request().model_dump()["knowledge_types"] == ["system_prompt"]
 

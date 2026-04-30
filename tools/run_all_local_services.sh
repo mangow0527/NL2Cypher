@@ -13,7 +13,7 @@ trap cleanup EXIT INT TERM
 
 cd "$(dirname "$0")/.."
 
-lsof -ti:8000,8001,8002,8010,8020 2>/dev/null | xargs kill -9 2>/dev/null || true
+lsof -ti:8000,8001,8002,8003,8010,8020 2>/dev/null | xargs kill -9 2>/dev/null || true
 sleep 1
 
 set -a
@@ -22,16 +22,14 @@ if [ -f ".env" ]; then
 fi
 set +a
 
-export QUERY_GENERATOR_KNOWLEDGE_OPS_SERVICE_URL=http://127.0.0.1:8010
-export QUERY_GENERATOR_TESTING_SERVICE_URL=http://127.0.0.1:8001
+export CYPHER_GENERATOR_AGENT_TESTING_AGENT_URL=http://127.0.0.1:8003
+export CYPHER_GENERATOR_AGENT_KNOWLEDGE_DOCS_DIR="${KNOWLEDGE_AGENT_ROOT:-/root/multi-agent/knowledge-agent}/backend/knowledge"
 export TESTING_SERVICE_REPAIR_SERVICE_URL=http://127.0.0.1:8002
-export REPAIR_SERVICE_QUERY_GENERATOR_SERVICE_URL=http://127.0.0.1:8000
-export REPAIR_SERVICE_KNOWLEDGE_OPS_REPAIRS_APPLY_URL=http://127.0.0.1:8010/api/knowledge/repairs/apply
+export REPAIR_SERVICE_KNOWLEDGE_AGENT_REPAIRS_APPLY_URL=http://127.0.0.1:8010/api/knowledge/repairs/apply
 
-export QUERY_GENERATOR_LLM_ENABLED=true
+export CYPHER_GENERATOR_AGENT_LLM_ENABLED=true
 export TESTING_SERVICE_LLM_ENABLED=true
 export REPAIR_SERVICE_LLM_ENABLED=true
-export REPAIR_SERVICE_GENERATOR_LLM_ENABLED=true
 
 if [ -n "${TESTING_SERVICE_LLM_BASE_URL:-}" ]; then
   export OPENAI_BASE_URL="${TESTING_SERVICE_LLM_BASE_URL}"
@@ -46,7 +44,7 @@ fi
 KNOWLEDGE_AGENT_ROOT="${KNOWLEDGE_AGENT_ROOT:-}"
 QA_AGENT_ROOT="${QA_AGENT_ROOT:-}"
 
-health_ports=(8000 8001 8002)
+health_ports=(8000 8002 8003)
 
 if [ -n "${KNOWLEDGE_AGENT_ROOT}" ]; then
   (
@@ -62,7 +60,7 @@ fi
 if [ -n "${QA_AGENT_ROOT}" ]; then
   (
     cd "${QA_AGENT_ROOT}" &&
-      APP_HOST=0.0.0.0 APP_PORT=8020 TEST_AGENT_HOST=127.0.0.1 TEST_AGENT_QUESTION_PORT=8000 TEST_AGENT_GOLDEN_PORT=8001 .venv/bin/python run_api.py
+      APP_HOST=0.0.0.0 APP_PORT=8020 TEST_AGENT_HOST=127.0.0.1 TEST_AGENT_QUESTION_PORT=8000 TEST_AGENT_GOLDEN_PORT=8003 .venv/bin/python run_api.py
   ) &
   pids+=("$!")
   health_ports+=(8020)
@@ -72,7 +70,7 @@ fi
 
 python -m uvicorn services.repair_agent.app.main:app --host 0.0.0.0 --port 8002 &
 pids+=("$!")
-python -m uvicorn services.testing_agent.app.main:app --host 0.0.0.0 --port 8001 &
+python -m uvicorn services.testing_agent.app.main:app --host 0.0.0.0 --port 8003 &
 pids+=("$!")
 python -m uvicorn services.cypher_generator_agent.app.main:app --host 0.0.0.0 --port 8000 &
 pids+=("$!")
@@ -92,7 +90,7 @@ done
 
 echo "running:"
 echo "  cypher-generator-agent    http://127.0.0.1:8000"
-echo "  testing-agent            http://127.0.0.1:8001"
+echo "  testing-agent            http://127.0.0.1:8003"
 echo "  repair-agent      http://127.0.0.1:8002"
 if [ -n "${KNOWLEDGE_AGENT_ROOT}" ]; then
   echo "  knowledge-agent          http://127.0.0.1:8010"

@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import BaseModel, Field
 
-from services.repair_agent.app.clients import KnowledgeOpsRepairApplyClient
+from services.repair_agent.app.clients import KnowledgeAgentRepairApplyClient
 from contracts.models import KnowledgeRepairSuggestionRequest
 
 
@@ -53,7 +53,7 @@ async def prompt_package(req: _PromptPackageRequest) -> str:
 @app.post("/api/knowledge/repairs/apply", response_model=_ApplyRepairResponse)
 async def repairs_apply(payload: _ApplyRepairRequest) -> _ApplyRepairResponse:
     knowledge_types = payload.knowledge_types or []
-    out_dir = Path("data/mock_knowledge_ops")
+    out_dir = Path("data/mock_knowledge_agent")
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "last_apply.json").write_text(
         json.dumps(
@@ -89,11 +89,11 @@ class _FakeAsyncClient:
 
 
 @pytest.mark.asyncio
-async def test_knowledge_ops_apply_capture_writes_payload_file(tmp_path, monkeypatch):
+async def test_knowledge_agent_apply_capture_writes_payload_file(tmp_path, monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
 
     capture_dir = tmp_path / "captures"
-    client = KnowledgeOpsRepairApplyClient(
+    client = KnowledgeAgentRepairApplyClient(
         apply_url="http://ko/api/knowledge/repairs/apply",
         timeout_seconds=3.0,
         capture_dir=str(capture_dir),
@@ -117,7 +117,7 @@ async def test_knowledge_ops_apply_capture_writes_payload_file(tmp_path, monkeyp
     }
 
 
-def test_mock_knowledge_ops_apply_validates_request_and_writes_json(tmp_path, monkeypatch):
+def test_mock_knowledge_agent_apply_validates_request_and_writes_json(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
     with TestClient(app) as client:
@@ -148,7 +148,7 @@ def test_mock_knowledge_ops_apply_validates_request_and_writes_json(tmp_path, mo
         },
     ]
 
-    saved = tmp_path / "data" / "mock_knowledge_ops" / "last_apply.json"
+    saved = tmp_path / "data" / "mock_knowledge_agent" / "last_apply.json"
     assert saved.exists()
     assert json.loads(saved.read_text(encoding="utf-8")) == {
         "id": "q-002",

@@ -71,6 +71,7 @@ def test_submission_route_returns_minimal_receipt(monkeypatch):
             "generation_run_id": "run-001",
             "generated_cypher": "MATCH (n) RETURN n",
             "input_prompt_snapshot": "prompt",
+            "last_llm_raw_output": "MATCH (n) RETURN n",
         },
     )
 
