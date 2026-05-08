@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import httpx
@@ -8,7 +9,7 @@ from pydantic import ValidationError
 
 from services.cypher_generator_agent.app.outbox import DeliveryOutbox
 from services.cypher_generator_agent.app.config import Settings
-from services.cypher_generator_agent.app.knowledge_context import FileKnowledgeContextProvider
+from services.cypher_generator_agent.app.knowledge_selection import RagKnowledgeSelector
 from services.cypher_generator_agent.app.models import (
     GeneratedCypherSubmissionRequest,
     GenerationRunFailureReport,
@@ -18,11 +19,19 @@ from services.cypher_generator_agent.app.models import (
 )
 from services.cypher_generator_agent.app.parser import parse_model_output
 from services.cypher_generator_agent.app.preflight import run_preflight_check
+from services.cypher_generator_agent.app.semantic_alignment import (
+    SemanticAlignmentDiagnostic,
+    SemanticAlignmentReport,
+)
 from services.cypher_generator_agent.app.service import (
     CypherGeneratorAgentService,
     build_workflow_service,
     get_generator_status,
 )
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SCHEMA_PATH = REPO_ROOT / "services/testing_agent/docs/reference/schema.json"
 
 
 def write_valid_knowledge_docs(knowledge_dir):
@@ -34,9 +43,11 @@ def write_valid_knowledge_docs(knowledge_dir):
     (knowledge_dir / "few_shot.md").write_text("Few-shot examples", encoding="utf-8")
 
 
-def test_build_workflow_service_uses_file_knowledge_context_provider(tmp_path):
+def test_build_workflow_service_uses_semantic_pipeline_with_rag_selector(tmp_path):
     settings = Settings(
         knowledge_docs_dir=str(tmp_path / "knowledge"),
+        knowledge_context_source="rag",
+        rag_service_url="http://rag-service",
         testing_agent_url="http://testing-agent",
         llm_base_url="http://llm",
         llm_api_key="test-key",
@@ -46,8 +57,11 @@ def test_build_workflow_service_uses_file_knowledge_context_provider(tmp_path):
 
     service = build_workflow_service(settings)
 
-    assert isinstance(service.knowledge_context_provider, FileKnowledgeContextProvider)
-    assert service.knowledge_context_provider.knowledge_dir == tmp_path / "knowledge"
+    assert service.semantic_pipeline is not None
+    assert isinstance(service.semantic_pipeline.knowledge_selector, RagKnowledgeSelector)
+    assert service.semantic_pipeline.knowledge_selector.base_url == "http://rag-service"
+    assert not hasattr(service, "knowledge_context_provider")
+    assert not hasattr(service, "llm_client")
 
 
 def test_generator_status_reports_file_knowledge_context_source(monkeypatch, tmp_path):
@@ -67,7 +81,42 @@ def test_generator_status_reports_file_knowledge_context_source(monkeypatch, tmp
 
     assert status["knowledge_context_source"] == "file"
     assert status["knowledge_docs_dir_configured"] is True
+    assert status["knowledge_selection_configured"] is False
     assert "knowledge_agent_configured" not in status
+
+
+def test_generator_status_reports_semantic_alignment(monkeypatch, tmp_path):
+    knowledge_dir = tmp_path / "knowledge"
+    knowledge_dir.mkdir()
+    (knowledge_dir / "system_prompt.md").write_text("只能使用 Schema 中存在的节点、关系、属性。", encoding="utf-8")
+    (knowledge_dir / "schema.json").write_text(SCHEMA_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+    (knowledge_dir / "cypher_syntax.md").write_text("聚合使用 RETURN/WITH 隐式分组。", encoding="utf-8")
+    (knowledge_dir / "business_knowledge.md").write_text(
+        "- “链路类型”映射为 `Link.elem_type`。\n"
+        "- “链路目的端口”表示 `(l:Link)-[:LINK_DST]->(p:Port)`。",
+        encoding="utf-8",
+    )
+    (knowledge_dir / "few_shot.md").write_text(
+        "Question: 按类型统计隧道数量\n"
+        "Cypher: MATCH (t:Tunnel) RETURN t.elem_type AS group_key, count(t) AS total",
+        encoding="utf-8",
+    )
+    settings = Settings(
+        knowledge_docs_dir=str(knowledge_dir),
+        testing_agent_url="http://testing-agent",
+        llm_base_url="http://llm",
+        llm_api_key="test-key",
+        llm_model="test-model",
+        _env_file=None,
+    )
+    monkeypatch.setattr("services.cypher_generator_agent.app.service.get_settings", lambda: settings)
+
+    status = get_generator_status()
+
+    assert status["semantic_alignment"]["accepted"] is True
+    assert status["semantic_alignment"]["diagnostics"] == []
+    assert "semantic_layer.yaml" in status["semantic_alignment"]["checked_sources"]
+    assert "knowledge/schema.json" in status["semantic_alignment"]["checked_sources"]
 
 
 def test_generator_status_reports_unconfigured_when_knowledge_docs_are_unusable(monkeypatch, tmp_path):
@@ -85,208 +134,240 @@ def test_generator_status_reports_unconfigured_when_knowledge_docs_are_unusable(
 
     assert status["knowledge_context_source"] == "file"
     assert status["knowledge_docs_dir_configured"] is False
+    assert status["knowledge_selection_configured"] is False
 
 
 class TestCypherGeneratorAgentWorkflow:
     @pytest.mark.asyncio
-    async def test_generates_direct_cypher_and_submits_evidence_without_attempt_no(self):
-        knowledge_context_provider = AsyncMock()
-        knowledge_context_provider.fetch_context.return_value = "Schema: (:Protocol)-[:HAS_TUNNEL]->(:Tunnel)"
-        llm_client = AsyncMock()
-        llm_client.generate_from_prompt.return_value = {
-            "raw_output": "MATCH (p:Protocol)-[:HAS_TUNNEL]->(t:Tunnel) RETURN p.version, t.name",
-            "model_name": "test-model",
-        }
-        testing_client = AsyncMock()
+    async def test_workflow_service_has_no_direct_llm_generation_branch(self):
+        class FakeSemanticPipeline:
+            async def parse_with_fallback(self, *, id, question, generation_run_id):
+                return type(
+                    "SemanticResult",
+                    (),
+                    {
+                        "generated_cypher": "MATCH (s:Service) RETURN s.name AS service_name",
+                        "preflight": PreflightCheck(accepted=True),
+                        "generation_mode": "deterministic_renderer",
+                        "to_dict": lambda self: {
+                            "generation_mode": "deterministic_renderer",
+                            "semantic_query": {"kind": "record_selection"},
+                            "generated_cypher": "MATCH (s:Service) RETURN s.name AS service_name",
+                            "preflight": {"accepted": True},
+                        },
+                    },
+                )()
 
         service = CypherGeneratorAgentService(
-            knowledge_context_provider=knowledge_context_provider,
-            llm_client=llm_client,
-            testing_client=testing_client,
-            generation_run_id_factory=lambda: "cypher-run-001",
+            testing_client=AsyncMock(),
+            generation_run_id_factory=lambda: "cypher-run-semantic-only",
+            semantic_pipeline=FakeSemanticPipeline(),
         )
 
-        result = await service.ingest_question(QAQuestionRequest(id="qa-001", question="查询所有协议版本对应的隧道名称"))
+        result = await service.ingest_question(QAQuestionRequest(id="qa-semantic-only", question="查询服务名称"))
 
         assert result.generation_status == "submitted_to_testing"
-        assert result.generation_run_id == "cypher-run-001"
-        assert result.reason is None
-        knowledge_context_provider.fetch_context.assert_awaited_once_with(id="qa-001", question="查询所有协议版本对应的隧道名称")
-        prompt = llm_client.generate_from_prompt.await_args.kwargs["llm_prompt"]
-        assert "【任务说明】" in prompt
-        assert "【用户问题】" in prompt
-        assert "【知识文档上下文】" in prompt
-        assert "knowledge-agent 上下文" not in prompt
-        assert "【输出格式】" in prompt
-        assert "Schema: (:Protocol)-[:HAS_TUNNEL]->(:Tunnel)" in prompt
-        assert "CGS" not in prompt
-        assert "KO Prompt" not in prompt
-
-        testing_client.submit.assert_awaited_once()
-        submission = testing_client.submit.await_args.kwargs["payload"]
-        assert submission.model_dump() == {
-            "id": "qa-001",
-            "question": "查询所有协议版本对应的隧道名称",
-            "generation_run_id": "cypher-run-001",
-            "generated_cypher": "MATCH (p:Protocol)-[:HAS_TUNNEL]->(t:Tunnel) RETURN p.version, t.name",
-            "input_prompt_snapshot": prompt,
-            "last_llm_raw_output": "MATCH (p:Protocol)-[:HAS_TUNNEL]->(t:Tunnel) RETURN p.version, t.name",
-            "generation_retry_count": 0,
-            "generation_failure_reasons": [],
-        }
+        assert not hasattr(service, "knowledge_context_provider")
+        assert not hasattr(service, "llm_client")
 
     @pytest.mark.asyncio
-    async def test_retries_with_fixed_extra_constraint_after_markdown_wrapped_output(self):
-        knowledge_context_provider = AsyncMock()
-        knowledge_context_provider.fetch_context.return_value = "Schema: (:Protocol)"
-        llm_client = AsyncMock()
-        llm_client.generate_from_prompt.side_effect = [
-            {"raw_output": "```cypher\nMATCH (p:Protocol) RETURN p.version\n```", "model_name": "test-model"},
-            {"raw_output": "MATCH (p:Protocol) RETURN p.version", "model_name": "test-model"},
+    async def test_semantic_pipeline_result_is_submitted_without_legacy_knowledge_fetch(self):
+        class FakeSemanticPipeline:
+            def __init__(self) -> None:
+                self.calls = []
+
+            async def parse_with_fallback(self, *, id, question, generation_run_id):
+                self.calls.append({"id": id, "question": question, "generation_run_id": generation_run_id})
+                return type(
+                    "SemanticResult",
+                    (),
+                    {
+                        "generated_cypher": "MATCH (s:Service) RETURN s.name AS service_name",
+                        "preflight": PreflightCheck(accepted=True),
+                        "generation_mode": "deterministic_renderer",
+                        "to_dict": lambda self: {
+                            "generation_mode": "deterministic_renderer",
+                            "semantic_query": {"kind": "record_selection"},
+                            "generated_cypher": "MATCH (s:Service) RETURN s.name AS service_name",
+                            "preflight": {"accepted": True},
+                        },
+                    },
+                )()
+
+        testing_client = AsyncMock()
+        semantic_pipeline = FakeSemanticPipeline()
+
+        service = CypherGeneratorAgentService(
+            testing_client=testing_client,
+            generation_run_id_factory=lambda: "cypher-run-semantic-001",
+            semantic_pipeline=semantic_pipeline,
+        )
+
+        result = await service.ingest_question(QAQuestionRequest(id="qa-semantic", question="查询服务名称"))
+
+        assert result.generation_status == "submitted_to_testing"
+        assert semantic_pipeline.calls == [
+            {"id": "qa-semantic", "question": "查询服务名称", "generation_run_id": "cypher-run-semantic-001"}
         ]
-        testing_client = AsyncMock()
-
-        service = CypherGeneratorAgentService(
-            knowledge_context_provider=knowledge_context_provider,
-            llm_client=llm_client,
-            testing_client=testing_client,
-            generation_run_id_factory=lambda: "cypher-run-002",
-        )
-
-        result = await service.ingest_question(QAQuestionRequest(id="qa-002", question="查询协议版本"))
-
-        assert result.generation_status == "submitted_to_testing"
-        assert llm_client.generate_from_prompt.await_count == 2
-        first_prompt = llm_client.generate_from_prompt.await_args_list[0].kwargs["llm_prompt"]
-        second_prompt = llm_client.generate_from_prompt.await_args_list[1].kwargs["llm_prompt"]
-        assert "【额外约束】" not in first_prompt
-        assert "【额外约束】" in second_prompt
-        assert "不要使用 Markdown 或代码块包装查询。" in second_prompt
-        assert "上一轮" not in second_prompt
         testing_client.submit.assert_awaited_once()
         submission = testing_client.submit.await_args.kwargs["payload"]
-        assert submission.last_llm_raw_output == "MATCH (p:Protocol) RETURN p.version"
-        assert submission.generation_retry_count == 1
-        assert submission.generation_failure_reasons == ["wrapped_in_markdown"]
+        assert submission.generated_cypher == "MATCH (s:Service) RETURN s.name AS service_name"
+        assert '"semantic_query"' in submission.input_prompt_snapshot
+        assert submission.last_llm_raw_output == "MATCH (s:Service) RETURN s.name AS service_name"
 
     @pytest.mark.asyncio
-    async def test_generation_failure_after_three_preflight_failures_submits_failure_report(self):
-        knowledge_context_provider = AsyncMock()
-        knowledge_context_provider.fetch_context.return_value = "Schema: (:Protocol)"
-        llm_client = AsyncMock()
-        llm_client.generate_from_prompt.return_value = {
-            "raw_output": "MATCH (p:Protocol RETURN p.version",
-            "model_name": "test-model",
-        }
-        testing_client = AsyncMock()
+    async def test_semantic_pipeline_rejection_submits_generation_failure(self):
+        class FakeSemanticPipeline:
+            async def parse_with_fallback(self, *, id, question, generation_run_id):
+                return type(
+                    "SemanticResult",
+                    (),
+                    {
+                        "generated_cypher": None,
+                        "preflight": None,
+                        "generation_mode": None,
+                        "to_dict": lambda self: {
+                            "validation": {
+                                "accepted": False,
+                                "diagnostics": [{"code": "unsupported_business_slot_schema"}],
+                            },
+                            "semantic_query": None,
+                            "generated_cypher": None,
+                            "preflight": None,
+                        },
+                    },
+                )()
 
         service = CypherGeneratorAgentService(
-            knowledge_context_provider=knowledge_context_provider,
-            llm_client=llm_client,
-            testing_client=testing_client,
-            generation_run_id_factory=lambda: "cypher-run-003",
+            testing_client=AsyncMock(),
+            generation_run_id_factory=lambda: "cypher-run-semantic-002",
+            semantic_pipeline=FakeSemanticPipeline(),
         )
 
-        result = await service.ingest_question(QAQuestionRequest(id="qa-003", question="查询协议版本"))
+        result = await service.ingest_question(QAQuestionRequest(id="qa-semantic-fail", question="查询链路状态历史变化"))
 
         assert result.generation_status == "generation_failed"
-        assert result.reason == "generation_retry_exhausted"
-        assert result.last_reason == "unbalanced_brackets"
-        assert llm_client.generate_from_prompt.await_count == 3
-        testing_client.submit.assert_not_called()
-        testing_client.submit_generation_failure.assert_awaited_once()
-        report = testing_client.submit_generation_failure.await_args.kwargs["payload"]
-        assert report.generation_status == "generation_failed"
-        assert report.failure_reason == "generation_retry_exhausted"
-        assert report.last_generation_failure_reason == "unbalanced_brackets"
-        assert report.generation_retry_count == 2
-        assert report.generation_failure_reasons == [
-            "unbalanced_brackets",
-            "unbalanced_brackets",
-            "unbalanced_brackets",
-        ]
-        assert report.last_llm_raw_output == "MATCH (p:Protocol RETURN p.version"
-        assert report.parsed_cypher == "MATCH (p:Protocol RETURN p.version"
-        assert report.gate_passed is False
+        assert result.reason == "semantic_parse_rejected"
+        service.testing_client.submit.assert_not_called()
+        service.testing_client.submit_generation_failure.assert_awaited_once()
+        report = service.testing_client.submit_generation_failure.await_args.kwargs["payload"]
+        assert report.failure_reason == "semantic_parse_rejected"
+        assert report.parsed_cypher is None
 
     @pytest.mark.asyncio
-    async def test_knowledge_context_failure_is_service_failure_without_llm_retry(self):
-        knowledge_context_provider = AsyncMock()
-        knowledge_context_provider.fetch_context.side_effect = RuntimeError("knowledge docs unavailable")
-        llm_client = AsyncMock()
+    async def test_semantic_contract_misalignment_is_service_failure_without_knowledge_fetch(self):
         testing_client = AsyncMock()
+        semantic_pipeline = AsyncMock()
 
         service = CypherGeneratorAgentService(
-            knowledge_context_provider=knowledge_context_provider,
-            llm_client=llm_client,
             testing_client=testing_client,
-            generation_run_id_factory=lambda: "cypher-run-004",
+            generation_run_id_factory=lambda: "cypher-run-semantic-contract",
+            semantic_pipeline=semantic_pipeline,
+            semantic_alignment_report_factory=lambda: SemanticAlignmentReport(
+                accepted=False,
+                diagnostics=[
+                    SemanticAlignmentDiagnostic(
+                        code="knowledge_schema_mismatch",
+                        message="knowledge schema references unknown TuGraph property Link.type",
+                        source="knowledge/schema.json",
+                    )
+                ],
+                checked_sources=["semantic_layer.yaml", "schema.json", "knowledge/schema.json"],
+            ),
         )
 
-        result = await service.ingest_question(QAQuestionRequest(id="qa-004", question="查询协议版本"))
+        result = await service.ingest_question(QAQuestionRequest(id="qa-contract", question="查询链路类型"))
+
+        assert result.generation_status == "service_failed"
+        assert result.reason == "semantic_contract_unaligned"
+        semantic_pipeline.parse_with_fallback.assert_not_awaited()
+        testing_client.submit_generation_failure.assert_awaited_once()
+        report = testing_client.submit_generation_failure.await_args.kwargs["payload"]
+        assert report.failure_reason == "semantic_contract_unaligned"
+        assert "knowledge schema references unknown TuGraph property Link.type" in report.input_prompt_snapshot
+
+    @pytest.mark.asyncio
+    async def test_alignment_context_unavailable_blocks_before_semantic_parse(self):
+        testing_client = AsyncMock()
+        semantic_pipeline = AsyncMock()
+
+        service = CypherGeneratorAgentService(
+            testing_client=testing_client,
+            generation_run_id_factory=lambda: "cypher-run-knowledge-unavailable",
+            semantic_pipeline=semantic_pipeline,
+            semantic_alignment_report_factory=lambda: SemanticAlignmentReport(
+                accepted=False,
+                diagnostics=[
+                    SemanticAlignmentDiagnostic(
+                        code="knowledge_context_unavailable",
+                        message="knowledge context directory does not exist",
+                        source="knowledge",
+                    )
+                ],
+                checked_sources=["semantic_layer.yaml", "schema.json"],
+            ),
+        )
+
+        result = await service.ingest_question(QAQuestionRequest(id="qa-missing-knowledge", question="查询协议版本"))
 
         assert result.generation_status == "service_failed"
         assert result.reason == "knowledge_context_unavailable"
-        llm_client.generate_from_prompt.assert_not_called()
-        testing_client.submit.assert_not_called()
-        testing_client.submit_generation_failure.assert_awaited_once()
-        report = testing_client.submit_generation_failure.await_args.kwargs["payload"]
-        assert report.generation_status == "service_failed"
-        assert report.failure_reason == "knowledge_context_unavailable"
-        assert report.input_prompt_snapshot == ""
-        assert report.last_llm_raw_output == ""
-        assert report.generation_retry_count == 0
-        assert report.generation_failure_reasons == []
+        semantic_pipeline.parse_with_fallback.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_unreadable_llm_response_is_service_failure_without_generation_retry(self):
-        knowledge_context_provider = AsyncMock()
-        knowledge_context_provider.fetch_context.return_value = "Schema: (:Protocol)"
-        llm_client = AsyncMock()
-        llm_client.generate_from_prompt.return_value = {"model_name": "test-model"}
+    async def test_alignment_invalid_knowledge_schema_blocks_generation(self):
         testing_client = AsyncMock()
+        semantic_pipeline = AsyncMock()
 
         service = CypherGeneratorAgentService(
-            knowledge_context_provider=knowledge_context_provider,
-            llm_client=llm_client,
             testing_client=testing_client,
-            generation_run_id_factory=lambda: "cypher-run-005",
+            generation_run_id_factory=lambda: "cypher-run-invalid-knowledge-schema",
+            semantic_pipeline=semantic_pipeline,
+            semantic_alignment_report_factory=lambda: SemanticAlignmentReport(
+                accepted=False,
+                diagnostics=[
+                    SemanticAlignmentDiagnostic(
+                        code="knowledge_schema_invalid",
+                        message="knowledge/schema.json is not valid JSON",
+                        source="knowledge/schema.json",
+                    )
+                ],
+                checked_sources=["semantic_layer.yaml", "schema.json", "knowledge/schema.json"],
+            ),
         )
 
-        result = await service.ingest_question(QAQuestionRequest(id="qa-005", question="查询协议版本"))
+        result = await service.ingest_question(QAQuestionRequest(id="qa-invalid-schema", question="查询链路类型"))
 
         assert result.generation_status == "service_failed"
-        assert result.reason == "model_invocation_failed"
-        assert llm_client.generate_from_prompt.await_count == 1
-        testing_client.submit.assert_not_called()
-        testing_client.submit_generation_failure.assert_awaited_once()
-        report = testing_client.submit_generation_failure.await_args.kwargs["payload"]
-        assert report.generation_status == "service_failed"
-        assert report.failure_reason == "model_invocation_failed"
-        assert "【用户问题】" in report.input_prompt_snapshot
-        assert report.last_llm_raw_output == ""
-        assert report.generation_retry_count == 0
-        assert report.generation_failure_reasons == []
+        assert result.reason == "semantic_contract_unaligned"
+        semantic_pipeline.parse_with_fallback.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_testing_agent_delivery_failure_persists_submission_in_outbox(self, tmp_path):
-        knowledge_context_provider = AsyncMock()
-        knowledge_context_provider.fetch_context.return_value = "Schema: (:Protocol)"
-        llm_client = AsyncMock()
-        llm_client.generate_from_prompt.return_value = {
-            "raw_output": "MATCH (p:Protocol) RETURN p.version",
-            "model_name": "test-model",
-        }
+        class FakeSemanticPipeline:
+            async def parse_with_fallback(self, *, id, question, generation_run_id):
+                return type(
+                    "SemanticResult",
+                    (),
+                    {
+                        "generated_cypher": "MATCH (p:Protocol) RETURN p.version",
+                        "preflight": PreflightCheck(accepted=True),
+                        "to_dict": lambda self: {
+                            "generated_cypher": "MATCH (p:Protocol) RETURN p.version",
+                            "preflight": {"accepted": True},
+                        },
+                    },
+                )()
+
         testing_client = AsyncMock()
         testing_client.submit.side_effect = RuntimeError("testing-agent offline")
         outbox = DeliveryOutbox(tmp_path / "outbox")
 
         service = CypherGeneratorAgentService(
-            knowledge_context_provider=knowledge_context_provider,
-            llm_client=llm_client,
             testing_client=testing_client,
             generation_run_id_factory=lambda: "cypher-run-outbox-001",
             delivery_outbox=outbox,
+            semantic_pipeline=FakeSemanticPipeline(),
         )
 
         result = await service.ingest_question(QAQuestionRequest(id="qa-001", question="查询协议版本"))
@@ -317,8 +398,6 @@ class TestCypherGeneratorAgentWorkflow:
             },
         )
         service = CypherGeneratorAgentService(
-            knowledge_context_provider=AsyncMock(),
-            llm_client=AsyncMock(),
             testing_client=testing_client,
             delivery_outbox=outbox,
         )
@@ -346,8 +425,6 @@ class TestCypherGeneratorAgentWorkflow:
             },
         )
         service = CypherGeneratorAgentService(
-            knowledge_context_provider=AsyncMock(),
-            llm_client=AsyncMock(),
             testing_client=testing_client,
             delivery_outbox=outbox,
         )
@@ -431,13 +508,21 @@ class TestCypherGeneratorAgentWorkflow:
 
     @pytest.mark.asyncio
     async def test_non_retryable_testing_agent_4xx_goes_to_dead_letter(self, tmp_path):
-        knowledge_context_provider = AsyncMock()
-        knowledge_context_provider.fetch_context.return_value = "Schema: (:Protocol)"
-        llm_client = AsyncMock()
-        llm_client.generate_from_prompt.return_value = {
-            "raw_output": "MATCH (p:Protocol) RETURN p.version",
-            "model_name": "test-model",
-        }
+        class FakeSemanticPipeline:
+            async def parse_with_fallback(self, *, id, question, generation_run_id):
+                return type(
+                    "SemanticResult",
+                    (),
+                    {
+                        "generated_cypher": "MATCH (p:Protocol) RETURN p.version",
+                        "preflight": PreflightCheck(accepted=True),
+                        "to_dict": lambda self: {
+                            "generated_cypher": "MATCH (p:Protocol) RETURN p.version",
+                            "preflight": {"accepted": True},
+                        },
+                    },
+                )()
+
         request = httpx.Request("POST", "http://testing-agent/api/v1/evaluations/submissions")
         response = httpx.Response(422, request=request)
         testing_client = AsyncMock()
@@ -449,11 +534,10 @@ class TestCypherGeneratorAgentWorkflow:
         outbox = DeliveryOutbox(tmp_path / "outbox")
 
         service = CypherGeneratorAgentService(
-            knowledge_context_provider=knowledge_context_provider,
-            llm_client=llm_client,
             testing_client=testing_client,
             generation_run_id_factory=lambda: "cypher-run-outbox-003",
             delivery_outbox=outbox,
+            semantic_pipeline=FakeSemanticPipeline(),
         )
 
         result = await service.ingest_question(QAQuestionRequest(id="qa-001", question="查询协议版本"))

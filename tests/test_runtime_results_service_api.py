@@ -61,6 +61,19 @@ def test_runtime_results_task_detail_page_is_separate_from_main_table(monkeypatc
     assert "task-table-body" not in response.text
 
 
+def test_runtime_results_detail_script_uses_chinese_cypher_generator_comparison_labels():
+    script = (Path(__file__).resolve().parents[1] / "console" / "runtime_console" / "ui" / "detail.js").read_text(encoding="utf-8")
+
+    assert "生成对照" in script
+    assert "自然语言问题" in script
+    assert "标准 Cypher" in script
+    assert "生成 Cypher" in script
+    assert "生成链路摘要" in script
+    assert "发给大模型的完整提示词" not in script
+    assert "大模型原始输出" not in script
+    assert "parser 后 Cypher" not in script
+
+
 def test_runtime_results_service_status_endpoint_returns_five_service_cards(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(tmp_path / "testing"))
     monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_REPAIR_DATA_DIR", str(tmp_path / "repair"))
@@ -954,6 +967,116 @@ def test_runtime_results_task_detail_reads_generation_failure_reports(monkeypatc
     assert generator["failure_reasons"] == ["unbalanced_brackets", "unbalanced_brackets"]
     assert payload["stages"]["query_generation"]["status"] == "failed"
     assert payload["pipeline"]["testing_agent"]["grammar"]["score"] == 0
+
+
+def test_runtime_results_generator_section_prioritizes_cypher_comparison_and_chinese_chain_summary(monkeypatch, tmp_path: Path):
+    testing_dir = tmp_path / "testing"
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(testing_dir))
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_REPAIR_DATA_DIR", str(tmp_path / "repair"))
+    semantic_snapshot = {
+        "generation_mode": "deterministic_renderer",
+        "intent": {
+            "primary_intent": "record_retrieval_query",
+            "secondary_intent": "attribute_query",
+            "source": "rule",
+            "decision": "accept",
+            "confidence": 0.91,
+        },
+        "validation": {"accepted": True, "diagnostics": []},
+        "selected_knowledge": {
+            "source": "rag",
+            "selection_trace": ["selected schema fragment", "selected few-shot fragment"],
+        },
+        "preflight": {"accepted": False, "reason": "semantic_query_mismatch"},
+    }
+    _write_json(
+        testing_dir / "goldens" / "qa_semantic_detail.json",
+        {
+            "id": "qa_semantic_detail",
+            "difficulty": "L5",
+            "cypher": "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel) RETURN t.name",
+            "answer": [],
+        },
+    )
+    _write_json(
+        testing_dir / "submissions" / "qa_semantic_detail.json",
+        {
+            "id": "qa_semantic_detail",
+            "attempt_no": 1,
+            "question": "查询所有服务使用的隧道名称。",
+            "generation_run_id": "run-semantic-detail",
+            "generated_cypher": "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel) RETURN t.id",
+            "input_prompt_snapshot": json.dumps(semantic_snapshot, ensure_ascii=False),
+            "last_llm_raw_output": "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel) RETURN t.id",
+            "generation_status": "generated",
+            "state": "issue_ticket_created",
+            "evaluation": {"verdict": "fail"},
+            "updated_at": "2026-05-08T02:52:00+00:00",
+        },
+    )
+
+    from console.runtime_console.app.main import create_app
+
+    client = TestClient(create_app())
+
+    response = client.get("/api/v1/tasks/qa_semantic_detail")
+
+    assert response.status_code == 200
+    generator = response.json()["pipeline"]["cypher_generator_agent"]
+    assert generator["question"] == "查询所有服务使用的隧道名称。"
+    assert generator["golden_cypher"].startswith("MATCH (s:Service)")
+    assert generator["generated_cypher"].endswith("RETURN t.id")
+    assert generator["chain_summary"]["generation_mode"]["label_zh"] == "确定性渲染器"
+    assert generator["chain_summary"]["generation_status"]["label_zh"] == "生成成功"
+    assert generator["chain_summary"]["intent"]["decision_label_zh"] == "已接受"
+    assert generator["chain_summary"]["preflight"]["label_zh"] == "预检未通过"
+    assert generator["chain_summary"]["preflight"]["reason_label_zh"] == "生成结果与语义查询规格不一致"
+    assert generator["chain_summary"]["knowledge"]["source_label_zh"] == "RAG 知识选择"
+
+
+def test_runtime_results_generator_section_exposes_cga_llm_prompts(monkeypatch, tmp_path: Path):
+    testing_dir = tmp_path / "testing"
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(testing_dir))
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_REPAIR_DATA_DIR", str(tmp_path / "repair"))
+    semantic_snapshot = {
+        "generation_mode": "controlled_llm_fallback",
+        "llm_prompts": {
+            "intent_recognition_fallback": "【任务说明】\n第三阶段 LLM 意图识别 prompt",
+            "cypher_generation_fallback": "【任务说明】\nRenderer 失败后的 Cypher 兜底 prompt",
+        },
+    }
+    _write_json(
+        testing_dir / "goldens" / "qa_llm_prompts.json",
+        {"id": "qa_llm_prompts", "difficulty": "L3", "cypher": "MATCH (s:Service) RETURN s.name"},
+    )
+    _write_json(
+        testing_dir / "submissions" / "qa_llm_prompts.json",
+        {
+            "id": "qa_llm_prompts",
+            "attempt_no": 1,
+            "question": "查询所有服务",
+            "generation_run_id": "run-llm-prompts",
+            "generated_cypher": "MATCH (s:Service) RETURN s.name",
+            "input_prompt_snapshot": json.dumps(semantic_snapshot, ensure_ascii=False),
+            "last_llm_raw_output": "MATCH (s:Service) RETURN s.name",
+            "generation_status": "generated",
+            "state": "evaluated",
+        },
+    )
+
+    from console.runtime_console.app.main import create_app
+
+    client = TestClient(create_app())
+    response = client.get("/api/v1/tasks/qa_llm_prompts")
+
+    assert response.status_code == 200
+    prompts = response.json()["pipeline"]["cypher_generator_agent"]["llm_prompts"]
+    assert prompts["intent_recognition_fallback"]["title_zh"] == "意图识别 LLM 兜底提示词"
+    assert prompts["intent_recognition_fallback"]["triggered"] is True
+    assert prompts["intent_recognition_fallback"]["prompt"].endswith("第三阶段 LLM 意图识别 prompt")
+    assert "intent_fallback_cypher_generation" not in prompts
+    assert prompts["cypher_generation_fallback"]["triggered"] is True
+    assert prompts["cypher_generation_fallback"]["prompt"].endswith("Renderer 失败后的 Cypher 兜底 prompt")
 
 
 def test_runtime_results_prefers_latest_generated_submission_over_stale_generation_failure(monkeypatch, tmp_path: Path):

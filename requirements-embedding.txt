@@ -1,0 +1,3 @@
+# Optional dependencies for real embedding model experiments.
+sentence-transformers==5.4.1
+socksio==1.0.0

@@ -8,7 +8,7 @@ echo "🧪 测试 Text2Cypher 闭环系统..."
 
 BASE_URL="http://localhost"
 SERVICES=(
-    "8000:query-generator-service"
+    "8000:cypher-generator-agent"
     "8001:runtime-results-service"
     "8002:repair-service"
     "8003:testing-service"
@@ -34,7 +34,7 @@ echo ""
 echo "📝 开始集成测试..."
 
 # 测试1: 提交问题到查询语句生成服务
-echo "📝 测试1: 提交问题到查询语句生成服务"
+echo "📝 测试1: 提交问题到 cypher-generator-agent"
 curl -X POST "$BASE_URL:8000/api/v1/qa/questions" \
     -H "Content-Type: application/json" \
     -d '{
@@ -90,12 +90,12 @@ echo ""
 echo "🎉 测试完成！"
 echo ""
 echo "📊 服务访问地址："
-echo "  查询语句生成服务: http://localhost:8000"
+echo "  cypher-generator-agent: http://localhost:8000"
 echo "  运行结果中心: http://localhost:8001"
 echo "  修复服务: http://localhost:8002"
 echo "  测试服务: http://localhost:8003"
 echo ""
 echo "🌐 Web控制台："
-echo "  查询生成控制台: http://localhost:8000/console"
+echo "  cypher-generator-agent 控制台: http://localhost:8000/console"
 echo "  运行结果中心: http://localhost:8001/console"
 echo "  修复服务控制台: http://localhost:8002/console"

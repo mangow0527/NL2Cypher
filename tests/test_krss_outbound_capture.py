@@ -15,11 +15,6 @@ from services.repair_agent.app.clients import KnowledgeAgentRepairApplyClient
 from contracts.models import KnowledgeRepairSuggestionRequest
 
 
-class _PromptPackageRequest(BaseModel):
-    id: str
-    question: str
-
-
 KnowledgeType = Literal["cypher_syntax", "few_shot", "system_prompt", "business_knowledge"]
 
 
@@ -41,13 +36,7 @@ class _ApplyRepairResponse(BaseModel):
     changes: list[_RepairChange]
 
 
-app = FastAPI(title="Test Mock Knowledge Ops", version="1.0.0")
-
-
-@app.post("/api/knowledge/rag/prompt-package")
-async def prompt_package(req: _PromptPackageRequest) -> str:
-    del req
-    return "请只返回 JSON，且必须包含 cypher 字段。"
+app = FastAPI(title="Test Mock Knowledge Agent", version="1.0.0")
 
 
 @app.post("/api/knowledge/repairs/apply", response_model=_ApplyRepairResponse)
@@ -94,7 +83,7 @@ async def test_knowledge_agent_apply_capture_writes_payload_file(tmp_path, monke
 
     capture_dir = tmp_path / "captures"
     client = KnowledgeAgentRepairApplyClient(
-        apply_url="http://ko/api/knowledge/repairs/apply",
+        apply_url="http://knowledge-agent/api/knowledge/repairs/apply",
         timeout_seconds=3.0,
         capture_dir=str(capture_dir),
         sleep_fn=AsyncMock(),

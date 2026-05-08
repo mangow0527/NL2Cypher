@@ -18,6 +18,9 @@ class DeploymentDefaultsTest(unittest.TestCase):
         self.assertIn("CYPHER_GENERATOR_AGENT_LLM_BASE_URL=", env_example)
         self.assertNotIn("QUERY_GENERATOR_LLM_", env_example)
         self.assertNotIn("QUERY_GENERATOR_TESTING_SERVICE_URL", env_example)
+        self.assertNotIn("REPAIR_SERVICE_CGS_BASE_URL", env_example)
+        self.assertNotIn("REPAIR_SERVICE_TUGRAPH_URL", env_example)
+        self.assertNotIn("REPAIR_SERVICE_MOCK_TUGRAPH", env_example)
 
     def test_cypher_generator_agent_defaults_keep_local_service_routing(self):
         with patch.dict(
@@ -33,7 +36,10 @@ class DeploymentDefaultsTest(unittest.TestCase):
             settings = CypherGeneratorAgentSettings(_env_file=None)
 
         self.assertEqual(settings.testing_agent_url, "http://127.0.0.1:8003")
-        self.assertEqual(settings.knowledge_docs_dir, "/root/multi-agent/knowledge-agent/backend/knowledge")
+        self.assertEqual(settings.knowledge_docs_dir, "knowledge")
+        self.assertEqual(settings.knowledge_context_source, "file")
+        self.assertEqual(settings.rag_service_url, "http://127.0.0.1:8004")
+        self.assertEqual(settings.rag_retrieval_limit, 12)
         self.assertEqual(settings.service_public_base_url, "http://127.0.0.1:8000")
         self.assertNotIn("knowledge_agent_url", CypherGeneratorAgentSettings.model_fields)
         self.assertIn("knowledge_docs_dir", CypherGeneratorAgentSettings.model_fields)
@@ -56,12 +62,18 @@ class DeploymentDefaultsTest(unittest.TestCase):
 
     def test_cypher_generator_agent_service_failure_reason_uses_local_context_name(self):
         self.assertIn("knowledge_context_unavailable", ServiceFailureReason.__args__)
+        self.assertIn("semantic_contract_unaligned", ServiceFailureReason.__args__)
         self.assertNotIn("knowledge_agent_context_unavailable", ServiceFailureReason.__args__)
 
         GenerationRunResult(
             generation_run_id="run-1",
             generation_status="service_failed",
             reason="knowledge_context_unavailable",
+        )
+        GenerationRunResult(
+            generation_run_id="run-semantic-contract",
+            generation_status="service_failed",
+            reason="semantic_contract_unaligned",
         )
 
         with self.assertRaises(ValueError):

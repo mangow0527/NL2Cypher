@@ -106,7 +106,7 @@ for p in "${health_ports[@]}"; do
   echo
 done
 echo
-echo "cgs generator:"
+echo "cypher-generator-agent status:"
 curl -s --max-time 2 http://127.0.0.1:8000/api/v1/generator/status || true
 echo
 

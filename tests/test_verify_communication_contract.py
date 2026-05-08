@@ -70,6 +70,25 @@ def test_generation_failure_report_contract_is_compatible_between_services():
     assert GeneratorFailureReport(**payload).model_dump() == ReceiverFailureReport(**payload).model_dump()
 
 
+def test_semantic_generation_failure_report_contract_is_compatible_between_services():
+    payload = {
+        "id": "qa-001",
+        "question": "查询网络设备及其端口",
+        "generation_run_id": "run-001",
+        "input_prompt_snapshot": "{\"semantic_query\": {}}",
+        "last_llm_raw_output": "MATCH (x:Secret) RETURN x",
+        "generation_status": "generation_failed",
+        "failure_reason": "unauthorized_schema_reference",
+        "last_generation_failure_reason": None,
+        "generation_retry_count": 0,
+        "generation_failure_reasons": ["unauthorized_schema_reference"],
+        "parsed_cypher": "MATCH (x:Secret) RETURN x",
+        "gate_passed": False,
+    }
+
+    assert GeneratorFailureReport(**payload).model_dump() == ReceiverFailureReport(**payload).model_dump()
+
+
 def test_service_failure_report_contract_is_compatible_between_services():
     payload = {
         "id": "qa-001",
@@ -79,6 +98,24 @@ def test_service_failure_report_contract_is_compatible_between_services():
         "last_llm_raw_output": "",
         "generation_status": "service_failed",
         "failure_reason": "knowledge_context_unavailable",
+        "generation_retry_count": 0,
+        "generation_failure_reasons": [],
+        "parsed_cypher": None,
+        "gate_passed": False,
+    }
+
+    assert GeneratorFailureReport(**payload).model_dump() == ReceiverFailureReport(**payload).model_dump()
+
+
+def test_semantic_contract_service_failure_report_contract_is_compatible_between_services():
+    payload = {
+        "id": "qa-001",
+        "question": "查询网络设备及其端口",
+        "generation_run_id": "run-001",
+        "input_prompt_snapshot": "{\"accepted\": false}",
+        "last_llm_raw_output": "",
+        "generation_status": "service_failed",
+        "failure_reason": "semantic_contract_unaligned",
         "generation_retry_count": 0,
         "generation_failure_reasons": [],
         "parsed_cypher": None,
