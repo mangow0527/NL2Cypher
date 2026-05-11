@@ -69,9 +69,9 @@ def test_submission_route_returns_minimal_receipt(monkeypatch):
             "id": "qa-001",
             "question": "查询设备",
             "generation_run_id": "run-001",
+            "generation_status": "generated",
             "generated_cypher": "MATCH (n) RETURN n",
             "input_prompt_snapshot": "prompt",
-            "last_llm_raw_output": "MATCH (n) RETURN n",
         },
     )
 

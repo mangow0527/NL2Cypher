@@ -51,15 +51,17 @@ def main() -> None:
     parser.add_argument("--consensus-top-k-values", default="3")
     parser.add_argument("--consensus-min-count-values", default="2")
     parser.add_argument(
+        "--intent-resource-dir",
         "--config-dir",
+        dest="intent_resource_dir",
         type=Path,
-        default=Path("services/cypher_generator_agent/config"),
-        help="Directory containing intent taxonomy, rules, and embedding corpus.",
+        default=Path("services/cypher_generator_agent/resources/intent"),
+        help="Directory containing intent taxonomy, rules, embedding corpus, and eval set.",
     )
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON summary.")
     args = parser.parse_args()
 
-    labeled_dataset = _resolve_labeled_dataset(args.dataset, args.dataset_preset, args.config_dir)
+    labeled_dataset = _resolve_labeled_dataset(args.dataset, args.dataset_preset, args.intent_resource_dir)
     if labeled_dataset is None and args.pressure_dataset is None:
         raise SystemExit("provide --dataset, use --dataset-preset eval/corpus, or provide --pressure-dataset")
 
@@ -75,7 +77,7 @@ def main() -> None:
 
     recognizer = _build_recognizer(
         args.mode,
-        args.config_dir,
+        args.intent_resource_dir,
         embedder_provider=args.embedder_provider,
         embedding_model=args.embedding_model,
         embedding_index=args.embedding_index,
@@ -131,7 +133,7 @@ def main() -> None:
 
 def _build_recognizer(
     mode: str,
-    config_dir: Path,
+    intent_resource_dir: Path,
     *,
     embedder_provider: str = "local_hash",
     embedding_model: str | None = None,
@@ -142,10 +144,10 @@ def _build_recognizer(
     consensus_top_k: int = 3,
     consensus_min_count: int = 2,
 ):
-    taxonomy_path = config_dir / "intent_taxonomy.yaml"
+    taxonomy_path = intent_resource_dir / "taxonomy.yaml"
     rule_recognizer = RuleBasedIntentRecognizer.from_files(
         taxonomy_path=taxonomy_path,
-        rules_path=config_dir / "intent_rules.yaml",
+        rules_path=intent_resource_dir / "rules.yaml",
     )
     if mode == "rule":
         return rule_recognizer
@@ -168,7 +170,7 @@ def _build_recognizer(
     else:
         embedding_recognizer = EmbeddingIntentRecognizer.from_files(
             taxonomy_path=taxonomy_path,
-            corpus_path=config_dir / "intent_embedding_corpus.jsonl",
+            corpus_path=intent_resource_dir / "embedding_corpus.jsonl",
             embedder=embedder,
             accept_threshold=accept_threshold,
             margin_threshold=margin_threshold,
@@ -183,13 +185,13 @@ def _build_recognizer(
     )
 
 
-def _resolve_labeled_dataset(dataset: Path | None, dataset_preset: str, config_dir: Path) -> Path | None:
+def _resolve_labeled_dataset(dataset: Path | None, dataset_preset: str, intent_resource_dir: Path) -> Path | None:
     if dataset is not None:
         return dataset
     if dataset_preset == "eval":
-        return config_dir / "intent_eval_set.jsonl"
+        return intent_resource_dir / "eval_set.jsonl"
     if dataset_preset == "corpus":
-        return config_dir / "intent_embedding_corpus.jsonl"
+        return intent_resource_dir / "embedding_corpus.jsonl"
     return None
 
 
@@ -201,7 +203,7 @@ def _run_threshold_sweep(args, labeled_items, pressure_items) -> list[dict[str, 
                 for consensus_min_count in _parse_int_values(args.consensus_min_count_values):
                     recognizer = _build_recognizer(
                         args.mode,
-                        args.config_dir,
+                        args.intent_resource_dir,
                         embedder_provider=args.embedder_provider,
                         embedding_model=args.embedding_model,
                         embedding_index=args.embedding_index,

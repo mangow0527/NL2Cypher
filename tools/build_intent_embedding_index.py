@@ -24,13 +24,13 @@ def main() -> None:
     parser.add_argument(
         "--corpus",
         type=Path,
-        default=Path("services/cypher_generator_agent/config/intent_embedding_corpus.jsonl"),
+        default=Path("services/cypher_generator_agent/resources/intent/embedding_corpus.jsonl"),
         help="Intent embedding corpus JSONL.",
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("services/cypher_generator_agent/config/intent_embedding_index.jsonl"),
+        default=Path("services/cypher_generator_agent/resources/intent/embedding_index.jsonl"),
         help="Output JSONL index path.",
     )
     parser.add_argument("--embedder-provider", default="local_hash", help="local_hash or sentence_transformer.")

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from services.testing_agent.app.models import GeneratedCypherSubmissionRequest, GenerationRunFailureReport
+from services.testing_agent.app.models import CgaGenerationNonSuccessReport, GeneratedCypherSubmissionRequest
 from services.testing_agent.app.repository import TestingRepository
 
 
@@ -16,7 +16,6 @@ def test_repository_assigns_attempt_numbers_for_new_submissions(tmp_path):
             generation_run_id="run-001",
             generated_cypher="MATCH (n) RETURN n",
             input_prompt_snapshot="prompt-1",
-            last_llm_raw_output="MATCH (n) RETURN n",
         ),
         state="received_submission_only",
     )
@@ -27,7 +26,6 @@ def test_repository_assigns_attempt_numbers_for_new_submissions(tmp_path):
             generation_run_id="run-002",
             generated_cypher="MATCH (n) RETURN n LIMIT 1",
             input_prompt_snapshot="prompt-2",
-            last_llm_raw_output="MATCH (n) RETURN n LIMIT 1",
         ),
         state="received_submission_only",
     )
@@ -46,7 +44,6 @@ def test_repository_treats_identical_submission_as_idempotent(tmp_path):
         generation_run_id="run-001",
         generated_cypher="MATCH (n) RETURN n",
         input_prompt_snapshot="prompt-1",
-        last_llm_raw_output="MATCH (n) RETURN n",
     )
 
     first = repository.save_submission(request, state="received_submission_only")
@@ -68,7 +65,6 @@ def test_repository_rejects_conflicting_submission_for_same_generation_run_id(tm
             generation_run_id="run-001",
             generated_cypher="MATCH (n) RETURN n",
             input_prompt_snapshot="prompt-1",
-            last_llm_raw_output="MATCH (n) RETURN n",
         ),
         state="received_submission_only",
     )
@@ -81,7 +77,6 @@ def test_repository_rejects_conflicting_submission_for_same_generation_run_id(tm
                 generation_run_id="run-001",
                 generated_cypher="MATCH (n) RETURN n LIMIT 1",
                 input_prompt_snapshot="prompt-2",
-                last_llm_raw_output="MATCH (n) RETURN n LIMIT 1",
             ),
             state="received_submission_only",
         )
@@ -89,16 +84,13 @@ def test_repository_rejects_conflicting_submission_for_same_generation_run_id(tm
 
 def test_repository_persists_service_failed_report_without_assigning_attempt_number(tmp_path):
     repository = TestingRepository(str(tmp_path / "testing"))
-    report = GenerationRunFailureReport(
+    report = CgaGenerationNonSuccessReport(
         id="qa-001",
         question="查询设备",
         generation_run_id="run-service-failed",
         input_prompt_snapshot="prompt-before-model-call",
-        last_llm_raw_output="",
         generation_status="service_failed",
         failure_reason="model_invocation_failed",
-        generation_retry_count=0,
-        generation_failure_reasons=[],
         parsed_cypher=None,
         gate_passed=False,
     )

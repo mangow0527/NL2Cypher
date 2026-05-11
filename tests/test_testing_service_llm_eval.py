@@ -6,9 +6,9 @@ import pytest
 from services.testing_agent.app.clients import InvalidSemanticReviewResponse, OpenAIChatCompletionLLMClient
 from services.testing_agent.app.grammar import GrammarChecker
 from services.testing_agent.app.models import (
+    CgaGenerationNonSuccessReport,
     ExecutionResult,
     GeneratedCypherSubmissionRequest,
-    GenerationRunFailureReport,
     QAGoldenRequest,
     RepairAgentResponse,
 )
@@ -116,7 +116,6 @@ async def test_semantic_review_can_flip_strict_failure_to_pass(tmp_path):
             generation_run_id="run-001",
             generated_cypher="MATCH (n) RETURN count(n) AS total",
             input_prompt_snapshot="prompt-1",
-            last_llm_raw_output="MATCH (n) RETURN count(n) AS total",
         )
     )
 
@@ -147,7 +146,6 @@ async def test_semantic_review_failure_keeps_verdict_fail(tmp_path):
             generation_run_id="run-001",
             generated_cypher="MATCH (n) RETURN count(n) AS total",
             input_prompt_snapshot="prompt-1",
-            last_llm_raw_output="MATCH (n) RETURN count(n) AS total",
         )
     )
 
@@ -196,7 +194,6 @@ async def test_semantic_review_failure_is_service_error_when_llm_step_is_require
             generation_run_id="run-001",
             generated_cypher="MATCH (n) RETURN count(n) AS total",
             input_prompt_snapshot="prompt-1",
-            last_llm_raw_output="MATCH (n) RETURN count(n) AS total",
         )
     )
 
@@ -237,7 +234,6 @@ async def test_resume_pending_evaluations_replays_ready_backlog_after_restart(tm
             generation_run_id="run-restart",
             generated_cypher="MATCH (n) RETURN count(n) AS total",
             input_prompt_snapshot="prompt-restart",
-            last_llm_raw_output="MATCH (n) RETURN count(n) AS total",
         ),
         state="ready_to_evaluate",
     )
@@ -271,7 +267,6 @@ async def test_get_evaluation_status_requeues_single_ready_submission(tmp_path):
             generation_run_id="run-lazy",
             generated_cypher="MATCH (n) RETURN count(n) AS total",
             input_prompt_snapshot="prompt-lazy",
-            last_llm_raw_output="MATCH (n) RETURN count(n) AS total",
         ),
         state="ready_to_evaluate",
     )
@@ -311,7 +306,6 @@ async def test_tugraph_connection_failure_becomes_terminal_state(tmp_path):
             generation_run_id="run-tugraph-down",
             generated_cypher="MATCH (n) RETURN count(n) AS total",
             input_prompt_snapshot="prompt-tugraph-down",
-            last_llm_raw_output="MATCH (n) RETURN count(n) AS total",
         )
     )
 
@@ -360,17 +354,13 @@ async def test_generation_failed_report_creates_failed_attempt_without_external_
             difficulty="L3",
         )
     )
-    report = GenerationRunFailureReport(
+    report = CgaGenerationNonSuccessReport(
         id="qa-generation-failed",
         question="查询协议版本",
         generation_run_id="run-generation-failed",
         input_prompt_snapshot="prompt-with-extra-constraints",
-        last_llm_raw_output="```cypher\nMATCH (p:Protocol) RETURN p.version\n```",
         generation_status="generation_failed",
-        failure_reason="generation_retry_exhausted",
-        last_generation_failure_reason="wrapped_in_markdown",
-        generation_retry_count=2,
-        generation_failure_reasons=["wrapped_in_markdown", "wrapped_in_markdown", "wrapped_in_markdown"],
+        failure_reason="wrapped_in_markdown",
         parsed_cypher="MATCH (p:Protocol) RETURN p.version",
         gate_passed=False,
     )
@@ -395,15 +385,8 @@ async def test_generation_failed_report_creates_failed_attempt_without_external_
     assert semantic_reviewer.calls == 0
     ticket = repository.get_issue_ticket("ticket-qa-generation-failed-attempt-1")
     assert ticket is not None
-    assert ticket.generation_evidence.last_llm_raw_output == report.last_llm_raw_output
     assert ticket.generation_evidence.generation_status == "generation_failed"
-    assert ticket.generation_evidence.failure_reason == "generation_retry_exhausted"
-    assert ticket.generation_evidence.generation_retry_count == 2
-    assert ticket.generation_evidence.generation_failure_reasons == [
-        "wrapped_in_markdown",
-        "wrapped_in_markdown",
-        "wrapped_in_markdown",
-    ]
+    assert ticket.generation_evidence.failure_reason == "wrapped_in_markdown"
 
 
 @pytest.mark.asyncio

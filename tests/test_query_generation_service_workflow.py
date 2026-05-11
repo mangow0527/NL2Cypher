@@ -11,8 +11,8 @@ from services.cypher_generator_agent.app.outbox import DeliveryOutbox
 from services.cypher_generator_agent.app.config import Settings
 from services.cypher_generator_agent.app.knowledge_selection import RagKnowledgeSelector
 from services.cypher_generator_agent.app.models import (
+    CgaGenerationNonSuccessReport,
     GeneratedCypherSubmissionRequest,
-    GenerationRunFailureReport,
     GenerationRunResult,
     PreflightCheck,
     QAQuestionRequest,
@@ -213,7 +213,7 @@ class TestCypherGeneratorAgentWorkflow:
         submission = testing_client.submit.await_args.kwargs["payload"]
         assert submission.generated_cypher == "MATCH (s:Service) RETURN s.name AS service_name"
         assert '"semantic_query"' in submission.input_prompt_snapshot
-        assert submission.last_llm_raw_output == "MATCH (s:Service) RETURN s.name AS service_name"
+        assert submission.generation_status == "generated"
 
     @pytest.mark.asyncio
     async def test_semantic_pipeline_rejection_submits_generation_failure(self):
@@ -247,11 +247,11 @@ class TestCypherGeneratorAgentWorkflow:
         result = await service.ingest_question(QAQuestionRequest(id="qa-semantic-fail", question="查询链路状态历史变化"))
 
         assert result.generation_status == "generation_failed"
-        assert result.reason == "semantic_parse_rejected"
+        assert result.reason == "semantic_match_rejected"
         service.testing_client.submit.assert_not_called()
         service.testing_client.submit_generation_failure.assert_awaited_once()
         report = service.testing_client.submit_generation_failure.await_args.kwargs["payload"]
-        assert report.failure_reason == "semantic_parse_rejected"
+        assert report.failure_reason == "semantic_match_rejected"
         assert report.parsed_cypher is None
 
     @pytest.mark.asyncio
@@ -390,11 +390,9 @@ class TestCypherGeneratorAgentWorkflow:
                 "id": "qa-001",
                 "question": "查询协议版本",
                 "generation_run_id": "cypher-run-outbox-002",
+                "generation_status": "generated",
                 "generated_cypher": "MATCH (p:Protocol) RETURN p.version",
                 "input_prompt_snapshot": "prompt",
-                "last_llm_raw_output": "MATCH (p:Protocol) RETURN p.version",
-                "generation_retry_count": 0,
-                "generation_failure_reasons": [],
             },
         )
         service = CypherGeneratorAgentService(
@@ -417,11 +415,9 @@ class TestCypherGeneratorAgentWorkflow:
                 "id": "qa-current",
                 "question": "查询协议版本",
                 "generation_run_id": "cypher-run-current",
+                "generation_status": "generated",
                 "generated_cypher": "MATCH (p:Protocol) RETURN p.version",
                 "input_prompt_snapshot": "prompt",
-                "last_llm_raw_output": "MATCH (p:Protocol) RETURN p.version",
-                "generation_retry_count": 0,
-                "generation_failure_reasons": [],
             },
         )
         service = CypherGeneratorAgentService(
@@ -433,9 +429,7 @@ class TestCypherGeneratorAgentWorkflow:
 
         assert outbox.list_pending() == []
         payload = testing_client.submit.await_args.kwargs["payload"]
-        assert payload.last_llm_raw_output == "MATCH (p:Protocol) RETURN p.version"
-        assert payload.generation_retry_count == 0
-        assert payload.generation_failure_reasons == []
+        assert payload.generation_status == "generated"
 
     def test_outbox_retrying_records_are_not_selected_for_parallel_retry(self, tmp_path):
         outbox = DeliveryOutbox(tmp_path / "outbox")
@@ -445,11 +439,9 @@ class TestCypherGeneratorAgentWorkflow:
                 "id": "qa-001",
                 "question": "查询协议版本",
                 "generation_run_id": "cypher-run-outbox-004",
+                "generation_status": "generated",
                 "generated_cypher": "MATCH (p:Protocol) RETURN p.version",
                 "input_prompt_snapshot": "prompt",
-                "last_llm_raw_output": "MATCH (p:Protocol) RETURN p.version",
-                "generation_retry_count": 0,
-                "generation_failure_reasons": [],
             },
         )
 
@@ -467,11 +459,9 @@ class TestCypherGeneratorAgentWorkflow:
                 "id": "qa-001",
                 "question": "查询协议版本",
                 "generation_run_id": "cypher-run-outbox-005",
+                "generation_status": "generated",
                 "generated_cypher": "MATCH (p:Protocol) RETURN p.version",
                 "input_prompt_snapshot": "prompt",
-                "last_llm_raw_output": "MATCH (p:Protocol) RETURN p.version",
-                "generation_retry_count": 0,
-                "generation_failure_reasons": [],
             },
         )
         outbox.mark_retrying(record["delivery_id"])
@@ -493,11 +483,9 @@ class TestCypherGeneratorAgentWorkflow:
                 "id": "qa-001",
                 "question": "查询协议版本",
                 "generation_run_id": "cypher-run-outbox-006",
+                "generation_status": "generated",
                 "generated_cypher": "MATCH (p:Protocol) RETURN p.version",
                 "input_prompt_snapshot": "prompt",
-                "last_llm_raw_output": "MATCH (p:Protocol) RETURN p.version",
-                "generation_retry_count": 0,
-                "generation_failure_reasons": [],
             },
         )
 
@@ -624,39 +612,30 @@ def test_submission_payload_matches_testing_agent_contract():
         id="qa-001",
         question="查询协议版本",
         generation_run_id="cypher-run-001",
+        generation_status="generated",
         generated_cypher="MATCH (p:Protocol) RETURN p.version",
         input_prompt_snapshot="prompt",
-        last_llm_raw_output="MATCH (p:Protocol) RETURN p.version",
     )
 
     assert payload.model_dump() == {
         "id": "qa-001",
         "question": "查询协议版本",
         "generation_run_id": "cypher-run-001",
+        "generation_status": "generated",
         "generated_cypher": "MATCH (p:Protocol) RETURN p.version",
         "input_prompt_snapshot": "prompt",
-        "last_llm_raw_output": "MATCH (p:Protocol) RETURN p.version",
-        "generation_retry_count": 0,
-        "generation_failure_reasons": [],
     }
 
 
-def test_generation_failure_report_matches_testing_agent_contract():
-    payload = GenerationRunFailureReport(
+def test_non_success_report_matches_testing_agent_generation_failed_contract():
+    payload = CgaGenerationNonSuccessReport(
         id="qa-001",
         question="查询协议版本",
         generation_run_id="cypher-run-001",
         generation_status="generation_failed",
-        failure_reason="generation_retry_exhausted",
-        last_generation_failure_reason="wrapped_in_markdown",
+        failure_reason="unbalanced_brackets",
         input_prompt_snapshot="prompt",
-        last_llm_raw_output="```cypher\nMATCH (p:Protocol) RETURN p.version\n```",
-        generation_retry_count=2,
-        generation_failure_reasons=[
-            "wrapped_in_markdown",
-            "wrapped_in_markdown",
-            "wrapped_in_markdown",
-        ],
+        parsed_cypher="MATCH (p:Protocol RETURN p.version",
         gate_passed=False,
     )
 
@@ -665,16 +644,39 @@ def test_generation_failure_report_matches_testing_agent_contract():
         "question": "查询协议版本",
         "generation_run_id": "cypher-run-001",
         "generation_status": "generation_failed",
-        "failure_reason": "generation_retry_exhausted",
-        "last_generation_failure_reason": "wrapped_in_markdown",
         "input_prompt_snapshot": "prompt",
-        "last_llm_raw_output": "```cypher\nMATCH (p:Protocol) RETURN p.version\n```",
-        "generation_retry_count": 2,
-        "generation_failure_reasons": [
-            "wrapped_in_markdown",
-            "wrapped_in_markdown",
-            "wrapped_in_markdown",
-        ],
+        "failure_reason": "unbalanced_brackets",
+        "clarification": None,
+        "parsed_cypher": "MATCH (p:Protocol RETURN p.version",
+        "gate_passed": False,
+    }
+
+
+def test_non_success_report_matches_testing_agent_clarification_contract():
+    clarification = {
+        "source_stage": "semantic_view_matching",
+        "reason_code": "ambiguous_path_semantic",
+        "question_zh": "你说的对应网元是指源网元还是目的网元？",
+        "expected_answer_type": "single_choice",
+        "options": [{"id": "source", "label": "源网元"}],
+    }
+    payload = CgaGenerationNonSuccessReport(
+        id="qa-002",
+        question="查询服务 A 对应的网元",
+        generation_run_id="cypher-run-002",
+        generation_status="clarification_required",
+        input_prompt_snapshot="prompt",
+        clarification=clarification,
+    )
+
+    assert payload.model_dump() == {
+        "id": "qa-002",
+        "question": "查询服务 A 对应的网元",
+        "generation_run_id": "cypher-run-002",
+        "generation_status": "clarification_required",
+        "input_prompt_snapshot": "prompt",
+        "failure_reason": None,
+        "clarification": clarification,
         "parsed_cypher": None,
         "gate_passed": False,
     }
@@ -711,7 +713,7 @@ def test_generation_run_result_enforces_status_reason_invariants():
         GenerationRunResult(
             generation_run_id="run-invalid",
             generation_status="generation_failed",
-            reason="generation_retry_exhausted",
+            reason="not_a_generation_reason",
         )
 
 

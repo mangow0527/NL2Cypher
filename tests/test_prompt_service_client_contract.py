@@ -7,7 +7,7 @@ import pytest
 
 import services.cypher_generator_agent.app.clients as clients_module
 from services.cypher_generator_agent.app.clients import TestingAgentClient
-from services.cypher_generator_agent.app.models import GeneratedCypherSubmissionRequest, GenerationRunFailureReport
+from services.cypher_generator_agent.app.models import CgaGenerationNonSuccessReport, GeneratedCypherSubmissionRequest
 
 
 class _FakeResponse:
@@ -86,7 +86,6 @@ async def test_testing_agent_client_requires_accepted_ack_payload(monkeypatch):
         generation_run_id="cypher-run-001",
         generated_cypher="MATCH (p:Protocol) RETURN p.version",
         input_prompt_snapshot="prompt",
-        last_llm_raw_output="MATCH (p:Protocol) RETURN p.version",
     )
 
     result = await client.submit(payload)
@@ -111,7 +110,6 @@ async def test_testing_agent_client_rejects_non_accepted_ack_payload(monkeypatch
         generation_run_id="cypher-run-001",
         generated_cypher="MATCH (p:Protocol) RETURN p.version",
         input_prompt_snapshot="prompt",
-        last_llm_raw_output="MATCH (p:Protocol) RETURN p.version",
     )
 
     with pytest.raises(ValueError, match="testing-agent submission ack contract violation"):
@@ -125,21 +123,14 @@ async def test_testing_agent_client_submits_generation_failure_report(monkeypatc
     monkeypatch.setattr(httpx, "AsyncClient", _JsonAckAsyncClient)
 
     client = TestingAgentClient(base_url="http://127.0.0.1:8003", timeout_seconds=3.0)
-    payload = GenerationRunFailureReport(
+    payload = CgaGenerationNonSuccessReport(
         id="qa-001",
         question="查询协议版本",
         generation_run_id="cypher-run-001",
         generation_status="generation_failed",
-        failure_reason="generation_retry_exhausted",
-        last_generation_failure_reason="wrapped_in_markdown",
+        failure_reason="wrapped_in_markdown",
         input_prompt_snapshot="prompt",
-        last_llm_raw_output="```cypher\nMATCH (p:Protocol) RETURN p.version\n```",
-        generation_retry_count=2,
-        generation_failure_reasons=[
-            "wrapped_in_markdown",
-            "wrapped_in_markdown",
-            "wrapped_in_markdown",
-        ],
+        parsed_cypher="MATCH (p:Protocol) RETURN p.version",
         gate_passed=False,
     )
 

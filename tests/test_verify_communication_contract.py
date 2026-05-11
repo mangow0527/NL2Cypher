@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from contracts.models import GenerationEvidence
-from services.cypher_generator_agent.app.models import GenerationRunFailureReport as GeneratorFailureReport
-from services.testing_agent.app.models import GeneratedCypherSubmissionRequest, GenerationRunFailureReport as ReceiverFailureReport
+from services.cypher_generator_agent.app.models import CgaGenerationNonSuccessReport as GeneratorNonSuccessReport
+from services.testing_agent.app.models import (
+    CgaGenerationNonSuccessReport as ReceiverNonSuccessReport,
+    GeneratedCypherSubmissionRequest,
+)
 from verify_communication import ServiceCommunicationTester
 
 
@@ -21,11 +24,9 @@ def test_build_submission_payload_uses_submission_contract():
         "id": "comm-test-001",
         "question": "查询网络设备及其端口",
         "generation_run_id": "run-001",
+        "generation_status": "generated",
         "generated_cypher": "MATCH (ne:NetworkElement) RETURN ne.name AS device_name LIMIT 10",
         "input_prompt_snapshot": "请只返回 cypher 字段",
-        "last_llm_raw_output": "MATCH (ne:NetworkElement) RETURN ne.name AS device_name LIMIT 10",
-        "generation_retry_count": 0,
-        "generation_failure_reasons": [],
     }
 
 
@@ -36,57 +37,46 @@ def test_generated_submission_request_matches_current_fields():
         generation_run_id="run-001",
         generated_cypher="MATCH (n:NetworkElement) RETURN n.name AS name LIMIT 10",
         input_prompt_snapshot="请只返回 cypher 字段",
-        last_llm_raw_output="MATCH (n:NetworkElement) RETURN n.name AS name LIMIT 10",
     )
 
     assert payload.model_dump().keys() == {
         "id",
         "question",
         "generation_run_id",
+        "generation_status",
         "generated_cypher",
         "input_prompt_snapshot",
-        "last_llm_raw_output",
-        "generation_retry_count",
-        "generation_failure_reasons",
     }
 
 
-def test_generation_failure_report_contract_is_compatible_between_services():
+def test_generation_failed_non_success_report_contract_is_compatible_between_services():
     payload = {
         "id": "qa-001",
         "question": "查询网络设备及其端口",
         "generation_run_id": "run-001",
-        "input_prompt_snapshot": "prompt",
-        "last_llm_raw_output": "MATCH (n RETURN n",
         "generation_status": "generation_failed",
-        "failure_reason": "generation_retry_exhausted",
-        "last_generation_failure_reason": "unbalanced_brackets",
-        "generation_retry_count": 2,
-        "generation_failure_reasons": ["unbalanced_brackets", "unbalanced_brackets", "unbalanced_brackets"],
+        "input_prompt_snapshot": "prompt",
+        "failure_reason": "unbalanced_brackets",
         "parsed_cypher": "MATCH (n RETURN n",
         "gate_passed": False,
     }
 
-    assert GeneratorFailureReport(**payload).model_dump() == ReceiverFailureReport(**payload).model_dump()
+    assert GeneratorNonSuccessReport(**payload).model_dump() == ReceiverNonSuccessReport(**payload).model_dump()
 
 
-def test_semantic_generation_failure_report_contract_is_compatible_between_services():
+def test_semantic_generation_failed_report_contract_is_compatible_between_services():
     payload = {
         "id": "qa-001",
         "question": "查询网络设备及其端口",
         "generation_run_id": "run-001",
-        "input_prompt_snapshot": "{\"semantic_query\": {}}",
-        "last_llm_raw_output": "MATCH (x:Secret) RETURN x",
         "generation_status": "generation_failed",
+        "input_prompt_snapshot": "{\"semantic_view_matching\": {}}",
         "failure_reason": "unauthorized_schema_reference",
-        "last_generation_failure_reason": None,
-        "generation_retry_count": 0,
-        "generation_failure_reasons": ["unauthorized_schema_reference"],
         "parsed_cypher": "MATCH (x:Secret) RETURN x",
         "gate_passed": False,
     }
 
-    assert GeneratorFailureReport(**payload).model_dump() == ReceiverFailureReport(**payload).model_dump()
+    assert GeneratorNonSuccessReport(**payload).model_dump() == ReceiverNonSuccessReport(**payload).model_dump()
 
 
 def test_service_failure_report_contract_is_compatible_between_services():
@@ -94,17 +84,14 @@ def test_service_failure_report_contract_is_compatible_between_services():
         "id": "qa-001",
         "question": "查询网络设备及其端口",
         "generation_run_id": "run-001",
-        "input_prompt_snapshot": "",
-        "last_llm_raw_output": "",
         "generation_status": "service_failed",
+        "input_prompt_snapshot": "",
         "failure_reason": "knowledge_context_unavailable",
-        "generation_retry_count": 0,
-        "generation_failure_reasons": [],
         "parsed_cypher": None,
         "gate_passed": False,
     }
 
-    assert GeneratorFailureReport(**payload).model_dump() == ReceiverFailureReport(**payload).model_dump()
+    assert GeneratorNonSuccessReport(**payload).model_dump() == ReceiverNonSuccessReport(**payload).model_dump()
 
 
 def test_semantic_contract_service_failure_report_contract_is_compatible_between_services():
@@ -112,17 +99,35 @@ def test_semantic_contract_service_failure_report_contract_is_compatible_between
         "id": "qa-001",
         "question": "查询网络设备及其端口",
         "generation_run_id": "run-001",
-        "input_prompt_snapshot": "{\"accepted\": false}",
-        "last_llm_raw_output": "",
         "generation_status": "service_failed",
+        "input_prompt_snapshot": "{\"accepted\": false}",
         "failure_reason": "semantic_contract_unaligned",
-        "generation_retry_count": 0,
-        "generation_failure_reasons": [],
         "parsed_cypher": None,
         "gate_passed": False,
     }
 
-    assert GeneratorFailureReport(**payload).model_dump() == ReceiverFailureReport(**payload).model_dump()
+    assert GeneratorNonSuccessReport(**payload).model_dump() == ReceiverNonSuccessReport(**payload).model_dump()
+
+
+def test_clarification_report_contract_is_compatible_between_services():
+    payload = {
+        "id": "qa-001",
+        "question": "查询网络设备对应网元",
+        "generation_run_id": "run-001",
+        "generation_status": "clarification_required",
+        "input_prompt_snapshot": "{\"clarification\": {}}",
+        "clarification": {
+            "source_stage": "semantic_view_matching",
+            "reason_code": "ambiguous_path_semantic",
+            "question_zh": "你说的对应网元是指源网元还是目的网元？",
+            "expected_answer_type": "single_choice",
+            "options": [{"id": "source", "label": "源网元"}],
+        },
+        "parsed_cypher": None,
+        "gate_passed": False,
+    }
+
+    assert GeneratorNonSuccessReport(**payload).model_dump() == ReceiverNonSuccessReport(**payload).model_dump()
 
 
 def test_generation_evidence_is_current_issue_ticket_snapshot():
@@ -137,8 +142,5 @@ def test_generation_evidence_is_current_issue_ticket_snapshot():
         "attempt_no": 2,
         "input_prompt_snapshot": "请只返回 cypher 字段",
         "generation_status": "generated",
-        "last_llm_raw_output": "",
-        "generation_retry_count": 0,
-        "generation_failure_reasons": [],
         "failure_reason": None,
     }

@@ -68,6 +68,8 @@ def test_runtime_results_detail_script_uses_chinese_cypher_generator_comparison_
     assert "自然语言问题" in script
     assert "标准 Cypher" in script
     assert "生成 Cypher" in script
+    assert "意图识别 LLM 原始返回" in script
+    assert "Cypher 生成 LLM 原始返回" in script
     assert "生成链路摘要" in script
     assert "发给大模型的完整提示词" not in script
     assert "大模型原始输出" not in script
@@ -593,10 +595,8 @@ def test_runtime_results_task_detail_reads_current_testing_and_repair_artifacts(
     assert generator["question"] == "查询长度最长的5条光纤"
     assert generator["difficulty"] == "L4"
     assert generator["prompt_markdown"] == "Fiber prompt snapshot"
-    assert generator["last_llm_raw_output"] == ""
-    assert generator["parsed_cypher"].startswith("MATCH (f:Fiber)")
+    assert generator["generated_cypher"].startswith("MATCH (f:Fiber)")
     assert generator["gate_passed"] is True
-    assert generator["retry_count"] == 0
     testing = payload["pipeline"]["testing_agent"]
     assert testing["golden_cypher"].startswith("MATCH (n:Fiber)")
     assert testing["golden_answer"] == []
@@ -840,6 +840,162 @@ def test_runtime_results_marks_knowledge_agent_fields_as_not_repairable(monkeypa
     }
 
 
+def test_runtime_results_separates_repair_review_and_cancelled_redispatch(monkeypatch, tmp_path: Path):
+    testing_dir = tmp_path / "testing"
+    repair_dir = tmp_path / "repair"
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(testing_dir))
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_REPAIR_DATA_DIR", str(repair_dir))
+    _write_json(testing_dir / "goldens" / "qa_review_waiting.json", {"id": "qa_review_waiting", "difficulty": "L5"})
+    _write_json(
+        testing_dir / "submissions" / "qa_review_waiting.json",
+        {
+            "id": "qa_review_waiting",
+            "attempt_no": 3,
+            "question": "查询所有服务使用的隧道及其目的网元",
+            "generation_run_id": "run-review-waiting",
+            "generated_cypher": "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel) RETURN t",
+            "input_prompt_snapshot": "generator prompt",
+            "generation_status": "generated",
+            "state": "issue_ticket_created",
+            "issue_ticket_id": "ticket-qa_review_waiting-attempt-3",
+            "repair_response": {
+                "status": "applied",
+                "analysis_id": "analysis-ticket-qa_review_waiting-attempt-3",
+                "knowledge_repair_request": {
+                    "id": "qa_review_waiting",
+                    "suggestion": "补充 TUNNEL_DST 业务知识。",
+                    "knowledge_types": ["business_knowledge"],
+                },
+                "knowledge_agent_response": {
+                    "status": "ok",
+                    "redispatch": {
+                        "trace_id": "qa_review_waiting",
+                        "qa_id": "qa_review_waiting",
+                        "status": "skipped",
+                        "dispatch": {
+                            "status": "skipped",
+                            "reason": "knowledge_agent_no_longer_redispatches_qa",
+                        },
+                    },
+                },
+                "applied": True,
+            },
+            "received_at": "2026-04-26T09:00:30+00:00",
+            "updated_at": "2026-04-26T09:03:00+00:00",
+        },
+    )
+    _write_json(
+        testing_dir / "issue_tickets" / "ticket-qa_review_waiting-attempt-3.json",
+        {
+            "ticket_id": "ticket-qa_review_waiting-attempt-3",
+            "id": "qa_review_waiting",
+            "difficulty": "L5",
+            "question": "查询所有服务使用的隧道及其目的网元",
+            "expected": {"cypher": "MATCH (s:Service) RETURN s", "answer": []},
+            "actual": {"generated_cypher": "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel) RETURN t", "execution": None},
+            "evaluation": {
+                "verdict": "fail",
+                "primary_metrics": {
+                    "grammar": {"score": 1, "parser_error": None, "message": None},
+                    "execution_accuracy": {
+                        "score": 0,
+                        "reason": "not_equivalent",
+                        "strict_check": {
+                            "status": "fail",
+                            "message": "结果未严格一致。",
+                            "order_sensitive": False,
+                            "expected_row_count": 0,
+                            "actual_row_count": 20,
+                            "evidence": None,
+                        },
+                        "semantic_check": {"status": "fail", "message": "语义不等价。", "raw_output": None},
+                    },
+                },
+                "secondary_signals": {},
+            },
+            "generation_evidence": {
+                "generation_run_id": "run-review-waiting",
+                "attempt_no": 3,
+                "input_prompt_snapshot": "generator prompt",
+            },
+        },
+    )
+    _write_json(
+        repair_dir / "analyses" / "analysis-ticket-qa_review_waiting-attempt-3.json",
+        {
+            "analysis_id": "analysis-ticket-qa_review_waiting-attempt-3",
+            "ticket_id": "ticket-qa_review_waiting-attempt-3",
+            "id": "qa_review_waiting",
+            "status": "applied",
+            "prompt_snapshot": "repair prompt",
+            "system_prompt_snapshot": "repair system",
+            "user_prompt_snapshot": "repair user",
+            "raw_output": "{\"repairable\": true}",
+            "knowledge_repair_request": {
+                "id": "qa_review_waiting",
+                "suggestion": "补充 TUNNEL_DST 业务知识。",
+                "knowledge_types": ["business_knowledge"],
+            },
+            "knowledge_agent_response": {
+                "status": "ok",
+                "redispatch": {
+                    "trace_id": "qa_review_waiting",
+                    "qa_id": "qa_review_waiting",
+                    "status": "skipped",
+                    "attempt": 0,
+                    "max_attempts": 0,
+                    "dispatch": {
+                        "status": "skipped",
+                        "reason": "knowledge_agent_no_longer_redispatches_qa",
+                    },
+                },
+                "agent_run": {
+                    "run_id": "run-knowledge-agent",
+                    "qa_id": "qa_review_waiting",
+                    "status": "completed",
+                    "validation": {
+                        "prompt_package_built": True,
+                        "before_after_improved": True,
+                        "remaining_risks": ["Legacy apply path is gated by human approval before knowledge persistence."],
+                    },
+                    "decision": {
+                        "action": "human_review",
+                        "reason": "Converted legacy repair apply request into an agent review run.",
+                    },
+                },
+            },
+            "confidence": 0.9,
+            "rationale": "缺少 TUNNEL_DST 知识。",
+            "primary_knowledge_type": "business_knowledge",
+            "secondary_knowledge_types": [],
+            "diagnosis_context_summary": {},
+            "applied": True,
+            "created_at": "2026-04-26T09:04:00+00:00",
+            "applied_at": "2026-04-26T09:04:01+00:00",
+        },
+    )
+
+    from console.runtime_console.app.main import create_app
+
+    client = TestClient(create_app())
+
+    response = client.get("/api/v1/tasks/qa_review_waiting")
+
+    assert response.status_code == 200
+    payload = response.json()
+    repair = payload["pipeline"]["repair_agent"]
+    assert repair["status"] == "applied"
+    assert repair["repair_state"]["value"] == "waiting_human_review"
+    assert repair["repair_state"]["label_zh"] == "等待人工审核"
+    assert repair["knowledge_apply_state"]["value"] == "waiting_human_review"
+    assert repair["knowledge_apply_state"]["label_zh"] == "等待人工审核后落库"
+    assert repair["redispatch_state"]["value"] == "cancelled"
+    assert repair["redispatch_state"]["label_zh"] == "QA 自动重派发已取消"
+    assert repair["redispatch_state"]["reason"] == "knowledge_agent_no_longer_redispatches_qa"
+    assert payload["stages"]["knowledge_repair"]["status"] == "passed"
+    assert payload["stages"]["knowledge_apply"]["status"] == "running"
+
+
 def test_runtime_results_do_not_require_cypher_generator_agent_local_storage(monkeypatch, tmp_path: Path):
     testing_dir = tmp_path / "testing"
     monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(testing_dir))
@@ -898,11 +1054,8 @@ def test_runtime_results_task_detail_reads_generation_failure_reports(monkeypatc
             "generation_run_id": "run-generation-failed",
             "generated_cypher": "MATCH (p:Protocol RETURN p.version",
             "input_prompt_snapshot": "prompt before failure",
-            "last_llm_raw_output": "MATCH (p:Protocol RETURN p.version",
             "generation_status": "generation_failed",
-            "failure_reason": "generation_retry_exhausted",
-            "generation_retry_count": 2,
-            "generation_failure_reasons": ["unbalanced_brackets", "unbalanced_brackets"],
+            "failure_reason": "unbalanced_brackets",
             "state": "issue_ticket_created",
             "evaluation": {
                 "verdict": "fail",
@@ -938,12 +1091,8 @@ def test_runtime_results_task_detail_reads_generation_failure_reports(monkeypatc
             "question": "查询协议版本",
             "generation_run_id": "run-generation-failed",
             "input_prompt_snapshot": "prompt before failure",
-            "last_llm_raw_output": "MATCH (p:Protocol RETURN p.version",
             "generation_status": "generation_failed",
-            "failure_reason": "generation_retry_exhausted",
-            "last_generation_failure_reason": "unbalanced_brackets",
-            "generation_retry_count": 2,
-            "generation_failure_reasons": ["unbalanced_brackets", "unbalanced_brackets"],
+            "failure_reason": "unbalanced_brackets",
             "parsed_cypher": "MATCH (p:Protocol RETURN p.version",
             "gate_passed": False,
             "received_at": "2026-04-26T09:00:31+00:00",
@@ -961,10 +1110,7 @@ def test_runtime_results_task_detail_reads_generation_failure_reports(monkeypatc
     generator = payload["pipeline"]["cypher_generator_agent"]
     assert generator["generation_status"] == "generation_failed"
     assert generator["gate_passed"] is False
-    assert generator["failure_reason"] == "generation_retry_exhausted"
-    assert generator["last_failure_reason"] == "unbalanced_brackets"
-    assert generator["retry_count"] == 2
-    assert generator["failure_reasons"] == ["unbalanced_brackets", "unbalanced_brackets"]
+    assert generator["failure_reason"] == "unbalanced_brackets"
     assert payload["stages"]["query_generation"]["status"] == "failed"
     assert payload["pipeline"]["testing_agent"]["grammar"]["score"] == 0
 
@@ -987,7 +1133,7 @@ def test_runtime_results_generator_section_prioritizes_cypher_comparison_and_chi
             "source": "rag",
             "selection_trace": ["selected schema fragment", "selected few-shot fragment"],
         },
-        "preflight": {"accepted": False, "reason": "semantic_query_mismatch"},
+        "preflight": {"accepted": False, "reason": "logical_plan_mismatch"},
     }
     _write_json(
         testing_dir / "goldens" / "qa_semantic_detail.json",
@@ -1007,7 +1153,6 @@ def test_runtime_results_generator_section_prioritizes_cypher_comparison_and_chi
             "generation_run_id": "run-semantic-detail",
             "generated_cypher": "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel) RETURN t.id",
             "input_prompt_snapshot": json.dumps(semantic_snapshot, ensure_ascii=False),
-            "last_llm_raw_output": "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel) RETURN t.id",
             "generation_status": "generated",
             "state": "issue_ticket_created",
             "evaluation": {"verdict": "fail"},
@@ -1030,7 +1175,7 @@ def test_runtime_results_generator_section_prioritizes_cypher_comparison_and_chi
     assert generator["chain_summary"]["generation_status"]["label_zh"] == "生成成功"
     assert generator["chain_summary"]["intent"]["decision_label_zh"] == "已接受"
     assert generator["chain_summary"]["preflight"]["label_zh"] == "预检未通过"
-    assert generator["chain_summary"]["preflight"]["reason_label_zh"] == "生成结果与语义查询规格不一致"
+    assert generator["chain_summary"]["preflight"]["reason_label_zh"] == "生成结果与逻辑查询计划不一致"
     assert generator["chain_summary"]["knowledge"]["source_label_zh"] == "RAG 知识选择"
 
 
@@ -1043,6 +1188,10 @@ def test_runtime_results_generator_section_exposes_cga_llm_prompts(monkeypatch, 
         "llm_prompts": {
             "intent_recognition_fallback": "【任务说明】\n第三阶段 LLM 意图识别 prompt",
             "cypher_generation_fallback": "【任务说明】\nRenderer 失败后的 Cypher 兜底 prompt",
+        },
+        "llm_responses": {
+            "intent_recognition_fallback": "{\"decision\":\"accept\"}",
+            "cypher_generation_fallback": "MATCH (s:Service) RETURN s.name",
         },
     }
     _write_json(
@@ -1058,7 +1207,6 @@ def test_runtime_results_generator_section_exposes_cga_llm_prompts(monkeypatch, 
             "generation_run_id": "run-llm-prompts",
             "generated_cypher": "MATCH (s:Service) RETURN s.name",
             "input_prompt_snapshot": json.dumps(semantic_snapshot, ensure_ascii=False),
-            "last_llm_raw_output": "MATCH (s:Service) RETURN s.name",
             "generation_status": "generated",
             "state": "evaluated",
         },
@@ -1074,9 +1222,13 @@ def test_runtime_results_generator_section_exposes_cga_llm_prompts(monkeypatch, 
     assert prompts["intent_recognition_fallback"]["title_zh"] == "意图识别 LLM 兜底提示词"
     assert prompts["intent_recognition_fallback"]["triggered"] is True
     assert prompts["intent_recognition_fallback"]["prompt"].endswith("第三阶段 LLM 意图识别 prompt")
+    assert prompts["intent_recognition_fallback"]["raw_output"] == "{\"decision\":\"accept\"}"
+    assert prompts["intent_recognition_fallback"]["raw_output_title_zh"] == "意图识别 LLM 原始返回"
     assert "intent_fallback_cypher_generation" not in prompts
     assert prompts["cypher_generation_fallback"]["triggered"] is True
     assert prompts["cypher_generation_fallback"]["prompt"].endswith("Renderer 失败后的 Cypher 兜底 prompt")
+    assert prompts["cypher_generation_fallback"]["raw_output"] == "MATCH (s:Service) RETURN s.name"
+    assert prompts["cypher_generation_fallback"]["raw_output_title_zh"] == "Cypher 生成 LLM 原始返回"
 
 
 def test_runtime_results_prefers_latest_generated_submission_over_stale_generation_failure(monkeypatch, tmp_path: Path):
@@ -1093,7 +1245,6 @@ def test_runtime_results_prefers_latest_generated_submission_over_stale_generati
             "generation_status": "service_failed",
             "failure_reason": "knowledge_context_unavailable",
             "input_prompt_snapshot": "",
-            "last_llm_raw_output": "",
             "parsed_cypher": "MATCH (old) RETURN old",
             "received_at": "2026-04-26T09:00:00+00:00",
         },
@@ -1121,7 +1272,6 @@ def test_runtime_results_prefers_latest_generated_submission_over_stale_generati
             "generation_run_id": "new-run",
             "generated_cypher": "MATCH (fresh) RETURN fresh",
             "input_prompt_snapshot": "fresh prompt",
-            "last_llm_raw_output": "fresh raw output",
             "generation_status": "generated",
             "state": "issue_ticket_created",
             "evaluation": {"verdict": "fail"},
@@ -1137,7 +1287,6 @@ def test_runtime_results_prefers_latest_generated_submission_over_stale_generati
             "generation_run_id": "new-run",
             "generated_cypher": "MATCH (fresh) RETURN fresh",
             "input_prompt_snapshot": "fresh prompt",
-            "last_llm_raw_output": "fresh raw output",
             "generation_status": "generated",
             "state": "issue_ticket_created",
             "evaluation": {"verdict": "fail"},
@@ -1155,8 +1304,7 @@ def test_runtime_results_prefers_latest_generated_submission_over_stale_generati
     assert generator["generation_status"] == "generated"
     assert generator["generation_run_id"] == "new-run"
     assert generator["prompt_markdown"] == "fresh prompt"
-    assert generator["last_llm_raw_output"] == "fresh raw output"
-    assert generator["parsed_cypher"] == "MATCH (fresh) RETURN fresh"
+    assert generator["generated_cypher"] == "MATCH (fresh) RETURN fresh"
     assert generator["failure_reason"] is None
     assert payload["pipeline"]["testing_agent"]["improvement"] is None
 
@@ -1239,11 +1387,8 @@ def test_runtime_results_does_not_fallback_to_other_generation_failure_run(monke
             "generation_run_id": "missing-run",
             "generated_cypher": "MATCH (p:Protocol RETURN p.version",
             "input_prompt_snapshot": "submission prompt",
-            "last_llm_raw_output": "submission raw",
             "generation_status": "generation_failed",
-            "failure_reason": "generation_retry_exhausted",
-            "generation_retry_count": 1,
-            "generation_failure_reasons": ["unbalanced_brackets"],
+            "failure_reason": "unbalanced_brackets",
             "state": "issue_ticket_created",
             "updated_at": "2026-04-26T09:03:00+00:00",
         },
@@ -1255,14 +1400,10 @@ def test_runtime_results_does_not_fallback_to_other_generation_failure_run(monke
             "question": "另一个生成失败",
             "generation_run_id": "other-run",
             "generation_status": "generation_failed",
-            "failure_reason": "empty_model_output",
-            "last_generation_failure_reason": "empty_model_output",
+            "failure_reason": "empty_output",
             "input_prompt_snapshot": "other prompt",
-            "last_llm_raw_output": "other raw",
             "parsed_cypher": "MATCH (other) RETURN other",
             "gate_passed": False,
-            "generation_retry_count": 3,
-            "generation_failure_reasons": ["empty_model_output"],
             "received_at": "2026-04-26T09:00:00+00:00",
         },
     )
@@ -1277,12 +1418,8 @@ def test_runtime_results_does_not_fallback_to_other_generation_failure_run(monke
     generator = response.json()["pipeline"]["cypher_generator_agent"]
     assert generator["generation_run_id"] == "missing-run"
     assert generator["prompt_markdown"] == "submission prompt"
-    assert generator["last_llm_raw_output"] == "submission raw"
     assert generator["parsed_cypher"] == "MATCH (p:Protocol RETURN p.version"
-    assert generator["failure_reason"] == "generation_retry_exhausted"
-    assert generator["last_failure_reason"] is None
-    assert generator["retry_count"] == 1
-    assert generator["failure_reasons"] == ["unbalanced_brackets"]
+    assert generator["failure_reason"] == "unbalanced_brackets"
 
 
 def test_runtime_results_does_not_synthesize_improvement_when_not_persisted(monkeypatch, tmp_path: Path):

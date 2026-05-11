@@ -28,20 +28,15 @@ class ServiceCommunicationTester:
         generated_cypher: str,
         generation_run_id: str,
         input_prompt_snapshot: str,
-        last_llm_raw_output: str | None = None,
-        generation_retry_count: int = 0,
-        generation_failure_reasons: list[str] | None = None,
     ) -> Dict[str, Any]:
         """构造当前测试服务要求的 submission 契约。"""
         return {
             "id": task_id,
             "question": question_text,
             "generation_run_id": generation_run_id,
+            "generation_status": "generated",
             "generated_cypher": generated_cypher,
             "input_prompt_snapshot": input_prompt_snapshot,
-            "last_llm_raw_output": last_llm_raw_output if last_llm_raw_output is not None else generated_cypher,
-            "generation_retry_count": generation_retry_count,
-            "generation_failure_reasons": generation_failure_reasons or [],
         }
 
     async def test_service_health(self) -> Dict[str, bool]:

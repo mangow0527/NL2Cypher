@@ -5,9 +5,9 @@ import pytest
 
 from services.testing_agent.app.grammar import GrammarChecker
 from services.testing_agent.app.models import (
+    CgaGenerationNonSuccessReport,
     ExecutionResult,
     GeneratedCypherSubmissionRequest,
-    GenerationRunFailureReport,
     QAGoldenRequest,
     RepairAgentResponse,
 )
@@ -32,8 +32,10 @@ class StubGrammarExplainer:
 class StubSemanticReviewer:
     def __init__(self, payload: dict[str, str] | Exception) -> None:
         self.payload = payload
+        self.calls = 0
 
     async def review(self, **_: object) -> dict[str, str]:
+        self.calls += 1
         if isinstance(self.payload, Exception):
             raise self.payload
         return self.payload
@@ -101,6 +103,15 @@ async def wait_for_state(repository: TestingRepository, qa_id: str, expected_sta
     raise AssertionError(f"Timed out waiting for submission state {expected_state!r} for qa_id={qa_id}")
 
 
+async def wait_for_repair_response(repository: TestingRepository, qa_id: str) -> dict:
+    for _ in range(20):
+        latest = repository.get_submission(qa_id)
+        if latest is not None and latest.get("repair_response") is not None:
+            return latest
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"Timed out waiting for repair response for qa_id={qa_id}")
+
+
 @pytest.mark.asyncio
 async def test_failed_submission_includes_minimal_generation_evidence_in_issue_ticket(tmp_path):
     repository, service = make_service(
@@ -119,7 +130,6 @@ async def test_failed_submission_includes_minimal_generation_evidence_in_issue_t
             generation_run_id="run-001",
             generated_cypher="MATCHH (n) RETURN n",
             input_prompt_snapshot="prompt-1",
-            last_llm_raw_output="MATCHH (n) RETURN n",
         )
     )
 
@@ -131,13 +141,11 @@ async def test_failed_submission_includes_minimal_generation_evidence_in_issue_t
         "generation_run_id": "run-001",
         "attempt_no": 1,
         "input_prompt_snapshot": "prompt-1",
-        "last_llm_raw_output": "MATCHH (n) RETURN n",
         "generation_status": "generated",
         "failure_reason": None,
-        "generation_retry_count": 0,
-        "generation_failure_reasons": [],
     }
-    repair_response = RepairAgentResponse.model_validate(latest["repair_response"])
+    latest_with_repair = await wait_for_repair_response(repository, "qa-001")
+    repair_response = RepairAgentResponse.model_validate(latest_with_repair["repair_response"])
     assert repair_response.analysis_id == "analysis-ticket-qa-001-attempt-1"
     assert repair_response.knowledge_repair_request.knowledge_types == ["few_shot"]
 
@@ -158,7 +166,6 @@ async def test_duplicate_submission_reuses_existing_attempt_without_creating_new
         generation_run_id="run-001",
         generated_cypher="MATCH (n) RETURN n",
         input_prompt_snapshot="prompt-1",
-        last_llm_raw_output="MATCH (n) RETURN n",
     )
 
     first = await service.ingest_submission(request)
@@ -171,7 +178,7 @@ async def test_duplicate_submission_reuses_existing_attempt_without_creating_new
 
 
 @pytest.mark.asyncio
-async def test_repair_submission_failure_marks_state_after_receipt(tmp_path):
+async def test_repair_submission_failure_does_not_downgrade_issue_ticket_state(tmp_path):
     repository, service = make_service(
         tmp_path,
         parser_success=False,
@@ -189,13 +196,45 @@ async def test_repair_submission_failure_marks_state_after_receipt(tmp_path):
             generation_run_id="run-001",
             generated_cypher="MATCHH (n) RETURN n",
             input_prompt_snapshot="prompt-1",
-            last_llm_raw_output="MATCHH (n) RETURN n",
         )
     )
 
     assert receipt.accepted is True
-    latest = await wait_for_state(repository, "qa-fail", "repair_submission_failed")
-    assert latest["state"] == "repair_submission_failed"
+    latest = await wait_for_state(repository, "qa-fail", "issue_ticket_created")
+    assert latest["state"] == "issue_ticket_created"
+    assert latest["issue_ticket_id"] == "ticket-qa-fail-attempt-1"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_evaluation_for_same_attempt_runs_once(tmp_path):
+    repository, service = make_service(
+        tmp_path,
+        parser_success=True,
+        execution_result=ExecutionResult(success=True, rows=[{"id": "actual"}], row_count=1, error_message=None, elapsed_ms=1),
+        semantic_payload={"judgement": "pass", "reasoning": "语义等价"},
+    )
+    repository.save_golden(
+        QAGoldenRequest(id="qa-concurrent", cypher="MATCH (n) RETURN n", answer=[{"id": "gold"}], difficulty="L3")
+    )
+    request = GeneratedCypherSubmissionRequest(
+        id="qa-concurrent",
+        question="查询设备",
+        generation_run_id="run-001",
+        generated_cypher="MATCH (n) RETURN n",
+        input_prompt_snapshot="prompt-1",
+    )
+    saved = repository.save_submission(request, state="ready_to_evaluate")
+
+    await asyncio.gather(
+        service._evaluate_attempt("qa-concurrent", saved.attempt_no),
+        service._evaluate_attempt("qa-concurrent", saved.attempt_no),
+    )
+
+    latest = repository.get_submission("qa-concurrent")
+    assert latest is not None
+    assert latest["state"] == "passed"
+    assert latest["issue_ticket_id"] is None
+    assert service.semantic_reviewer.calls == 1
 
 
 @pytest.mark.asyncio
@@ -208,18 +247,14 @@ async def test_generation_failed_duplicate_reuses_existing_attempt_and_preserves
     repository.save_golden(
         QAGoldenRequest(id="qa-gen-dup", cypher="MATCH (n) RETURN n", answer=[{"id": "a"}], difficulty="L3")
     )
-    report = GenerationRunFailureReport(
+    report = CgaGenerationNonSuccessReport(
         id="qa-gen-dup",
         question="查询设备",
         generation_run_id="run-gen-failed",
         input_prompt_snapshot="prompt-1",
-        last_llm_raw_output="MATCHH (n) RETURN n",
         generation_status="generation_failed",
-        failure_reason="generation_retry_exhausted",
-        last_generation_failure_reason="no_cypher_found",
-        generation_retry_count=2,
-        generation_failure_reasons=["no_cypher_found", "no_cypher_found", "no_cypher_found"],
-        parsed_cypher=None,
+        failure_reason="no_cypher_found",
+        parsed_cypher="",
         gate_passed=False,
     )
 
@@ -230,11 +265,9 @@ async def test_generation_failed_duplicate_reuses_existing_attempt_and_preserves
     assert duplicate.accepted is True
     latest = await wait_for_state(repository, "qa-gen-dup", "issue_ticket_created")
     assert len(repository.list_submission_attempts("qa-gen-dup")) == 1
-    assert latest["last_llm_raw_output"] == "MATCHH (n) RETURN n"
     assert latest["generation_status"] == "generation_failed"
-    assert latest["failure_reason"] == "generation_retry_exhausted"
-    assert latest["generation_retry_count"] == 2
-    assert latest["generation_failure_reasons"] == ["no_cypher_found", "no_cypher_found", "no_cypher_found"]
+    assert latest["failure_reason"] == "no_cypher_found"
+    assert latest["generated_cypher"] == ""
 
 
 def test_testing_agent_models_do_not_export_legacy_submission_aliases():
@@ -247,16 +280,13 @@ def test_testing_agent_models_do_not_export_legacy_submission_aliases():
 @pytest.mark.asyncio
 async def test_service_failed_report_is_visible_in_evaluation_status(tmp_path):
     repository, service = make_service(tmp_path, parser_success=True)
-    report = GenerationRunFailureReport(
+    report = CgaGenerationNonSuccessReport(
         id="qa-service-failed",
         question="查询设备",
         generation_run_id="run-service-failed",
         input_prompt_snapshot="",
-        last_llm_raw_output="",
         generation_status="service_failed",
         failure_reason="model_invocation_failed",
-        generation_retry_count=0,
-        generation_failure_reasons=[],
         parsed_cypher=None,
         gate_passed=False,
     )
@@ -267,3 +297,30 @@ async def test_service_failed_report_is_visible_in_evaluation_status(tmp_path):
     assert status.attempts == []
     assert status.generation_failures[0]["generation_status"] == "service_failed"
     assert status.generation_failures[0]["failure_reason"] == "model_invocation_failed"
+
+
+@pytest.mark.asyncio
+async def test_clarification_report_is_visible_without_creating_attempt(tmp_path):
+    repository, service = make_service(tmp_path, parser_success=True)
+    report = CgaGenerationNonSuccessReport(
+        id="qa-clarify",
+        question="查询服务 A 对应的网元",
+        generation_run_id="run-clarify",
+        generation_status="clarification_required",
+        input_prompt_snapshot='{"schema_version":"cga_trace_v2"}',
+        clarification={
+            "source_stage": "semantic_view_matching",
+            "reason_code": "ambiguous_path_semantic",
+            "question_zh": "你说的对应网元是指源网元还是目的网元？",
+            "expected_answer_type": "single_choice",
+            "options": [{"id": "source", "label": "源网元"}],
+        },
+    )
+
+    receipt = await service.ingest_generation_failure(report)
+
+    assert receipt.accepted is True
+    status = service.get_evaluation_status("qa-clarify")
+    assert status.attempts == []
+    assert status.generation_failures[0]["generation_status"] == "clarification_required"
+    assert status.generation_failures[0]["clarification"]["reason_code"] == "ambiguous_path_semantic"
