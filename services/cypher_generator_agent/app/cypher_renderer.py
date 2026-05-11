@@ -43,7 +43,9 @@ class CypherRenderer:
             f"{spec.with_stage.metric.expression} AS {spec.with_stage.output_alias}",
         ]
         lines.append(f"WITH {', '.join(with_items)}")
-        lines.append(f"MATCH {', '.join(self._render_match_items(spec))}")
+        lines.append(
+            f"MATCH {', '.join(self._render_match_items(spec, bare_aliases=set(spec.with_stage.carry_aliases)))}"
+        )
         return_items = self._render_return_items(spec)
         return_items.insert(len(spec.projections) + len(spec.dimensions), spec.with_stage.output_alias)
         lines.append(f"RETURN {', '.join(return_items)}")
@@ -54,15 +56,27 @@ class CypherRenderer:
             lines.append(f"LIMIT {spec.limit}")
         return "\n".join(lines)
 
-    def _render_match_items(self, spec: SemanticQuerySpec) -> list[str]:
+    def _render_match_items(self, spec: SemanticQuerySpec, *, bare_aliases: set[str] | None = None) -> list[str]:
         if spec.relationships:
-            return [self._render_relationship(relationship, spec.entities) for relationship in spec.relationships]
-        return [self._render_node(entity) for entity in spec.entities]
+            chained = self._render_relationship_chain(spec.relationships, spec.entities, bare_aliases=bare_aliases)
+            if chained is not None:
+                return [chained]
+            return [
+                self._render_relationship(relationship, spec.entities, bare_aliases=bare_aliases)
+                for relationship in spec.relationships
+            ]
+        return [self._render_node(entity, bare_aliases=bare_aliases) for entity in spec.entities]
 
-    def _render_relationship(self, relationship_ref: SemanticRelationshipRef, entities: tuple[SemanticEntityRef, ...]) -> str:
-        from_node = self._render_node(_entity(entities, relationship_ref.from_entity))
+    def _render_relationship(
+        self,
+        relationship_ref: SemanticRelationshipRef,
+        entities: tuple[SemanticEntityRef, ...],
+        *,
+        bare_aliases: set[str] | None = None,
+    ) -> str:
+        from_node = self._render_node(_entity(entities, relationship_ref.from_entity), bare_aliases=bare_aliases)
         relationship = f"[:{relationship_ref.edge}]"
-        to_node = self._render_node(_entity(entities, relationship_ref.to_entity))
+        to_node = self._render_node(_entity(entities, relationship_ref.to_entity), bare_aliases=bare_aliases)
         if relationship_ref.direction == "out":
             return f"{from_node}-{relationship}->{to_node}"
         if relationship_ref.direction == "in":
@@ -71,7 +85,29 @@ class CypherRenderer:
             return f"{from_node}-{relationship}-{to_node}"
         raise ValueError(f"Unsupported relationship direction: {relationship_ref.direction}")
 
-    def _render_node(self, entity: SemanticEntityRef) -> str:
+    def _render_relationship_chain(
+        self,
+        relationships: tuple[SemanticRelationshipRef, ...],
+        entities: tuple[SemanticEntityRef, ...],
+        *,
+        bare_aliases: set[str] | None = None,
+    ) -> str | None:
+        if not relationships or any(item.direction != "out" for item in relationships):
+            return None
+        parts: list[str] = []
+        current_entity_name = relationships[0].from_entity
+        parts.append(self._render_node(_entity(entities, current_entity_name), bare_aliases=bare_aliases))
+        for relationship_ref in relationships:
+            if relationship_ref.from_entity != current_entity_name:
+                return None
+            parts.append(f"-[:{relationship_ref.edge}]->")
+            parts.append(self._render_node(_entity(entities, relationship_ref.to_entity), bare_aliases=bare_aliases))
+            current_entity_name = relationship_ref.to_entity
+        return "".join(parts)
+
+    def _render_node(self, entity: SemanticEntityRef, *, bare_aliases: set[str] | None = None) -> str:
+        if bare_aliases and entity.alias in bare_aliases:
+            return f"({entity.alias})"
         return f"({entity.alias}:{entity.label})"
 
     def _render_filter(self, filter_ref: SemanticFilterRef) -> str:

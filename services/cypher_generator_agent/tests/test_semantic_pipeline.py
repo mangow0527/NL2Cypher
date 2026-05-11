@@ -174,9 +174,9 @@ def test_semantic_pipeline_handles_two_stage_aggregate_ranking() -> None:
     )
 
     assert result.generated_cypher == (
-        "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel), (t:Tunnel)-[:TUNNEL_DST]->(ne:NetworkElement)\n"
+        "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel)-[:TUNNEL_DST]->(ne:NetworkElement)\n"
         "WITH s, count(ne) AS first_total\n"
-        "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel), (t:Tunnel)-[:TUNNEL_DST]->(ne:NetworkElement)\n"
+        "MATCH (s)-[:SERVICE_USES_TUNNEL]->(t:Tunnel)-[:TUNNEL_DST]->(ne:NetworkElement)\n"
         "RETURN s.name AS service_name, s.latency AS service_latency, first_total, count(ne) AS total_count\n"
         "ORDER BY first_total DESC\n"
         "LIMIT 5"
