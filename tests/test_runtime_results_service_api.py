@@ -70,10 +70,23 @@ def test_runtime_results_detail_script_uses_chinese_cypher_generator_comparison_
     assert "生成 Cypher" in script
     assert "意图识别 LLM 原始返回" in script
     assert "Cypher 生成 LLM 原始返回" in script
+    assert "服务编排层" in script
+    assert "意图识别层" in script
+    assert "语义视图匹配层" in script
+    assert "规划层" in script
+    assert "生成与提交层" in script
+    assert "意图识别：一级分类 LLM 判定" in script
+    assert "语义视图匹配：受控 LLM 消歧" in script
     assert "生成链路摘要" in script
     assert "发给大模型的完整提示词" not in script
     assert "大模型原始输出" not in script
     assert "parser 后 Cypher" not in script
+
+
+def test_runtime_results_task_table_uses_chinese_clarification_status():
+    script = (Path(__file__).resolve().parents[1] / "console" / "runtime_console" / "ui" / "app.js").read_text(encoding="utf-8")
+
+    assert "clarification_required: '需要澄清'" in script
 
 
 def test_runtime_results_service_status_endpoint_returns_five_service_cards(monkeypatch, tmp_path: Path):
@@ -1229,6 +1242,306 @@ def test_runtime_results_generator_section_exposes_cga_llm_prompts(monkeypatch, 
     assert prompts["cypher_generation_fallback"]["prompt"].endswith("Renderer 失败后的 Cypher 兜底 prompt")
     assert prompts["cypher_generation_fallback"]["raw_output"] == "MATCH (s:Service) RETURN s.name"
     assert prompts["cypher_generation_fallback"]["raw_output_title_zh"] == "Cypher 生成 LLM 原始返回"
+
+
+def _llm_trace_call(
+    call_id: str,
+    stage: str,
+    prompt_markdown: str,
+    raw_output: str,
+    *,
+    parsed_output: dict | None = None,
+    accepted: bool = True,
+) -> dict:
+    return {
+        "call_id": call_id,
+        "stage": stage,
+        "model": "qwen3-vl-32b-thinking",
+        "prompt_markdown": prompt_markdown,
+        "raw_output": raw_output,
+        "parsed_output": parsed_output or {},
+        "accepted": accepted,
+        "rejected_reason": None if accepted else "low_confidence",
+    }
+
+
+def test_runtime_results_generator_section_parses_cga_trace_v2_generated(monkeypatch, tmp_path: Path):
+    testing_dir = tmp_path / "testing"
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(testing_dir))
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_REPAIR_DATA_DIR", str(tmp_path / "repair"))
+    trace_snapshot = {
+        "schema_version": "cga_trace_v2",
+        "question": "查询 Gold 服务使用的隧道名称。",
+        "generation_run_id": "run-trace-v2-generated",
+        "generation_status": "generated",
+        "service_context": {
+            "active_mode": "semantic_view_pipeline",
+            "model": "qwen3-vl-32b-thinking",
+            "semantic_view_version": "network_graph_semantic_view@2026-05-11",
+            "rag_source": "http://127.0.0.1:8004/api/v1/retrieve",
+        },
+        "intent_recognition": {
+            "result": {
+                "primary_intent": "record_retrieval_query",
+                "secondary_intent": "related_record_query",
+                "source": "llm",
+                "decision": "accept",
+                "confidence": 0.86,
+            },
+            "diagnostics": {
+                "rule_hit": None,
+                "embedding_candidates": [{"id": "intent-candidate-1", "score": 0.71}],
+                "llm_primary_attempts": [
+                    _llm_trace_call(
+                        "llm-intent-primary-001",
+                        "intent_recognition.primary",
+                        "一级意图 prompt",
+                        "{\"primary_intent\":\"record_retrieval_query\"}",
+                        parsed_output={"primary_intent": "record_retrieval_query"},
+                    )
+                ],
+                "llm_secondary_attempts": [
+                    _llm_trace_call(
+                        "llm-intent-secondary-001",
+                        "intent_recognition.secondary",
+                        "二级意图 prompt",
+                        "{\"secondary_intent\":\"related_record_query\"}",
+                        parsed_output={"secondary_intent": "related_record_query"},
+                    )
+                ],
+            },
+        },
+        "semantic_view_matching": {
+            "result": {
+                "matched_entities": [{"type": "Service", "name": "Gold"}],
+                "filters": [{"field": "service.name", "operator": "=", "value": "Gold"}],
+                "path_semantics": [{"name": "service_uses_tunnel"}],
+                "return_objects": ["tunnel.name"],
+                "confidence": 0.9,
+                "ambiguity": None,
+                "trace": {
+                    "candidate_generation": [{"candidate_id": "view-a"}],
+                    "semantic_completion": [{"slot": "service", "status": "filled"}],
+                    "candidate_scores": [{"candidate_id": "view-a", "score": 0.93}],
+                    "llm_disambiguation_attempts": [
+                        _llm_trace_call(
+                            "llm-semantic-disambiguation-001",
+                            "semantic_view_matching.disambiguation",
+                            "语义视图消歧 prompt",
+                            "{\"selected\":\"view-a\"}",
+                            parsed_output={"selected": "view-a"},
+                        )
+                    ],
+                },
+            }
+        },
+        "logical_query_plan": {
+            "answer_shape": "table",
+            "operations": [{"op": "expand", "path_ref": "path-service-tunnel"}],
+            "path_refs": ["path-service-tunnel"],
+            "render_hints": {"return": ["tunnel.name"]},
+        },
+        "schema_path_planning": {
+            "selected_path": {"id": "path-service-tunnel"},
+            "candidate_paths": [{"id": "path-service-tunnel", "score": 0.92}],
+            "rejected_paths": [],
+        },
+        "knowledge_selection": {
+            "source": "rag",
+            "retrieve_query": {"text": "Gold 服务 隧道"},
+            "selected_items": [{"id": "knowledge-card-1", "title": "服务到隧道关系"}],
+            "rejected_items": [],
+        },
+        "generation": {
+            "renderer": {"family": "deterministic", "accepted": False, "cypher": "", "failure_reason": "unsupported_shape"},
+            "cypher_fallback_llm": _llm_trace_call(
+                "llm-cypher-fallback-001",
+                "generation.cypher_fallback",
+                "Cypher 兜底 prompt",
+                "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel) RETURN t.name",
+            ),
+            "parser": {
+                "parsed_cypher": "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel) RETURN t.name",
+                "parse_summary": "cypher_only",
+            },
+        },
+        "preflight": {"accepted": True, "checks": [{"name": "schema", "accepted": True}], "reason": None},
+        "clarification": None,
+        "delivery": {"target": "testing-agent", "status": "delivered", "reason": None},
+    }
+    _write_json(
+        testing_dir / "goldens" / "qa_trace_v2_generated.json",
+        {
+            "id": "qa_trace_v2_generated",
+            "difficulty": "L4",
+            "cypher": "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel) RETURN t.name",
+        },
+    )
+    _write_json(
+        testing_dir / "submissions" / "qa_trace_v2_generated.json",
+        {
+            "id": "qa_trace_v2_generated",
+            "attempt_no": 1,
+            "question": "查询 Gold 服务使用的隧道名称。",
+            "generation_run_id": "run-trace-v2-generated",
+            "generated_cypher": "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel) RETURN t.name",
+            "input_prompt_snapshot": json.dumps(trace_snapshot, ensure_ascii=False),
+            "generation_status": "generated",
+            "state": "evaluated",
+        },
+    )
+
+    from console.runtime_console.app.main import create_app
+
+    client = TestClient(create_app())
+    response = client.get("/api/v1/tasks/qa_trace_v2_generated")
+
+    assert response.status_code == 200
+    generator = response.json()["pipeline"]["cypher_generator_agent"]
+    assert generator["trace_schema_version"] == "cga_trace_v2"
+    trace_layers = generator["trace_layers"]
+    assert [layer["key"] for layer in trace_layers] == [
+        "orchestration",
+        "intent_recognition",
+        "semantic_view_matching",
+        "planning",
+        "generation",
+    ]
+    assert [layer["title_zh"] for layer in trace_layers] == [
+        "服务编排层",
+        "意图识别层",
+        "语义视图匹配层",
+        "规划层",
+        "生成与提交层",
+    ]
+    orchestration_fields = {field["label_zh"]: field["value"] for field in trace_layers[0]["fields"]}
+    assert orchestration_fields["运行模式"] == "semantic_view_pipeline"
+    assert orchestration_fields["模型"] == "qwen3-vl-32b-thinking"
+    assert trace_layers[1]["raw"]["result"]["primary_intent"] == "record_retrieval_query"
+    assert trace_layers[2]["raw"]["result"]["trace"]["llm_disambiguation_attempts"][0]["call_id"] == "llm-semantic-disambiguation-001"
+    assert trace_layers[3]["raw"]["logical_query_plan"]["answer_shape"] == "table"
+    assert trace_layers[4]["raw"]["generation"]["parser"]["parse_summary"] == "cypher_only"
+
+    prompts = generator["llm_prompts"]
+    assert prompts["intent_primary_classification"]["title_zh"] == "意图识别：一级分类 LLM 判定"
+    assert prompts["intent_primary_classification"]["triggered"] is True
+    assert prompts["intent_primary_classification"]["prompt"] == "一级意图 prompt"
+    assert prompts["intent_primary_classification"]["raw_output"] == "{\"primary_intent\":\"record_retrieval_query\"}"
+    assert prompts["intent_secondary_classification"]["prompt"] == "二级意图 prompt"
+    assert prompts["semantic_view_disambiguation"]["raw_output"] == "{\"selected\":\"view-a\"}"
+    assert prompts["cypher_generation_fallback"]["title_zh"] == "Renderer 失败后的 Cypher 兜底生成"
+    assert prompts["cypher_generation_fallback"]["raw_output"].startswith("MATCH (s:Service)")
+
+
+def test_runtime_results_generator_section_parses_cga_trace_v2_clarification_required(monkeypatch, tmp_path: Path):
+    testing_dir = tmp_path / "testing"
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(testing_dir))
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_REPAIR_DATA_DIR", str(tmp_path / "repair"))
+    clarification = {
+        "source_stage": "semantic_view_matching",
+        "reason_code": "ambiguous_path_semantic",
+        "question_zh": "你说的对应网元是指源网元还是目的网元？",
+        "expected_answer_type": "single_choice",
+        "options": [{"id": "source", "label": "源网元"}, {"id": "target", "label": "目的网元"}],
+    }
+    trace_snapshot = {
+        "schema_version": "cga_trace_v2",
+        "question": "查询服务 A 对应的网元。",
+        "generation_run_id": "run-trace-v2-clarify",
+        "generation_status": "clarification_required",
+        "service_context": {"active_mode": "semantic_view_pipeline", "model": "qwen3-vl-32b-thinking"},
+        "intent_recognition": {
+            "result": {
+                "primary_intent": "record_retrieval_query",
+                "secondary_intent": "related_record_query",
+                "source": "llm",
+                "decision": "accept",
+                "confidence": 0.82,
+            },
+            "diagnostics": {
+                "llm_primary_attempts": [
+                    _llm_trace_call(
+                        "llm-intent-primary-clarify-001",
+                        "intent_recognition.primary",
+                        "澄清场景一级意图 prompt",
+                        "{\"primary_intent\":\"record_retrieval_query\"}",
+                    )
+                ],
+                "llm_secondary_attempts": [],
+            },
+        },
+        "semantic_view_matching": {
+            "result": {
+                "matched_entities": [{"type": "Service", "name": "A"}],
+                "ambiguity": {"reason": "source_or_target_ne"},
+                "trace": {
+                    "candidate_scores": [
+                        {"candidate_id": "source-ne", "score": 0.88},
+                        {"candidate_id": "target-ne", "score": 0.87},
+                    ],
+                    "llm_disambiguation_attempts": [
+                        _llm_trace_call(
+                            "llm-semantic-disambiguation-clarify-001",
+                            "semantic_view_matching.disambiguation",
+                            "澄清场景语义视图消歧 prompt",
+                            "{\"decision\":\"clarify\"}",
+                            parsed_output={"decision": "clarify"},
+                            accepted=False,
+                        )
+                    ],
+                },
+            }
+        },
+        "logical_query_plan": {},
+        "schema_path_planning": {"selected_path": None, "candidate_paths": [], "rejected_paths": []},
+        "knowledge_selection": {"source": "rag", "selected_items": [], "rejected_items": []},
+        "generation": {"renderer": {"family": "deterministic", "accepted": False}, "cypher_fallback_llm": None, "parser": {}},
+        "preflight": {"accepted": False, "checks": [], "reason": "ambiguous_path_semantic"},
+        "clarification": clarification,
+        "delivery": {"target": "testing-agent", "status": "delivered", "reason": None},
+    }
+    _write_json(testing_dir / "goldens" / "qa_trace_v2_clarify.json", {"id": "qa_trace_v2_clarify", "difficulty": "L5"})
+    _write_json(
+        testing_dir / "generation_failures" / "qa_trace_v2_clarify__run-trace-v2-clarify.json",
+        {
+            "id": "qa_trace_v2_clarify",
+            "question": "查询服务 A 对应的网元。",
+            "generation_run_id": "run-trace-v2-clarify",
+            "generation_status": "clarification_required",
+            "input_prompt_snapshot": json.dumps(trace_snapshot, ensure_ascii=False),
+            "clarification": clarification,
+            "parsed_cypher": None,
+            "gate_passed": False,
+            "received_at": "2026-05-11T00:00:00+00:00",
+        },
+    )
+
+    from console.runtime_console.app.main import create_app
+
+    client = TestClient(create_app())
+    response = client.get("/api/v1/tasks/qa_trace_v2_clarify")
+
+    assert response.status_code == 200
+    generator = response.json()["pipeline"]["cypher_generator_agent"]
+    assert generator["generation_status"] == "clarification_required"
+    assert generator["trace_schema_version"] == "cga_trace_v2"
+    assert generator["clarification"]["question_zh"] == "你说的对应网元是指源网元还是目的网元？"
+    assert [layer["key"] for layer in generator["trace_layers"]] == [
+        "orchestration",
+        "intent_recognition",
+        "semantic_view_matching",
+        "planning",
+        "generation",
+    ]
+    semantic_layer = generator["trace_layers"][2]
+    assert semantic_layer["raw"]["result"]["ambiguity"]["reason"] == "source_or_target_ne"
+    generation_fields = {field["label_zh"]: field["value"] for field in generator["trace_layers"][4]["fields"]}
+    assert generation_fields["澄清问题"] == "你说的对应网元是指源网元还是目的网元？"
+    prompts = generator["llm_prompts"]
+    assert prompts["intent_primary_classification"]["prompt"] == "澄清场景一级意图 prompt"
+    assert prompts["semantic_view_disambiguation"]["triggered"] is True
+    assert prompts["semantic_view_disambiguation"]["raw_output"] == "{\"decision\":\"clarify\"}"
+    assert prompts["cypher_generation_fallback"]["triggered"] is False
 
 
 def test_runtime_results_prefers_latest_generated_submission_over_stale_generation_failure(monkeypatch, tmp_path: Path):

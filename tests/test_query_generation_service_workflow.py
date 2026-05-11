@@ -255,6 +255,55 @@ class TestCypherGeneratorAgentWorkflow:
         assert report.parsed_cypher is None
 
     @pytest.mark.asyncio
+    async def test_semantic_clarification_submits_clarification_report(self):
+        clarification = {
+            "source_stage": "semantic_view_matching",
+            "reason_code": "path_ambiguity",
+            "question_zh": "你说的“对应网元”是指源网元、目的网元，还是路径经过的网元？",
+            "expected_answer_type": "single_choice",
+            "options": [{"id": "service.tunnel_source", "label": "源网元"}],
+        }
+
+        class FakeSemanticPipeline:
+            async def parse_with_fallback(self, *, id, question, generation_run_id):
+                return type(
+                    "SemanticResult",
+                    (),
+                    {
+                        "generated_cypher": None,
+                        "preflight": None,
+                        "generation_mode": None,
+                        "clarification": clarification,
+                        "to_dict": lambda self: {
+                            "schema_version": "cga_trace_v2",
+                            "clarification": clarification,
+                            "semantic_view_matching": {
+                                "result": {
+                                    "accepted": False,
+                                    "needs_clarification": True,
+                                }
+                            },
+                        },
+                    },
+                )()
+
+        service = CypherGeneratorAgentService(
+            testing_client=AsyncMock(),
+            generation_run_id_factory=lambda: "cypher-run-clarify",
+            semantic_pipeline=FakeSemanticPipeline(),
+        )
+
+        result = await service.ingest_question(QAQuestionRequest(id="qa-clarify", question="查询服务对应的网元"))
+
+        assert result.generation_status == "clarification_required"
+        service.testing_client.submit.assert_not_called()
+        service.testing_client.submit_generation_failure.assert_awaited_once()
+        report = service.testing_client.submit_generation_failure.await_args.kwargs["payload"]
+        assert report.generation_status == "clarification_required"
+        assert report.clarification == clarification
+        assert report.failure_reason is None
+
+    @pytest.mark.asyncio
     async def test_semantic_contract_misalignment_is_service_failure_without_knowledge_fetch(self):
         testing_client = AsyncMock()
         semantic_pipeline = AsyncMock()

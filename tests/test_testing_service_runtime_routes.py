@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 import services.testing_agent.app.main as main_module
@@ -8,10 +9,17 @@ from services.testing_agent.app.models import QAGoldenResponse, SubmissionReceip
 
 
 class StubService:
+    def __init__(self) -> None:
+        self.generation_failure_reports = []
+
     async def ingest_golden(self, request):
         return QAGoldenResponse(id=request.id, status="received_golden_only")
 
     async def ingest_submission(self, request):
+        return SubmissionReceipt(accepted=True)
+
+    async def ingest_generation_failure(self, request):
+        self.generation_failure_reports.append(request)
         return SubmissionReceipt(accepted=True)
 
     def get_evaluation_status(self, id: str):
@@ -77,6 +85,69 @@ def test_submission_route_returns_minimal_receipt(monkeypatch):
 
     assert response.status_code == 200
     assert response.json() == {"accepted": True}
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_status"),
+    [
+        (
+            {
+                "id": "qa-generation-failed",
+                "question": "查询设备",
+                "generation_run_id": "run-generation-failed",
+                "generation_status": "generation_failed",
+                "failure_reason": "no_cypher_found",
+                "parsed_cypher": "",
+                "input_prompt_snapshot": "prompt-before-gate",
+            },
+            "generation_failed",
+        ),
+        (
+            {
+                "id": "qa-clarification",
+                "question": "查询服务 A 对应的网元",
+                "generation_run_id": "run-clarification",
+                "generation_status": "clarification_required",
+                "input_prompt_snapshot": '{"schema_version":"cga_trace_v2"}',
+                "clarification": {
+                    "source_stage": "semantic_view_matching",
+                    "reason_code": "ambiguous_path_semantic",
+                    "question_zh": "你说的对应网元是指源网元还是目的网元？",
+                    "expected_answer_type": "single_choice",
+                    "options": [{"id": "source", "label": "源网元"}],
+                },
+                "gate_passed": False,
+            },
+            "clarification_required",
+        ),
+        (
+            {
+                "id": "qa-service-failed",
+                "question": "查询设备",
+                "generation_run_id": "run-service-failed",
+                "generation_status": "service_failed",
+                "failure_reason": "model_invocation_failed",
+                "parsed_cypher": None,
+                "input_prompt_snapshot": "",
+                "gate_passed": False,
+            },
+            "service_failed",
+        ),
+    ],
+)
+def test_generation_failures_route_accepts_non_success_reports(monkeypatch, payload, expected_status):
+    service = StubService()
+    monkeypatch.setattr(main_module, "get_testing_service", lambda: service)
+    client = TestClient(app)
+
+    response = client.post("/api/v1/evaluations/generation-failures", json=payload)
+
+    assert response.status_code == 200
+    assert response.json() == {"accepted": True}
+    assert len(service.generation_failure_reports) == 1
+    report = service.generation_failure_reports[0]
+    assert report.generation_status == expected_status
+    assert report.gate_passed is False
 
 
 def test_golden_route_returns_status_response(monkeypatch):

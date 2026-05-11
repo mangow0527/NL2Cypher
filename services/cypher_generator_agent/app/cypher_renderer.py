@@ -75,7 +75,7 @@ class CypherRenderer:
             return "true" if value else "false"
         if value is None:
             return "null"
-        if isinstance(value, int | float):
+        if isinstance(value, (int, float)):
             return str(value)
         escaped = str(value).replace("\\", "\\\\").replace("'", "\\'")
         return f"'{escaped}'"

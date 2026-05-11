@@ -103,13 +103,15 @@ def test_semantic_parse_endpoint_returns_generated_cypher_for_supported_question
     assert payload["id"] == "qa-001"
     assert payload["question"] == "查询 Gold 服务使用的隧道名称和时延"
     assert payload["generation_run_id"] == "cypher-run-001"
+    assert payload["schema_version"] == "cga_trace_v2"
     assert payload["intent"]["primary_intent"] == "record_retrieval_query"
-    assert payload["business_slots"]["schema_id"] == "graph_inventory.related_record"
-    assert payload["business_slots"]["scenario_id"] == "ops_inventory_static"
-    assert payload["slot_completeness"]["accepted"] is True
-    assert payload["slot_completeness"]["schema_id"] == "graph_inventory.related_record"
     assert payload["validation"]["accepted"] is True
     assert "query_plan" not in payload
+    assert payload["semantic_view_matching"]["result"]["accepted"] is True
+    assert payload["logical_query_plan"]["answer_shape"] == "records"
+    assert payload["schema_path_planning"]["selected_paths"][0]["cypher_pattern"] == (
+        "(s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel)"
+    )
     assert payload["semantic_query"]["kind"] == "record_selection"
     assert payload["semantic_query"]["relationships"][0]["name"] == "service_uses_tunnel"
     assert payload["generated_cypher"] == (
