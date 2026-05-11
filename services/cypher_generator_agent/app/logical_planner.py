@@ -160,7 +160,7 @@ class LogicalQueryPlanner:
     def _return_ref(self, field_id: str) -> SemanticFieldRef:
         owner, property_name = field_id.split(".", 1)
         entity = self.semantic_layer.entities[owner]
-        field_name = _field_name(self.semantic_layer, owner, property_name)
+        field_name = entity.alias if property_name == "*" else _field_name(self.semantic_layer, owner, property_name)
         return SemanticFieldRef(
             name=field_name,
             entity=owner,
@@ -275,7 +275,11 @@ class LogicalQueryPlanner:
         if semantic_query.dimensions:
             operators.append({"op": "group_by", "fields": [f"{item.entity}.{item.property}" for item in semantic_query.dimensions]})
         project_items = [
-            {"kind": "dimension", "field": f"{item.entity}.{item.property}", "alias": item.output_alias}
+            {
+                "kind": "entity" if item.property == "*" else "dimension",
+                "field": item.entity if item.property == "*" else f"{item.entity}.{item.property}",
+                "alias": item.output_alias,
+            }
             for item in [*semantic_query.projections, *semantic_query.dimensions]
         ]
         project_items.extend({"kind": "metric_alias", "field": item.output_alias, "alias": item.output_alias} for item in semantic_query.metrics)

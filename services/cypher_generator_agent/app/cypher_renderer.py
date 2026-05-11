@@ -65,6 +65,8 @@ class CypherRenderer:
         return items
 
     def _render_field(self, field_ref: SemanticFieldRef) -> str:
+        if field_ref.property == "*":
+            return field_ref.expression
         return f"{field_ref.expression} AS {field_ref.output_alias}"
 
     def _render_metric(self, metric_ref: SemanticMetricRef) -> str:

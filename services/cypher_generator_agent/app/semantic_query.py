@@ -49,6 +49,8 @@ class SemanticFieldRef:
 
     @property
     def expression(self) -> str:
+        if self.property == "*":
+            return self.alias
         return f"{self.alias}.{self.property}"
 
     def to_dict(self) -> dict[str, str]:
