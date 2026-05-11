@@ -16,6 +16,8 @@ class CypherRenderer:
     """Render validated semantic query specs into deterministic read-only Cypher."""
 
     def render(self, spec: SemanticQuerySpec) -> str:
+        if spec.with_stage is not None:
+            return self._render_with_stage(spec)
         lines = [f"MATCH {', '.join(self._render_match_items(spec))}"]
         if spec.filters:
             lines.append(f"WHERE {' AND '.join(self._render_filter(filter_ref) for filter_ref in spec.filters)}")
@@ -23,6 +25,28 @@ class CypherRenderer:
         return_items = self._render_return_items(spec)
         lines.append(f"RETURN {', '.join(return_items)}")
 
+        if spec.order_by:
+            order_items = [f"{item.expression} {item.direction}" for item in spec.order_by]
+            lines.append(f"ORDER BY {', '.join(order_items)}")
+        if spec.limit is not None:
+            lines.append(f"LIMIT {spec.limit}")
+        return "\n".join(lines)
+
+    def _render_with_stage(self, spec: SemanticQuerySpec) -> str:
+        if spec.with_stage is None:
+            raise ValueError("with-stage renderer requires with_stage metadata.")
+        lines = [f"MATCH {', '.join(self._render_match_items(spec))}"]
+        if spec.filters:
+            lines.append(f"WHERE {' AND '.join(self._render_filter(filter_ref) for filter_ref in spec.filters)}")
+        with_items = [
+            *spec.with_stage.carry_aliases,
+            f"{spec.with_stage.metric.expression} AS {spec.with_stage.output_alias}",
+        ]
+        lines.append(f"WITH {', '.join(with_items)}")
+        lines.append(f"MATCH {', '.join(self._render_match_items(spec))}")
+        return_items = self._render_return_items(spec)
+        return_items.insert(len(spec.projections) + len(spec.dimensions), spec.with_stage.output_alias)
+        lines.append(f"RETURN {', '.join(return_items)}")
         if spec.order_by:
             order_items = [f"{item.expression} {item.direction}" for item in spec.order_by]
             lines.append(f"ORDER BY {', '.join(order_items)}")

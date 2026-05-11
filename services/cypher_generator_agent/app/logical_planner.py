@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import replace
 from typing import Any
 
 from .intent_recognition import IntentRecognitionResult
@@ -14,6 +15,7 @@ from .semantic_query import (
     SemanticQueryKind,
     SemanticQuerySpec,
     SemanticRelationshipRef,
+    SemanticWithStage,
 )
 from .semantic_view_matching import SemanticMatchResult
 
@@ -86,6 +88,23 @@ class LogicalQueryPlanner:
         order_by = tuple(self._order_ref(item, projections, metrics) for item in semantic_match.order_by)
         if kind == "dimension_breakdown" and metrics and not order_by:
             order_by = (SemanticOrderBy(expression=metrics[0].output_alias, direction="DESC"),)
+        with_stage = None
+        if _requires_two_stage_aggregate(question, metrics, relationships):
+            first_metric = metrics[0]
+            with_stage = SemanticWithStage(
+                carry_aliases=(entities[0].alias,) if entities else (),
+                metric=replace(first_metric, output_alias="first_total"),
+                output_alias="first_total",
+            )
+            metrics = (replace(first_metric, name="total_count", output_alias="total_count"),)
+            if order_by and _contains(question, "首次统计值"):
+                order_by = tuple(
+                    SemanticOrderBy(
+                        expression="first_total" if item.expression == first_metric.output_alias else item.expression,
+                        direction=item.direction,
+                    )
+                    for item in order_by
+                )
         output_alias = "exists" if kind == "existence_check" else None
         semantic_query = SemanticQuerySpec(
             kind=kind,
@@ -97,6 +116,7 @@ class LogicalQueryPlanner:
             metrics=metrics,
             filters=filters,
             order_by=order_by,
+            with_stage=with_stage,
             limit=semantic_match.limit,
             output_alias=output_alias,
         )
@@ -115,6 +135,7 @@ class LogicalQueryPlanner:
             schema_path_ref=schema_path_plan.path_id if schema_path_plan.selected_paths else None,
             renderer_hints={
                 "renderer_family": semantic_query.kind,
+                "aggregation_shape": "two_stage" if with_stage is not None else "single_stage",
                 "requires_path_variable": False,
             },
             trace_refs=tuple(
@@ -272,6 +293,16 @@ class LogicalQueryPlanner:
             )
         for metric in semantic_match.metrics:
             operators.append({"op": "aggregate", "metric_id": metric.metric_id, "alias": metric.metric_id})
+        if semantic_query.with_stage is not None:
+            operators.append(
+                {
+                    "op": "with",
+                    "carry_aliases": list(semantic_query.with_stage.carry_aliases),
+                    "metric": semantic_query.with_stage.metric.expression,
+                    "alias": semantic_query.with_stage.output_alias,
+                }
+            )
+            operators.append({"op": "rematch", "schema_path_ref": schema_path_ref or "schema_path_001"})
         if semantic_query.dimensions:
             operators.append({"op": "group_by", "fields": [f"{item.entity}.{item.property}" for item in semantic_query.dimensions]})
         project_items = [
@@ -351,6 +382,20 @@ def _answer_shape(intent_result: IntentRecognitionResult, semantic_query: Semant
     if semantic_query.kind == "existence_check":
         return "boolean"
     return "records"
+
+
+def _requires_two_stage_aggregate(
+    question: str,
+    metrics: tuple[SemanticMetricRef, ...],
+    relationships: tuple[SemanticRelationshipRef, ...],
+) -> bool:
+    if not metrics or not relationships:
+        return False
+    return _contains(question, "首次统计值") or _contains(question, "两次统计结果")
+
+
+def _contains(text: str, term: str) -> bool:
+    return term in text.replace(" ", "").replace("\u3000", "")
 
 
 def _intent_name(intent_result: IntentRecognitionResult) -> str:

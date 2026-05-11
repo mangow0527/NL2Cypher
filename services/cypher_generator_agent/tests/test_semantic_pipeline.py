@@ -160,6 +160,32 @@ def test_semantic_pipeline_handles_common_service_tunnel_multihop_paths() -> Non
     assert "ORDER BY network_element_count ASC" in vendor_breakdown.generated_cypher
 
 
+def test_semantic_pipeline_handles_two_stage_aggregate_ranking() -> None:
+    pipeline = get_semantic_pipeline()
+    result = pipeline.parse(
+        question="统计各服务关联的目的网元总数，按首次统计值降序排列，返回前5个服务的名称、时延及两次统计结果。",
+        intent_result=IntentRecognitionResult(
+            primary_intent="ranking_query",
+            secondary_intent="attribute_ranking_query",
+            confidence=0.9,
+            source="rule",
+            decision="accept",
+        ),
+    )
+
+    assert result.generated_cypher == (
+        "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel), (t:Tunnel)-[:TUNNEL_DST]->(ne:NetworkElement)\n"
+        "WITH s, count(ne) AS first_total\n"
+        "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel), (t:Tunnel)-[:TUNNEL_DST]->(ne:NetworkElement)\n"
+        "RETURN s.name AS service_name, s.latency AS service_latency, first_total, count(ne) AS total_count\n"
+        "ORDER BY first_total DESC\n"
+        "LIMIT 5"
+    )
+    payload = result.to_dict()
+    assert payload["semantic_query"]["with_stage"]["output_alias"] == "first_total"
+    assert payload["logical_query_plan"]["renderer_hints"]["aggregation_shape"] == "two_stage"
+
+
 def test_semantic_pipeline_returns_clarification_before_planning_for_ambiguous_view_match() -> None:
     pipeline = get_semantic_pipeline()
     intent = IntentRecognitionResult(
