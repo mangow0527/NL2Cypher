@@ -191,6 +191,20 @@ class LogicalQueryPlanner:
         )
 
     def _metric_ref(self, metric_id: str) -> SemanticMetricRef:
+        if metric_id.startswith("count_property:"):
+            field_id = metric_id.split(":", 1)[1]
+            owner, property_name = field_id.split(".", 1)
+            entity = self.semantic_view.entities[owner]
+            output_alias = f"{owner}_{property_name}_count"
+            return SemanticMetricRef(
+                name=metric_id,
+                entity=owner,
+                alias=entity.alias,
+                aggregation="count",
+                expression=f"count({entity.alias}.{property_name})",
+                output_alias=output_alias,
+                property=property_name,
+            )
         metric = self.semantic_view.metrics.get(metric_id)
         if metric is None:
             raise KeyError(metric_id)
@@ -381,7 +395,13 @@ def _requires_two_stage_aggregate(
 ) -> bool:
     if not metrics or not relationships:
         return False
-    return _contains(question, "首次统计值") or _contains(question, "两次统计结果")
+    return (
+        _contains(question, "首次统计值")
+        or _contains(question, "首次统计数量")
+        or _contains(question, "首次统计的")
+        or _contains(question, "两次统计结果")
+        or _contains(question, "分阶段统计")
+    )
 
 
 def _contains(text: str, term: str) -> bool:

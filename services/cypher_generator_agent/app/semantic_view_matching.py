@@ -264,7 +264,7 @@ class SemanticViewMatcher:
         if _contains(text, "详细信息") or _contains(text, "节点信息"):
             target = path_target or (entities[-1] if entities else None)
             if target is not None:
-                return [SemanticMatchedReturn(field=f"{target}.*", evidence="详细信息")]
+                returns.append(SemanticMatchedReturn(field=f"{target}.*", evidence="详细信息"))
 
         ordered_fields = sorted(
             self.semantic_view.fields.values(),
@@ -301,7 +301,12 @@ class SemanticViewMatcher:
                     if generic_evidence is not None:
                         returns.append(SemanticMatchedReturn(field=field.name, evidence=generic_evidence))
                         continue
-                if field.property == "elem_type" and field.owner in entities and _contains(text, "类型"):
+                if (
+                    field.property == "elem_type"
+                    and field.owner in entities
+                    and _contains(text, "类型")
+                    and (len(entities) == 1 or has_generic_owner_context)
+                ):
                     returns.append(SemanticMatchedReturn(field=field.name, evidence="类型"))
                     continue
             if any(_contains(text, term) for term in terms):
@@ -328,6 +333,9 @@ class SemanticViewMatcher:
 
     def _match_metrics(self, text: str, entities: list[str]) -> list[SemanticMatchedMetric]:
         metrics: list[SemanticMatchedMetric] = []
+        property_count = _match_property_count_metric(text, entities, self.semantic_view)
+        if property_count is not None:
+            metrics.append(property_count)
         for metric in self.semantic_view.metrics.values():
             terms = [metric.name, metric.name_zh, *metric.synonyms]
             if any(_contains(text, term) for term in terms):
@@ -439,6 +447,7 @@ def _property_zh(property_name: str) -> str:
     return {
         "bandwidth": "带宽",
         "latency": "延迟",
+        "quality_of_service": "服务质量",
         "speed": "速率",
         "length": "长度",
         "mtu": "MTU",
@@ -490,6 +499,8 @@ def _has_field_owner_context(text: str, owner: SemanticEntity, property_name: st
         "name": "名称",
         "bandwidth": "带宽",
         "latency": "时延",
+        "quality_of_service": "服务质量",
+        "status": "状态",
         "elem_type": "类型",
     }.get(property_name)
     if not word:
@@ -498,6 +509,19 @@ def _has_field_owner_context(text: str, owner: SemanticEntity, property_name: st
         if _contains(text, f"{term}{word}") or _contains(text, f"{term}的{word}"):
             return True
         if property_name == "latency" and _contains(text, f"{term}的名称、时延"):
+            return True
+        if property_name == "name" and (
+            _contains(text, f"{term}的ID和名称")
+            or _contains(text, f"{term}的编号和名称")
+            or _contains(text, f"{term}ID、名称")
+            or _contains(text, f"{term}编号、名称")
+        ):
+            return True
+        if property_name == "status" and (
+            _contains(text, f"{term}ID、名称和状态")
+            or _contains(text, f"{term}编号、名称和状态")
+            or _contains(text, f"{term}名称和状态")
+        ):
             return True
     return False
 
@@ -508,8 +532,12 @@ def _generic_return_evidence(text: str, owner: SemanticEntity, property_name: st
         "name": "名称",
         "bandwidth": "带宽",
         "latency": "时延",
+        "quality_of_service": "服务质量",
+        "status": "状态",
         "elem_type": "类型",
     }.get(property_name)
+    if property_name == "latency" and not _contains(text, word) and _contains(text, "延迟"):
+        word = "延迟"
     if word is None or not _contains(text, word):
         return None
     if property_name in {"bandwidth", "latency"} and _contains(text, f"{word}值"):
@@ -519,6 +547,31 @@ def _generic_return_evidence(text: str, owner: SemanticEntity, property_name: st
             if _contains(text, candidate):
                 return candidate
     return word
+
+
+def _match_property_count_metric(
+    text: str,
+    entities: list[str],
+    semantic_view: GraphSemanticView,
+) -> SemanticMatchedMetric | None:
+    if not (_contains(text, "数量") or _contains(text, "统计")):
+        return None
+    if not (_contains(text, "属性") or _contains(text, "非空")):
+        return None
+    ordered_fields = sorted(
+        semantic_view.fields.values(),
+        key=lambda field: (0 if field.owner in entities else 1, field.owner, field.name),
+    )
+    for field in ordered_fields:
+        if entities and field.owner not in entities:
+            continue
+        terms = [field.name_zh, _property_zh(field.property), *field.synonyms]
+        if any(_contains(text, term) for term in terms if term):
+            return SemanticMatchedMetric(
+                metric_id=f"count_property:{field.name}",
+                evidence=f"{field.name_zh}属性数量",
+            )
+    return None
 
 
 def _prune_return_owners(
@@ -587,12 +640,16 @@ def _complete_entities(
         metric = semantic_view.metrics.get(item.metric_id)
         if metric is not None:
             completed.append(metric.target_entity)
+        elif item.metric_id.startswith("count_property:"):
+            completed.append(item.metric_id.split(":", 1)[1].split(".", 1)[0])
     for item in order_by:
         field = item.get("field", "")
         if "." in field:
             completed.append(field.split(".", 1)[0])
         elif field in semantic_view.metrics:
             completed.append(semantic_view.metrics[field].target_entity)
+        elif field.startswith("count_property:"):
+            completed.append(field.split(":", 1)[1].split(".", 1)[0])
     completed.extend(entities)
     return _unique(completed)
 
@@ -761,6 +818,8 @@ def _apply_disambiguation_rules(
     by_name = {path.path_semantic: path for path in paths}
     for rule in semantic_view.disambiguation_rules:
         if not any(_contains(text, pattern) for pattern in rule.positive_patterns):
+            continue
+        if any(_contains(text, pattern) for pattern in rule.negative_patterns):
             continue
         preferred = by_name.get(rule.prefer)
         if preferred is not None:
