@@ -329,23 +329,29 @@ async def test_semantic_pipeline_rejects_cypher_text_from_intent_llm_fallback() 
     assert intent_attempts[0]["raw_output"] == "MATCH (s:Service) RETURN s.name AS service_name"
 
 
-def test_semantic_pipeline_rejects_accepted_intent_without_business_slot_schema() -> None:
+def test_semantic_pipeline_rejects_unmatched_semantic_view_without_slot_fallback() -> None:
     pipeline = SemanticPipeline()
     intent = IntentRecognitionResult(
-        primary_intent="trend_query",
-        secondary_intent="metric_trend_query",
+        primary_intent="record_retrieval_query",
+        secondary_intent="attribute_projection_query",
         confidence=0.91,
         source="embedding",
         decision="accept",
     )
 
-    result = pipeline.parse(question="查询最近一周链路状态变化趋势", intent_result=intent)
+    result = pipeline.parse(question="查询火星基地的能耗", intent_result=intent)
 
     assert result.validation.accepted is False
     assert result.semantic_query is None
     assert result.generated_cypher is None
     assert result.preflight is None
-    assert result.validation.diagnostics[0].code == "unsupported_business_slot_schema"
+    assert result.validation.diagnostics[0].code == "semantic_match_rejected"
+    assert result.semantic_view_matching is not None
+    assert result.semantic_view_matching.result.rejection_reason == "no_semantic_view_candidate"
+    payload = result.to_dict()
+    assert payload["service_context"]["active_mode"] == "semantic_view_pipeline"
+    assert "slots" not in payload
+    assert "business_slots" not in payload
 
 
 def test_semantic_pipeline_generates_count_metric_query() -> None:

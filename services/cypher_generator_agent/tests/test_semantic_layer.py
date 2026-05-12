@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 import yaml
 
-from services.cypher_generator_agent.app import resource_paths
 from services.cypher_generator_agent.app.semantic_layer import (
     SemanticLayerConfigError,
     get_default_semantic_layer,
@@ -45,24 +44,6 @@ def test_default_semantic_layer_uses_tugraph_elem_type_field_for_type_semantics(
     assert semantic_layer.property("port_type").property == "elem_type"
     assert semantic_layer.property("fiber_type").property == "elem_type"
     assert semantic_layer.property("link_type").property == "elem_type"
-
-
-def test_slot_parse_patterns_entity_properties_are_exposed_by_semantic_layer() -> None:
-    slot_patterns = yaml.safe_load(resource_paths.slot_parse_patterns_path().read_text(encoding="utf-8"))
-    semantic_layer = get_default_semantic_layer()
-    exposed_properties = {
-        (field.owner, field.property)
-        for field in semantic_layer.properties.values()
-    }
-
-    missing = sorted(
-        f"{entity}.{property_name}"
-        for entity, property_names in slot_patterns["entity_properties"].items()
-        for property_name in property_names
-        if (entity, property_name) not in exposed_properties
-    )
-
-    assert missing == []
 
 
 def test_loader_rejects_invalid_schema_references(tmp_path: Path) -> None:

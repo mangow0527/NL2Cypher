@@ -229,7 +229,7 @@ class TestCypherGeneratorAgentWorkflow:
                         "to_dict": lambda self: {
                             "validation": {
                                 "accepted": False,
-                                "diagnostics": [{"code": "unsupported_business_slot_schema"}],
+                                "diagnostics": [{"code": "semantic_match_rejected"}],
                             },
                             "semantic_query": None,
                             "generated_cypher": None,
