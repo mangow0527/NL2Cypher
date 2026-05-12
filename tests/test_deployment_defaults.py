@@ -98,7 +98,7 @@ class DeploymentDefaultsTest(unittest.TestCase):
 
         self.assertEqual(settings.port, 8003)
         self.assertEqual(settings.repair_service_url, "http://127.0.0.1:8002")
-        self.assertEqual(settings.tugraph_url, "http://114.215.172.132:7070")
+        self.assertEqual(settings.tugraph_url, "http://101.37.211.45:7070")
 
     def test_runtime_results_center_defaults_bind_console_port(self):
         settings = RuntimeResultsSettings()
