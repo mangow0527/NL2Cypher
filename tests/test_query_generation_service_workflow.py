@@ -62,6 +62,34 @@ def test_build_workflow_service_uses_semantic_pipeline_with_rag_selector(tmp_pat
     assert service.semantic_pipeline.knowledge_selector.base_url == "http://rag-service"
     assert not hasattr(service, "knowledge_context_provider")
     assert not hasattr(service, "llm_client")
+    assert service.semantic_alignment_report_factory is not None
+    alignment = service.semantic_alignment_report_factory()
+    assert alignment.accepted is True
+    assert "knowledge/schema.json" not in alignment.checked_sources
+
+
+def test_generator_status_does_not_require_local_knowledge_docs_for_rag(monkeypatch, tmp_path):
+    settings = Settings(
+        knowledge_docs_dir=str(tmp_path / "missing-local-knowledge"),
+        knowledge_context_source="rag",
+        rag_service_url="http://rag-service",
+        testing_agent_url="http://testing-agent",
+        llm_base_url="http://llm",
+        llm_api_key="test-key",
+        llm_model="test-model",
+        _env_file=None,
+    )
+    monkeypatch.setattr("services.cypher_generator_agent.app.service.get_settings", lambda: settings)
+
+    status = get_generator_status()
+
+    assert status["knowledge_context_source"] == "rag"
+    assert status["knowledge_docs_required"] is False
+    assert status["knowledge_docs_dir_configured"] is None
+    assert status["knowledge_selection_configured"] is True
+    assert status["rag_service_url"] == "http://rag-service"
+    assert status["semantic_alignment"]["accepted"] is True
+    assert "knowledge/schema.json" not in status["semantic_alignment"]["checked_sources"]
 
 
 def test_generator_status_reports_file_knowledge_context_source(monkeypatch, tmp_path):
