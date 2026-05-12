@@ -1120,3 +1120,86 @@ def test_semantic_pipeline_orders_two_stage_aggregate_by_first_count_phrases() -
     assert result.validation.accepted is True
     assert "WITH s, count(ne) AS first_total" in result.generated_cypher
     assert "ORDER BY first_total DESC" in result.generated_cypher
+
+
+def test_semantic_pipeline_keeps_breakdown_dimension_when_intent_is_coarse_metric() -> None:
+    pipeline = SemanticPipeline()
+    intent = IntentRecognitionResult(
+        primary_intent="metric_query",
+        secondary_intent="count_metric_query",
+        confidence=0.66,
+        source="embedding",
+        decision="accept",
+    )
+
+    result = pipeline.parse(
+        question="统计服务所用隧道的目的端网元厂商分布，按数量升序排列，返回前5个厂商。",
+        intent_result=intent,
+    )
+
+    assert result.validation.accepted is True
+    assert "ne.vendor AS network_element_vendor" in result.generated_cypher
+    assert "count(ne) AS network_element_count" in result.generated_cypher
+
+
+def test_semantic_pipeline_uses_path_target_metric_for_location_breakdown_under_coarse_metric_intent() -> None:
+    pipeline = SemanticPipeline()
+    intent = IntentRecognitionResult(
+        primary_intent="metric_query",
+        secondary_intent="count_metric_query",
+        confidence=0.66,
+        source="embedding",
+        decision="accept",
+    )
+
+    result = pipeline.parse(
+        question="统计服务所经隧道穿过的网络元素中，按位置分组统计数量，按数量升序排列的前10个位置及其数量。",
+        intent_result=intent,
+    )
+
+    assert result.validation.accepted is True
+    assert "ne.location AS network_element_location" in result.generated_cypher
+    assert "count(ne) AS network_element_count" in result.generated_cypher
+
+
+def test_semantic_pipeline_includes_service_and_tunnel_context_for_service_tunnel_source_port_query() -> None:
+    pipeline = SemanticPipeline()
+    intent = IntentRecognitionResult(
+        primary_intent="record_retrieval_query",
+        secondary_intent="related_record_query",
+        confidence=0.92,
+        source="rule",
+        decision="accept",
+    )
+
+    result = pipeline.parse(
+        question="查询服务使用的隧道及其源网元厂商和端口MAC地址。",
+        intent_result=intent,
+    )
+
+    assert result.validation.accepted is True
+    assert "s.name AS service_name" in result.generated_cypher
+    assert "t.name AS tunnel_name" in result.generated_cypher
+
+
+def test_semantic_pipeline_treats_filtered_projection_as_record_query_not_existence() -> None:
+    pipeline = SemanticPipeline()
+    intent = IntentRecognitionResult(
+        primary_intent="existence_query",
+        secondary_intent="attribute_condition_existence_query",
+        confidence=0.62,
+        source="embedding",
+        decision="accept",
+    )
+
+    result = pipeline.parse(
+        question="查询所有服务质量等级为 Gold 的服务名称及其服务质量等级。",
+        intent_result=intent,
+    )
+
+    assert result.validation.accepted is True
+    assert result.generated_cypher == (
+        "MATCH (s:Service)\n"
+        "WHERE s.quality_of_service = 'Gold'\n"
+        "RETURN s.quality_of_service AS service_quality_of_service, s.name AS service_name"
+    )

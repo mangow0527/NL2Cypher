@@ -82,7 +82,7 @@ class LogicalQueryPlanner:
         filters = tuple(self._filter_ref(item) for item in semantic_match.filters)
         projections = tuple(self._return_ref(item.field) for item in semantic_match.returns)
         metrics = tuple(self._metric_ref(item.metric_id) for item in semantic_match.metrics)
-        kind = _semantic_query_kind(intent_result, metrics, projections)
+        kind = _semantic_query_kind(question, intent_result, metrics, projections)
         if kind == "ranking" and not metrics:
             projections = _ensure_ranking_name_projection(projections, semantic_match, self.semantic_view)
         order_by = tuple(self._order_ref(item, projections, metrics) for item in semantic_match.order_by)
@@ -337,22 +337,40 @@ def _field_name(semantic_view: GraphSemanticView, owner: str, property_name: str
 
 
 def _semantic_query_kind(
+    question: str,
     intent_result: IntentRecognitionResult,
     metrics: tuple[SemanticMetricRef, ...],
     projections: tuple[SemanticFieldRef, ...],
 ) -> SemanticQueryKind:
     primary = intent_result.primary_intent
+    if primary == "ranking_query":
+        return "ranking"
+    if metrics and projections and _asks_for_breakdown(question):
+        return "dimension_breakdown"
     if primary == "metric_query":
         return "metric_aggregation"
     if primary == "breakdown_query":
         return "dimension_breakdown"
-    if primary == "ranking_query":
-        return "ranking"
     if primary == "existence_query":
+        if projections and not _asks_for_existence(question):
+            return "record_selection"
         return "existence_check"
     if metrics and not projections:
         return "metric_aggregation"
     return "record_selection"
+
+
+def _asks_for_breakdown(question: str) -> bool:
+    return (
+        _contains(question, "按")
+        or _contains(question, "各")
+        or _contains(question, "分布")
+        or _contains(question, "分组")
+    )
+
+
+def _asks_for_existence(question: str) -> bool:
+    return _contains(question, "是否") or _contains(question, "有没有") or _contains(question, "存在")
 
 
 def _ensure_ranking_name_projection(

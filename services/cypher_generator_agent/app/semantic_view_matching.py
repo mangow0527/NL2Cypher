@@ -337,6 +337,7 @@ class SemanticViewMatcher:
                 if field.split(".", 1)[0] == self.semantic_view.path_semantics[paths[0].path_semantic].target_entity
             )
         returns.extend(_relationship_detail_default_returns(text, paths, self.semantic_view))
+        returns.extend(_service_tunnel_context_returns(text, paths))
         returns.extend(_both_side_property_returns(text, paths, self.semantic_view))
         return _prune_return_owners(_sort_returns_by_evidence(text, _unique_returns(returns)), entities, paths, self.semantic_view)
 
@@ -399,7 +400,14 @@ def _name_filter_owner(text: str, entities: list[str]) -> str:
 
 
 def _metric_owner(text: str, entities: list[str]) -> str:
-    if _contains(text, "网元") or _contains(text, "设备") or _contains(text, "厂商"):
+    if (
+        _contains(text, "网元")
+        or _contains(text, "网络元素")
+        or _contains(text, "设备")
+        or _contains(text, "厂商")
+        or _contains(text, "位置")
+        or _contains(text, "终点")
+    ):
         return "network_element"
     if _contains(text, "端口") or _contains(text, "接口"):
         return "port"
@@ -477,6 +485,26 @@ def _relationship_detail_default_returns(
     return [
         SemanticMatchedReturn(field=field, evidence="path_semantics.default_return_fields")
         for field in path.default_return_fields
+    ]
+
+
+def _service_tunnel_context_returns(text: str, paths: list[SemanticMatchedPath]) -> list[SemanticMatchedReturn]:
+    if not paths:
+        return []
+    if not paths[0].path_semantic.startswith("service.tunnel_"):
+        return []
+    if not _contains(text, "及其"):
+        return []
+    if not (
+        _contains(text, "服务使用的隧道")
+        or _contains(text, "业务使用的隧道")
+        or _contains(text, "服务所用隧道")
+        or _contains(text, "业务所用隧道")
+    ):
+        return []
+    return [
+        SemanticMatchedReturn(field="service.name", evidence="服务使用的隧道"),
+        SemanticMatchedReturn(field="tunnel.name", evidence="服务使用的隧道"),
     ]
 
 
