@@ -115,7 +115,7 @@ def test_generator_status_reports_semantic_alignment(monkeypatch, tmp_path):
 
     assert status["semantic_alignment"]["accepted"] is True
     assert status["semantic_alignment"]["diagnostics"] == []
-    assert "semantic_layer.yaml" in status["semantic_alignment"]["checked_sources"]
+    assert "network_graph_semantic_view.yaml" in status["semantic_alignment"]["checked_sources"]
     assert "knowledge/schema.json" in status["semantic_alignment"]["checked_sources"]
 
 
@@ -321,7 +321,7 @@ class TestCypherGeneratorAgentWorkflow:
                         source="knowledge/schema.json",
                     )
                 ],
-                checked_sources=["semantic_layer.yaml", "schema.json", "knowledge/schema.json"],
+                checked_sources=["network_graph_semantic_view.yaml", "schema.json", "knowledge/schema.json"],
             ),
         )
 
@@ -353,7 +353,7 @@ class TestCypherGeneratorAgentWorkflow:
                         source="knowledge",
                     )
                 ],
-                checked_sources=["semantic_layer.yaml", "schema.json"],
+                checked_sources=["network_graph_semantic_view.yaml", "schema.json"],
             ),
         )
 
@@ -381,7 +381,7 @@ class TestCypherGeneratorAgentWorkflow:
                         source="knowledge/schema.json",
                     )
                 ],
-                checked_sources=["semantic_layer.yaml", "schema.json", "knowledge/schema.json"],
+                checked_sources=["network_graph_semantic_view.yaml", "schema.json", "knowledge/schema.json"],
             ),
         )
 

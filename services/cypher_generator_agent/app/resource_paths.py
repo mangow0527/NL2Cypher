@@ -7,7 +7,7 @@ SERVICE_ROOT = Path(__file__).resolve().parents[1]
 RESOURCE_ROOT = SERVICE_ROOT / "resources"
 
 INTENT_RESOURCE_DIR = RESOURCE_ROOT / "intent"
-SEMANTIC_RESOURCE_DIR = RESOURCE_ROOT / "semantic"
+SEMANTIC_VIEW_RESOURCE_DIR = RESOURCE_ROOT / "semantic_views"
 
 
 def intent_taxonomy_path() -> Path:
@@ -34,5 +34,5 @@ def intent_llm_fewshots_path() -> Path:
     return INTENT_RESOURCE_DIR / "llm_fewshots.yaml"
 
 
-def semantic_layer_path() -> Path:
-    return SEMANTIC_RESOURCE_DIR / "semantic_layer.yaml"
+def graph_semantic_view_path() -> Path:
+    return SEMANTIC_VIEW_RESOURCE_DIR / "network_graph_semantic_view.yaml"

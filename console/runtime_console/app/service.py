@@ -1455,13 +1455,22 @@ class RuntimeResultsService:
         repair_response = self._read_repair_response(submission) or {}
         analysis_id = repair_response.get("analysis_id")
         if analysis_id:
-            analysis = self._read_json(self._analyses_dir / f"{analysis_id}.json")
-            if analysis is not None:
-                try:
-                    return RepairAnalysisRecord.model_validate(analysis).model_dump(mode="json")
-                except ValidationError:
-                    return None
+            return self._read_analysis_record_by_id(analysis_id)
+        ticket_id = (submission or {}).get("issue_ticket_id")
+        if isinstance(ticket_id, str) and ticket_id:
+            analysis = self._read_analysis_record_by_id(f"analysis-{ticket_id}")
+            if analysis is not None and analysis.get("ticket_id") == ticket_id:
+                return analysis
         return None
+
+    def _read_analysis_record_by_id(self, analysis_id: str) -> dict[str, Any] | None:
+        analysis = self._read_json(self._analyses_dir / f"{analysis_id}.json")
+        if analysis is None:
+            return None
+        try:
+            return RepairAnalysisRecord.model_validate(analysis).model_dump(mode="json")
+        except ValidationError:
+            return None
 
     def _read_repair_response(self, submission: dict[str, Any] | None) -> dict[str, Any] | None:
         payload = (submission or {}).get("repair_response")

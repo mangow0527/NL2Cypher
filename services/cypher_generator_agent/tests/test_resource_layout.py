@@ -12,15 +12,16 @@ def test_default_resources_are_grouped_by_pipeline_stage() -> None:
         resource_paths.intent_embedding_corpus_path(),
         resource_paths.intent_eval_set_path(),
         resource_paths.intent_llm_fewshots_path(),
-        resource_paths.semantic_layer_path(),
+        resource_paths.graph_semantic_view_path(),
     ]
 
     assert root.name == "resources"
     assert {path.parent.relative_to(root).as_posix() for path in expected_paths} == {
         "intent",
-        "semantic",
+        "semantic_views",
     }
     assert all(path.exists() for path in expected_paths)
     assert not (root.parent / "config" / "slot_dictionary.yaml").exists()
     assert not (root / "slots").exists()
     assert not (root / "business").exists()
+    assert not (root / "semantic" / "semantic_layer.yaml").exists()

@@ -1321,7 +1321,7 @@ def test_runtime_results_generator_section_parses_cga_trace_v2_generated(monkeyp
                 "ambiguity": None,
                 "trace": {
                     "candidate_generation": [{"candidate_id": "view-a"}],
-                    "semantic_completion": [{"slot": "service", "status": "filled"}],
+                    "semantic_completion": [{"entity": "service", "status": "filled"}],
                     "candidate_scores": [{"candidate_id": "view-a", "score": 0.93}],
                     "llm_disambiguation_attempts": [
                         _llm_trace_call(
@@ -1533,8 +1533,8 @@ def test_runtime_results_generator_section_parses_cga_trace_v2_clarification_req
         "planning",
         "generation",
     ]
-    semantic_layer = generator["trace_layers"][2]
-    assert semantic_layer["raw"]["result"]["ambiguity"]["reason"] == "source_or_target_ne"
+    semantic_view_layer = generator["trace_layers"][2]
+    assert semantic_view_layer["raw"]["result"]["ambiguity"]["reason"] == "source_or_target_ne"
     generation_fields = {field["label_zh"]: field["value"] for field in generator["trace_layers"][4]["fields"]}
     assert generation_fields["澄清问题"] == "你说的对应网元是指源网元还是目的网元？"
     prompts = generator["llm_prompts"]
@@ -1684,6 +1684,87 @@ def test_runtime_results_does_not_bind_repair_analysis_without_submission_analys
     assert repair["raw_output"] is None
     assert repair["knowledge_agent_request"] is None
     assert repair["knowledge_agent_response"] is None
+
+
+def test_runtime_results_binds_repair_analysis_by_current_ticket_id_without_submission_analysis_id(monkeypatch, tmp_path: Path):
+    testing_dir = tmp_path / "testing"
+    repair_dir = tmp_path / "repair"
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(testing_dir))
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_REPAIR_DATA_DIR", str(repair_dir))
+    _write_json(testing_dir / "goldens" / "qa_ticket_bound.json", {"id": "qa_ticket_bound", "difficulty": "L4"})
+    _write_json(
+        testing_dir / "submissions" / "qa_ticket_bound.json",
+        {
+            "id": "qa_ticket_bound",
+            "attempt_no": 3,
+            "question": "查询需要按 ticket 绑定修复分析的样本",
+            "generation_run_id": "run-ticket-bound",
+            "generated_cypher": "MATCH (n) RETURN n",
+            "input_prompt_snapshot": "generator prompt",
+            "generation_status": "generated",
+            "state": "issue_ticket_created",
+            "issue_ticket_id": "ticket-qa_ticket_bound-attempt-3",
+            "repair_response": None,
+            "updated_at": "2026-04-26T09:03:00+00:00",
+        },
+    )
+    _write_json(
+        repair_dir / "analyses" / "analysis-ticket-qa_ticket_bound-attempt-3.json",
+        {
+            "analysis_id": "analysis-ticket-qa_ticket_bound-attempt-3",
+            "ticket_id": "ticket-qa_ticket_bound-attempt-3",
+            "id": "qa_ticket_bound",
+            "status": "applied",
+            "prompt_snapshot": "repair prompt",
+            "system_prompt_snapshot": "repair system",
+            "user_prompt_snapshot": "repair user",
+            "raw_output": "{\"repairable\": true}",
+            "knowledge_repair_request": {
+                "id": "qa_ticket_bound",
+                "suggestion": "补充当前 ticket 的修复建议。",
+                "knowledge_types": ["few_shot"],
+            },
+            "knowledge_agent_response": {
+                "status": "ok",
+                "redispatch": {
+                    "status": "skipped",
+                    "dispatch": {
+                        "status": "skipped",
+                        "reason": "knowledge_agent_no_longer_redispatches_qa",
+                    },
+                },
+                "agent_run": {
+                    "decision": {
+                        "action": "human_review",
+                        "reason": "Converted legacy repair apply request into an agent review run.",
+                    },
+                },
+            },
+            "confidence": 0.8,
+            "rationale": "current ticket rationale",
+            "primary_knowledge_type": "few_shot",
+            "secondary_knowledge_types": [],
+            "diagnosis_context_summary": {},
+            "applied": True,
+            "created_at": "2026-04-26T09:04:00+00:00",
+            "applied_at": "2026-04-26T09:04:01+00:00",
+        },
+    )
+
+    from console.runtime_console.app.main import create_app
+
+    client = TestClient(create_app())
+
+    response = client.get("/api/v1/tasks/qa_ticket_bound")
+
+    assert response.status_code == 200
+    repair = response.json()["pipeline"]["repair_agent"]
+    assert repair["analysis_id"] == "analysis-ticket-qa_ticket_bound-attempt-3"
+    assert repair["issue_ticket_id"] == "ticket-qa_ticket_bound-attempt-3"
+    assert repair["repair_state"]["value"] == "waiting_human_review"
+    assert repair["knowledge_apply_state"]["value"] == "waiting_human_review"
+    assert repair["redispatch_state"]["value"] == "cancelled"
+    assert repair["suggestion"] == "补充当前 ticket 的修复建议。"
 
 
 def test_runtime_results_does_not_fallback_to_other_generation_failure_run(monkeypatch, tmp_path: Path):

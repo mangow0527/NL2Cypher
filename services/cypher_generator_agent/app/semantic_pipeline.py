@@ -16,7 +16,7 @@ from .config import get_settings
 from .parser import parse_model_output
 from .prompt_runtime import render_controlled_semantic_prompt, render_intent_recognition_fallback_prompt
 from .semantic_cypher_preflight import run_semantic_cypher_preflight
-from .semantic_layer import get_default_semantic_layer
+from .graph_semantic_view import get_default_graph_semantic_view
 from .semantic_query import SemanticQuerySpec
 from .semantic_view_matching import SemanticMatchResult, SemanticViewMatcher, SemanticViewMatchingTrace
 
@@ -113,17 +113,17 @@ class SemanticPipeline:
     def __init__(
         self,
         *,
-        semantic_layer: object | None = None,
+        semantic_view: object | None = None,
         renderer: CypherRenderer | None = None,
         llm_client: Any | None = None,
         knowledge_selector: KnowledgeSelector | None = None,
     ) -> None:
-        self.semantic_layer = semantic_layer or get_default_semantic_layer()
+        self.semantic_view = semantic_view or get_default_graph_semantic_view()
         self.renderer = renderer or CypherRenderer()
         self.llm_client = llm_client
         self.knowledge_selector = knowledge_selector
-        self.semantic_view_matcher = SemanticViewMatcher(self.semantic_layer)
-        self.logical_planner = LogicalQueryPlanner(self.semantic_layer)
+        self.semantic_view_matcher = SemanticViewMatcher(self.semantic_view)
+        self.logical_planner = LogicalQueryPlanner(self.semantic_view)
 
     def parse(
         self,
@@ -635,7 +635,7 @@ def _intent_trace(
             "llm_primary_attempts": [],
             "llm_secondary_attempts": [
                 {
-                    "stage": "legacy_single_step_fallback",
+                    "stage": "intent_recognition_fallback",
                     "prompt": fallback_prompt,
                     "raw_output": fallback_response,
                 }
@@ -658,10 +658,10 @@ def _service_context_trace(uses_semantic_view: bool) -> dict[str, object]:
     settings = get_settings()
     rag_endpoint = f"{settings.rag_service_url.rstrip('/')}/api/v1/retrieve"
     return {
-        "active_mode": "semantic_view_pipeline" if uses_semantic_view else "semantic_pipeline_compat",
+        "active_mode": "semantic_view_pipeline",
         "model": settings.llm_model,
         "knowledge_context_source": settings.knowledge_context_source,
-        "semantic_view_version": "semantic_layer.yaml",
+        "semantic_view_version": "network_graph_semantic_view.yaml",
         "rag_source": rag_endpoint if settings.knowledge_context_source == "rag" else settings.knowledge_docs_dir,
     }
 
