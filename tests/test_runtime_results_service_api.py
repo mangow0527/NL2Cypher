@@ -78,6 +78,8 @@ def test_runtime_results_detail_script_uses_chinese_cypher_generator_comparison_
     assert "意图识别：一级分类 LLM 判定" in script
     assert "语义视图匹配：受控 LLM 消歧" in script
     assert "生成链路摘要" in script
+    assert "澄清反问" in script
+    assert "澄清选项" in script
     assert "发给大模型的完整提示词" not in script
     assert "大模型原始输出" not in script
     assert "parser 后 Cypher" not in script
@@ -1541,6 +1543,7 @@ def test_runtime_results_generator_section_parses_cga_trace_v2_clarification_req
     assert generator["generation_status"] == "clarification_required"
     assert generator["trace_schema_version"] == "cga_trace_v2"
     assert generator["clarification"]["question_zh"] == "你说的对应网元是指源网元还是目的网元？"
+    assert response.json()["summary"]["clarification"]["question_zh"] == "你说的对应网元是指源网元还是目的网元？"
     assert [layer["key"] for layer in generator["trace_layers"]] == [
         "orchestration",
         "intent_recognition",
@@ -1557,6 +1560,12 @@ def test_runtime_results_generator_section_parses_cga_trace_v2_clarification_req
     assert prompts["semantic_view_disambiguation"]["triggered"] is True
     assert prompts["semantic_view_disambiguation"]["raw_output"] == "{\"decision\":\"clarify\"}"
     assert prompts["cypher_generation_fallback"]["triggered"] is False
+
+    list_response = client.get("/api/v1/tasks")
+    assert list_response.status_code == 200
+    task = list_response.json()["tasks"][0]
+    assert task["clarification"]["question_zh"] == "你说的对应网元是指源网元还是目的网元？"
+    assert task["clarification_summary"] == "你说的对应网元是指源网元还是目的网元？"
 
 
 def test_runtime_results_prefers_latest_generated_submission_over_stale_generation_failure(monkeypatch, tmp_path: Path):
