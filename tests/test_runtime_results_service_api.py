@@ -61,13 +61,15 @@ def test_runtime_results_task_detail_page_is_separate_from_main_table(monkeypatc
     assert "task-table-body" not in response.text
 
 
-def test_runtime_results_detail_script_uses_chinese_cypher_generator_comparison_labels():
+def test_runtime_results_detail_script_puts_cypher_comparison_in_overview():
     script = (Path(__file__).resolve().parents[1] / "console" / "runtime_console" / "ui" / "detail.js").read_text(encoding="utf-8")
 
-    assert "生成对照" in script
+    assert "cypherOverviewCard" in script
+    assert "cypher-overview-card" in script
     assert "自然语言问题" in script
     assert "标准 Cypher" in script
     assert "生成 Cypher" in script
+    assert "生成对照" not in script
     assert "意图识别 LLM 原始返回" in script
     assert "Cypher 生成 LLM 原始返回" in script
     assert "服务编排层" in script
@@ -83,6 +85,13 @@ def test_runtime_results_detail_script_uses_chinese_cypher_generator_comparison_
     assert "发给大模型的完整提示词" not in script
     assert "大模型原始输出" not in script
     assert "parser 后 Cypher" not in script
+
+
+def test_runtime_results_generated_cypher_overview_card_has_no_status_pill():
+    script = (Path(__file__).resolve().parents[1] / "console" / "runtime_console" / "ui" / "detail.js").read_text(encoding="utf-8")
+
+    assert "cypherOverviewCard('生成 Cypher', generationCypherText({ ...generator, generated_cypher: generatedCypher }))" in script
+    assert "cypherOverviewCard('生成 Cypher', generationCypherText({ ...generator, generated_cypher: generatedCypher }), summary.generation_status)" not in script
 
 
 def test_runtime_results_task_table_uses_chinese_clarification_status():
@@ -1310,18 +1319,20 @@ def test_runtime_results_generator_section_parses_cga_trace_v2_generated(monkeyp
                         "{\"secondary_intent\":\"related_record_query\"}",
                         parsed_output={"secondary_intent": "related_record_query"},
                     ),
-                    _llm_trace_call(
-                        "llm-intent-fallback-001",
-                        "intent_recognition_fallback",
-                        "意图兜底 prompt",
-                        "{\"decision\":\"accept\"}",
-                        parsed_output={"decision": "accept"},
-                    ),
                 ],
             },
         },
         "semantic_view_matching": {
             "stages": {"candidate_generation": {"decision": "accept", "candidate_count": 1}},
+            "llm_disambiguation_attempts": [
+                _llm_trace_call(
+                    "llm-semantic-disambiguation-001",
+                    "semantic_view_matching.disambiguation",
+                    "语义视图消歧 prompt",
+                    "{\"selected\":\"view-a\"}",
+                    parsed_output={"selected": "view-a"},
+                )
+            ],
             "result": {
                 "matched_entities": [{"type": "Service", "name": "Gold"}],
                 "filters": [{"field": "service.name", "operator": "=", "value": "Gold"}],
@@ -1332,15 +1343,6 @@ def test_runtime_results_generator_section_parses_cga_trace_v2_generated(monkeyp
                 "trace": {
                     "semantic_completion": [{"entity": "service", "status": "filled"}],
                     "candidate_scores": [{"candidate_id": "view-a", "score": 0.93}],
-                    "llm_disambiguation_attempts": [
-                        _llm_trace_call(
-                            "llm-semantic-disambiguation-001",
-                            "semantic_view_matching.disambiguation",
-                            "语义视图消歧 prompt",
-                            "{\"selected\":\"view-a\"}",
-                            parsed_output={"selected": "view-a"},
-                        )
-                    ],
                 },
                 "candidate_trace": [{"candidate_id": "view-a"}],
             }
@@ -1430,10 +1432,10 @@ def test_runtime_results_generator_section_parses_cga_trace_v2_generated(monkeyp
     assert trace_layers[1]["raw"]["result"]["primary_intent"] == "record_retrieval_query"
     intent_fields = {field["label_zh"]: field["value"] for field in trace_layers[1]["fields"]}
     assert intent_fields["二级 LLM 调用"] == "1 条"
-    assert intent_fields["兜底 LLM 调用"] == "1 条"
+    assert "兜底 LLM 调用" not in intent_fields
     semantic_fields = {field["label_zh"]: field["value"] for field in trace_layers[2]["fields"]}
     assert semantic_fields["候选生成"] == "1 条"
-    assert trace_layers[2]["raw"]["result"]["trace"]["llm_disambiguation_attempts"][0]["call_id"] == "llm-semantic-disambiguation-001"
+    assert trace_layers[2]["raw"]["llm_disambiguation_attempts"][0]["call_id"] == "llm-semantic-disambiguation-001"
     assert trace_layers[3]["raw"]["logical_query_plan"]["answer_shape"] == "table"
     assert trace_layers[4]["raw"]["generation"]["parser"]["parse_summary"] == "cypher_only"
 
@@ -1443,8 +1445,7 @@ def test_runtime_results_generator_section_parses_cga_trace_v2_generated(monkeyp
     assert prompts["intent_primary_classification"]["prompt"] == "一级意图 prompt"
     assert prompts["intent_primary_classification"]["raw_output"] == "{\"primary_intent\":\"record_retrieval_query\"}"
     assert prompts["intent_secondary_classification"]["prompt"] == "二级意图 prompt"
-    assert prompts["intent_recognition_fallback"]["prompt"] == "意图兜底 prompt"
-    assert prompts["intent_recognition_fallback"]["raw_output"] == "{\"decision\":\"accept\"}"
+    assert "intent_recognition_fallback" not in prompts
     assert prompts["semantic_view_disambiguation"]["raw_output"] == "{\"selected\":\"view-a\"}"
     assert prompts["cypher_generation_fallback"]["title_zh"] == "Renderer 失败后的 Cypher 兜底生成"
     assert prompts["cypher_generation_fallback"]["raw_output"].startswith("MATCH (s:Service)")
