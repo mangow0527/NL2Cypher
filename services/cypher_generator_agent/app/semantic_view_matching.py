@@ -228,6 +228,7 @@ class SemanticViewMatcher:
                     evidence=f"名称为{name_match.group(1)}",
                 )
             )
+        filters.extend(_match_numeric_filters(text, self._match_entities(text), self.semantic_view))
         return _unique_filters(filters)
 
     def _match_paths(self, text: str, entities: list[str]) -> list[SemanticMatchedPath]:
@@ -277,7 +278,14 @@ class SemanticViewMatcher:
             if owner is not None:
                 for entity_term in (owner.name, owner.name_zh, owner.label, *owner.synonyms):
                     if field.property == "id":
-                        terms.append(f"{entity_term}编号")
+                        terms.extend(
+                            [
+                                f"{entity_term}编号",
+                                f"{entity_term}ID",
+                                f"{entity_term}的ID",
+                                f"{entity_term} Id",
+                            ]
+                        )
                     if field.property == "name":
                         terms.append(f"{entity_term}名称")
                     if field.property == "latency":
@@ -314,6 +322,8 @@ class SemanticViewMatcher:
                 for field in self.semantic_view.path_semantics[paths[0].path_semantic].default_return_fields
                 if field.split(".", 1)[0] == self.semantic_view.path_semantics[paths[0].path_semantic].target_entity
             )
+        returns.extend(_relationship_detail_default_returns(text, paths, self.semantic_view))
+        returns.extend(_both_side_property_returns(text, paths, self.semantic_view))
         return _prune_return_owners(_sort_returns_by_evidence(text, _unique_returns(returns)), entities, paths, self.semantic_view)
 
     def _match_metrics(self, text: str, entities: list[str]) -> list[SemanticMatchedMetric]:
@@ -383,6 +393,97 @@ def _metric_owner(text: str, entities: list[str]) -> str:
     return entities[-1] if entities else "service"
 
 
+def _match_numeric_filters(
+    text: str,
+    entities: list[str],
+    semantic_view: GraphSemanticView,
+) -> list[SemanticMatchedFilter]:
+    filters: list[SemanticMatchedFilter] = []
+    ordered_fields = sorted(
+        semantic_view.fields.values(),
+        key=lambda field: (0 if field.owner in entities else 1, field.owner, field.name),
+    )
+    for field in ordered_fields:
+        if field.value_type != "number" or "filter" not in field.roles:
+            continue
+        if entities and field.owner not in entities:
+            continue
+        owner = semantic_view.entities.get(field.owner)
+        terms = [field.name_zh, _property_zh(field.property), *field.synonyms]
+        if owner is not None:
+            terms.extend(
+                [
+                    f"{owner.name_zh}{_property_zh(field.property)}",
+                    f"{owner.name_zh}的{_property_zh(field.property)}",
+                ]
+            )
+        for term in [item for item in terms if item]:
+            match = re.search(rf"{re.escape(term)}(?:为|是|等于|=)(\d+(?:\.\d+)?)", text)
+            if not match:
+                continue
+            raw_value = match.group(1)
+            value: int | float = float(raw_value) if "." in raw_value else int(raw_value)
+            filters.append(
+                SemanticMatchedFilter(
+                    field=field.name,
+                    operator="=",
+                    value=value,
+                    evidence=f"{term}为{raw_value}",
+                )
+            )
+            break
+    return filters
+
+
+def _property_zh(property_name: str) -> str:
+    return {
+        "bandwidth": "带宽",
+        "latency": "延迟",
+        "speed": "速率",
+        "length": "长度",
+        "mtu": "MTU",
+        "bandwidth_capacity": "带宽容量",
+    }.get(property_name, "")
+
+
+def _relationship_detail_default_returns(
+    text: str,
+    paths: list[SemanticMatchedPath],
+    semantic_view: GraphSemanticView,
+) -> list[SemanticMatchedReturn]:
+    if not paths or not (
+        _contains(text, "对应关系") or _contains(text, "双方") or _contains(text, "其使用的隧道")
+    ):
+        return []
+    path = semantic_view.path_semantics[paths[0].path_semantic]
+    return [
+        SemanticMatchedReturn(field=field, evidence="path_semantics.default_return_fields")
+        for field in path.default_return_fields
+    ]
+
+
+def _both_side_property_returns(
+    text: str,
+    paths: list[SemanticMatchedPath],
+    semantic_view: GraphSemanticView,
+) -> list[SemanticMatchedReturn]:
+    if not paths or paths[0].path_semantic != "service.uses_tunnel" or not _contains(text, "双方"):
+        return []
+    returns: list[SemanticMatchedReturn] = []
+    if _contains(text, "名称"):
+        returns.extend(
+            [
+                SemanticMatchedReturn(field="service.name", evidence="双方名称"),
+                SemanticMatchedReturn(field="tunnel.name", evidence="双方名称"),
+            ]
+        )
+    if _contains(text, "延迟") or _contains(text, "时延"):
+        for field in ("service.latency", "tunnel.latency"):
+            if field in semantic_view.fields:
+                returns.append(SemanticMatchedReturn(field=field, evidence="双方延迟"))
+    return returns
+
+
 def _has_field_owner_context(text: str, owner: SemanticEntity, property_name: str) -> bool:
     word = {
         "id": "编号",
@@ -411,6 +512,8 @@ def _generic_return_evidence(text: str, owner: SemanticEntity, property_name: st
     }.get(property_name)
     if word is None or not _contains(text, word):
         return None
+    if property_name in {"bandwidth", "latency"} and _contains(text, f"{word}值"):
+        return f"{word}值"
     for term in (owner.name, owner.name_zh, owner.label, *owner.synonyms):
         for candidate in (f"{term}{word}", f"{term}的{word}"):
             if _contains(text, candidate):
@@ -437,11 +540,19 @@ def _prune_return_owners(
 
 
 def _sort_returns_by_evidence(text: str, returns: list[SemanticMatchedReturn]) -> list[SemanticMatchedReturn]:
-    def key(item: SemanticMatchedReturn) -> tuple[int, str]:
+    def key(item: SemanticMatchedReturn) -> tuple[int, int, int, str]:
+        if item.evidence in {"path_semantics.default_return_fields", "双方名称"}:
+            priority = 0
+        elif item.evidence == "双方延迟" or item.field.endswith(".latency"):
+            priority = 2
+        else:
+            priority = 1
         index = text.find(item.evidence)
         if index < 0:
             index = 10_000
-        return (index, item.field)
+        owner = item.field.split(".", 1)[0]
+        owner_order = {"service": 0, "tunnel": 1, "network_element": 2, "port": 3}.get(owner, 99)
+        return (priority, index, owner_order, item.field)
 
     return sorted(returns, key=key)
 
@@ -542,6 +653,10 @@ def _match_limit(text: str) -> int | None:
     if not match:
         match = re.search(r"前(\d+)个", text)
     if not match:
+        match = re.search(r"(?:最少|最多|数量最少|数量最多)的?(\d+)个", text)
+    if not match:
+        match = re.search(r"返回(?:数量)?(?:最少|最多)的?(\d+)个", text)
+    if not match:
         return None
     return int(match.group(1))
 
@@ -558,12 +673,22 @@ def _unique(values: list[str]) -> list[str]:
 
 def _unique_returns(values: list[SemanticMatchedReturn]) -> list[SemanticMatchedReturn]:
     result: list[SemanticMatchedReturn] = []
-    seen: set[str] = set()
+    seen: dict[str, int] = {}
     for value in values:
-        if value.field not in seen:
-            seen.add(value.field)
+        existing_index = seen.get(value.field)
+        if existing_index is None:
+            seen[value.field] = len(result)
             result.append(value)
+            continue
+        if _return_evidence_priority(value.evidence) < _return_evidence_priority(result[existing_index].evidence):
+            result[existing_index] = value
     return result
+
+
+def _return_evidence_priority(evidence: str) -> int:
+    if evidence in {"path_semantics.default_return_fields", "双方名称", "双方延迟"}:
+        return 0
+    return 1
 
 
 def _unique_filters(values: list[SemanticMatchedFilter]) -> list[SemanticMatchedFilter]:

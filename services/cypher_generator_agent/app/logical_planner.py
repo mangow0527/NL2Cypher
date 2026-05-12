@@ -83,7 +83,7 @@ class LogicalQueryPlanner:
         projections = tuple(self._return_ref(item.field) for item in semantic_match.returns)
         metrics = tuple(self._metric_ref(item.metric_id) for item in semantic_match.metrics)
         kind = _semantic_query_kind(intent_result, metrics, projections)
-        if kind == "ranking":
+        if kind == "ranking" and not metrics:
             projections = _ensure_ranking_name_projection(projections, semantic_match, self.semantic_view)
         order_by = tuple(self._order_ref(item, projections, metrics) for item in semantic_match.order_by)
         if kind == "dimension_breakdown" and metrics and not order_by:
