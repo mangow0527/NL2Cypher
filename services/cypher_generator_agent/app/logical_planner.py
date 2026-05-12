@@ -192,18 +192,6 @@ class LogicalQueryPlanner:
 
     def _metric_ref(self, metric_id: str) -> SemanticMetricRef:
         metric = self.semantic_view.metrics.get(metric_id)
-        if metric is None and metric_id.endswith("_count"):
-            owner = metric_id[: -len("_count")]
-            entity = self.semantic_view.entities[owner]
-            return SemanticMetricRef(
-                name=metric_id,
-                entity=owner,
-                alias=entity.alias,
-                aggregation="count",
-                expression=f"count({entity.alias})",
-                output_alias=metric_id,
-                property=None,
-            )
         if metric is None:
             raise KeyError(metric_id)
         entity = self.semantic_view.entities[metric.target_entity]

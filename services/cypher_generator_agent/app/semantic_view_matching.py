@@ -113,11 +113,16 @@ class SemanticViewMatcher:
 
     def match(self, question: str) -> SemanticViewMatchingTrace:
         text = normalize_question(question)
-        if _is_ambiguous_service_network_element_question(text):
+        entities = self._match_entities(text)
+        filters = self._match_filters(text)
+        paths = self._match_paths(text, entities)
+        if len(paths) > 1:
             return SemanticViewMatchingTrace(
                 source="network_graph_semantic_view.yaml",
                 result=SemanticMatchResult(
                     accepted=False,
+                    entities=tuple(entities),
+                    paths=tuple(paths),
                     needs_clarification=True,
                     clarification_type="path_ambiguity",
                     clarification_question="你说的“对应网元”是指源网元、目的网元，还是路径经过的网元？",
@@ -126,21 +131,18 @@ class SemanticViewMatcher:
                         {"label": "目的网元", "value": "service.tunnel_destination"},
                         {"label": "路径经过的网元", "value": "service.tunnel_path"},
                     ),
-                    trace=("对应网元 -> 多条合法路径语义候选",),
+                    trace=("网元路径语义未唯一命中 -> 多条合法路径语义候选",),
+                    candidate_trace=tuple(_candidate_trace(entities, filters, paths, [], [])),
                 ),
                 stages={
                     "candidate_generation": {"decision": "clarify", "reason": "ambiguous_service_network_element"},
                     "disambiguation_rules": [
                         rule.rule_id
                         for rule in self.semantic_view.disambiguation_rules
-                        if rule.prefer in {"service.tunnel_source", "service.tunnel_destination", "service.tunnel_path"}
+                        if rule.prefer in {path.path_semantic for path in paths}
                     ],
                 },
             )
-
-        entities = self._match_entities(text)
-        filters = self._match_filters(text)
-        paths = self._match_paths(text, entities)
         returns = self._match_returns(text, entities, paths)
         metrics = self._match_metrics(text, entities)
         order_by = self._match_order_by(text, returns, metrics)
@@ -245,7 +247,10 @@ class SemanticViewMatcher:
         if not paths:
             paths.extend(_infer_paths_from_entities(text, entities, self.semantic_view))
         paths = _apply_disambiguation_rules(text, paths, self.semantic_view)
-        return _unique_paths(sorted(paths, key=lambda item: (-len(item.relationships), -len(item.evidence), item.path_semantic)))[:1]
+        ranked_paths = _unique_paths(sorted(paths, key=lambda item: (-len(item.relationships), -len(item.evidence), item.path_semantic)))
+        if len(ranked_paths) > 1 and {path.evidence for path in ranked_paths} == {"实体组合命中"}:
+            return ranked_paths
+        return ranked_paths[:1]
 
     def _match_returns(
         self,
@@ -318,9 +323,9 @@ class SemanticViewMatcher:
             if any(_contains(text, term) for term in terms):
                 metrics.append(SemanticMatchedMetric(metric_id=metric.name, evidence=_field_evidence(text, terms)))
         if not metrics and (_contains(text, "数量") or _contains(text, "多少") or _contains(text, "统计")):
-            owner = _metric_owner(text, entities)
-            metric_name = f"{owner}_count"
-            metrics.append(SemanticMatchedMetric(metric_id=metric_name, evidence="数量"))
+            metric_name = f"{_metric_owner(text, entities)}_count"
+            if metric_name in self.semantic_view.metrics:
+                metrics.append(SemanticMatchedMetric(metric_id=metric_name, evidence="数量"))
         return _unique_metrics(metrics)
 
     def _match_order_by(
@@ -445,10 +450,6 @@ def _contains(text: str, term: str | None) -> bool:
     if not term:
         return False
     return str(term).replace(" ", "") in text
-
-
-def _is_ambiguous_service_network_element_question(text: str) -> bool:
-    return _contains(text, "服务") and (_contains(text, "对应的网元") or _contains(text, "对应网元"))
 
 
 def _complete_entities(
@@ -609,7 +610,7 @@ def _infer_paths_from_entities(
                 SemanticMatchedPath(
                     path_semantic=path.name,
                     relationships=path.relationships,
-                    evidence=path.trigger_phrases[0] if path.trigger_phrases else path.name,
+                    evidence="实体组合命中",
                 )
             )
     if not inferred and "service" in entity_set and _contains(text, "隧道"):

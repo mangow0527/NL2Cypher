@@ -232,6 +232,46 @@ metrics:
     expression: count(t)
     synonyms: [隧道数量]
     default_alias: tunnel_count
+  network_element_count:
+    name_zh: 网元数量
+    description: 网元或网络设备记录数量。
+    aggregation: count
+    target: {entity: network_element}
+    expression: count(ne)
+    synonyms: [网元数量, 网络设备数量, 设备数量, 网元总数, 网络设备总数, 设备总数]
+    default_alias: network_element_count
+  port_count:
+    name_zh: 端口数量
+    description: 端口或接口记录数量。
+    aggregation: count
+    target: {entity: port}
+    expression: count(p)
+    synonyms: [端口数量, 接口数量, 端口总数, 接口总数]
+    default_alias: port_count
+  fiber_count:
+    name_zh: 光纤数量
+    description: 光纤记录数量。
+    aggregation: count
+    target: {entity: fiber}
+    expression: count(f)
+    synonyms: [光纤数量, 纤芯数量, 光纤总数, 纤芯总数]
+    default_alias: fiber_count
+  link_count:
+    name_zh: 链路数量
+    description: 链路记录数量。
+    aggregation: count
+    target: {entity: link}
+    expression: count(l)
+    synonyms: [链路数量, 连接数量, 链路总数]
+    default_alias: link_count
+  protocol_count:
+    name_zh: 协议数量
+    description: 协议记录数量。
+    aggregation: count
+    target: {entity: protocol}
+    expression: count(proto)
+    synonyms: [协议数量, 网络协议数量, 协议总数]
+    default_alias: protocol_count
   avg_tunnel_latency:
     name_zh: 平均隧道时延
     description: 对隧道时延求平均值。

@@ -215,6 +215,30 @@ def test_semantic_pipeline_returns_clarification_before_planning_for_ambiguous_v
     assert "源网元" in payload["clarification"]["question_zh"]
 
 
+def test_semantic_pipeline_clarifies_generic_service_network_element_path() -> None:
+    pipeline = get_semantic_pipeline()
+    intent = IntentRecognitionResult(
+        primary_intent="record_retrieval_query",
+        secondary_intent="related_record_query",
+        confidence=0.88,
+        source="rule",
+        decision="accept",
+    )
+
+    result = pipeline.parse(question="查询服务有哪些网元", intent_result=intent)
+
+    payload = result.to_dict()
+    assert result.validation.accepted is False
+    assert result.generated_cypher is None
+    assert payload["semantic_view_matching"]["result"]["needs_clarification"] is True
+    assert {item["path_semantic"] for item in payload["semantic_view_matching"]["result"]["paths"]} == {
+        "service.tunnel_path",
+        "service.tunnel_destination",
+        "service.tunnel_source",
+    }
+    assert payload["clarification"]["source_stage"] == "semantic_view_matching"
+
+
 def test_semantic_pipeline_does_not_generate_when_intent_is_not_accepted() -> None:
     pipeline = SemanticPipeline()
     intent = IntentRecognitionResult(
@@ -703,6 +727,10 @@ def test_semantic_pipeline_generates_single_dimension_breakdown_query() -> None:
     result = pipeline.parse(question="按厂商统计设备数量", intent_result=intent)
 
     assert result.validation.accepted is True
+    payload = result.to_dict()
+    assert payload["semantic_view_matching"]["result"]["metrics"] == [
+        {"metric_id": "network_element_count", "evidence": "设备数量"}
+    ]
     assert result.generated_cypher == (
         "MATCH (ne:NetworkElement)\n"
         "RETURN ne.vendor AS network_element_vendor, count(ne) AS network_element_count\n"

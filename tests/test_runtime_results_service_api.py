@@ -1307,11 +1307,19 @@ def test_runtime_results_generator_section_parses_cga_trace_v2_generated(monkeyp
                         "二级意图 prompt",
                         "{\"secondary_intent\":\"related_record_query\"}",
                         parsed_output={"secondary_intent": "related_record_query"},
-                    )
+                    ),
+                    _llm_trace_call(
+                        "llm-intent-fallback-001",
+                        "intent_recognition_fallback",
+                        "意图兜底 prompt",
+                        "{\"decision\":\"accept\"}",
+                        parsed_output={"decision": "accept"},
+                    ),
                 ],
             },
         },
         "semantic_view_matching": {
+            "stages": {"candidate_generation": {"decision": "accept", "candidate_count": 1}},
             "result": {
                 "matched_entities": [{"type": "Service", "name": "Gold"}],
                 "filters": [{"field": "service.name", "operator": "=", "value": "Gold"}],
@@ -1320,7 +1328,6 @@ def test_runtime_results_generator_section_parses_cga_trace_v2_generated(monkeyp
                 "confidence": 0.9,
                 "ambiguity": None,
                 "trace": {
-                    "candidate_generation": [{"candidate_id": "view-a"}],
                     "semantic_completion": [{"entity": "service", "status": "filled"}],
                     "candidate_scores": [{"candidate_id": "view-a", "score": 0.93}],
                     "llm_disambiguation_attempts": [
@@ -1333,6 +1340,7 @@ def test_runtime_results_generator_section_parses_cga_trace_v2_generated(monkeyp
                         )
                     ],
                 },
+                "candidate_trace": [{"candidate_id": "view-a"}],
             }
         },
         "logical_query_plan": {
@@ -1418,6 +1426,11 @@ def test_runtime_results_generator_section_parses_cga_trace_v2_generated(monkeyp
     assert orchestration_fields["运行模式"] == "semantic_view_pipeline"
     assert orchestration_fields["模型"] == "qwen3-vl-32b-thinking"
     assert trace_layers[1]["raw"]["result"]["primary_intent"] == "record_retrieval_query"
+    intent_fields = {field["label_zh"]: field["value"] for field in trace_layers[1]["fields"]}
+    assert intent_fields["二级 LLM 调用"] == "1 条"
+    assert intent_fields["兜底 LLM 调用"] == "1 条"
+    semantic_fields = {field["label_zh"]: field["value"] for field in trace_layers[2]["fields"]}
+    assert semantic_fields["候选生成"] == "1 条"
     assert trace_layers[2]["raw"]["result"]["trace"]["llm_disambiguation_attempts"][0]["call_id"] == "llm-semantic-disambiguation-001"
     assert trace_layers[3]["raw"]["logical_query_plan"]["answer_shape"] == "table"
     assert trace_layers[4]["raw"]["generation"]["parser"]["parse_summary"] == "cypher_only"
@@ -1428,6 +1441,8 @@ def test_runtime_results_generator_section_parses_cga_trace_v2_generated(monkeyp
     assert prompts["intent_primary_classification"]["prompt"] == "一级意图 prompt"
     assert prompts["intent_primary_classification"]["raw_output"] == "{\"primary_intent\":\"record_retrieval_query\"}"
     assert prompts["intent_secondary_classification"]["prompt"] == "二级意图 prompt"
+    assert prompts["intent_recognition_fallback"]["prompt"] == "意图兜底 prompt"
+    assert prompts["intent_recognition_fallback"]["raw_output"] == "{\"decision\":\"accept\"}"
     assert prompts["semantic_view_disambiguation"]["raw_output"] == "{\"selected\":\"view-a\"}"
     assert prompts["cypher_generation_fallback"]["title_zh"] == "Renderer 失败后的 Cypher 兜底生成"
     assert prompts["cypher_generation_fallback"]["raw_output"].startswith("MATCH (s:Service)")
@@ -1686,7 +1701,7 @@ def test_runtime_results_does_not_bind_repair_analysis_without_submission_analys
     assert repair["knowledge_agent_response"] is None
 
 
-def test_runtime_results_binds_repair_analysis_by_current_ticket_id_without_submission_analysis_id(monkeypatch, tmp_path: Path):
+def test_runtime_results_does_not_bind_repair_analysis_by_ticket_id_without_submission_analysis_id(monkeypatch, tmp_path: Path):
     testing_dir = tmp_path / "testing"
     repair_dir = tmp_path / "repair"
     monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(testing_dir))
@@ -1697,7 +1712,7 @@ def test_runtime_results_binds_repair_analysis_by_current_ticket_id_without_subm
         {
             "id": "qa_ticket_bound",
             "attempt_no": 3,
-            "question": "查询需要按 ticket 绑定修复分析的样本",
+            "question": "查询缺少 repair response analysis_id 的样本",
             "generation_run_id": "run-ticket-bound",
             "generated_cypher": "MATCH (n) RETURN n",
             "input_prompt_snapshot": "generator prompt",
@@ -1759,12 +1774,11 @@ def test_runtime_results_binds_repair_analysis_by_current_ticket_id_without_subm
 
     assert response.status_code == 200
     repair = response.json()["pipeline"]["repair_agent"]
-    assert repair["analysis_id"] == "analysis-ticket-qa_ticket_bound-attempt-3"
+    assert repair["analysis_id"] is None
     assert repair["issue_ticket_id"] == "ticket-qa_ticket_bound-attempt-3"
-    assert repair["repair_state"]["value"] == "waiting_human_review"
-    assert repair["knowledge_apply_state"]["value"] == "waiting_human_review"
-    assert repair["redispatch_state"]["value"] == "cancelled"
-    assert repair["suggestion"] == "补充当前 ticket 的修复建议。"
+    assert repair["llm_prompt_markdown"] == ""
+    assert repair["knowledge_agent_request"] is None
+    assert repair["knowledge_agent_response"] is None
 
 
 def test_runtime_results_does_not_fallback_to_other_generation_failure_run(monkeypatch, tmp_path: Path):
