@@ -1038,3 +1038,85 @@ def test_semantic_pipeline_generates_relationship_existence_query() -> None:
         "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel)\n"
         "RETURN count(*) > 0 AS exists"
     )
+
+
+def test_semantic_pipeline_prefers_source_port_when_source_network_element_owns_port_fields() -> None:
+    pipeline = SemanticPipeline()
+    intent = IntentRecognitionResult(
+        primary_intent="record_retrieval_query",
+        secondary_intent="related_record_query",
+        confidence=0.92,
+        source="rule",
+        decision="accept",
+    )
+
+    result = pipeline.parse(
+        question="查询服务使用的隧道及其源网元厂商和端口MAC地址。",
+        intent_result=intent,
+    )
+
+    assert result.validation.accepted is True
+    assert "[:TUNNEL_SRC]->(ne:NetworkElement)-[:HAS_PORT]->(p:Port)" in result.generated_cypher
+    assert "ne.vendor AS network_element_vendor" in result.generated_cypher
+    assert "p.mac_address AS port_mac_address" in result.generated_cypher
+
+
+def test_semantic_pipeline_returns_network_element_version_for_source_port_path() -> None:
+    pipeline = SemanticPipeline()
+    intent = IntentRecognitionResult(
+        primary_intent="record_retrieval_query",
+        secondary_intent="related_record_query",
+        confidence=0.92,
+        source="rule",
+        decision="accept",
+    )
+
+    result = pipeline.parse(
+        question="查询服务使用的隧道及其源网元端口信息，返回服务名称、隧道标准、网元版本和端口MAC地址。",
+        intent_result=intent,
+    )
+
+    assert result.validation.accepted is True
+    assert "[:TUNNEL_SRC]->(ne:NetworkElement)-[:HAS_PORT]->(p:Port)" in result.generated_cypher
+    assert "ne.software_version AS network_element_software_version" in result.generated_cypher
+
+
+def test_semantic_pipeline_treats_port_detail_and_element_ip_as_source_port_returns() -> None:
+    pipeline = SemanticPipeline()
+    intent = IntentRecognitionResult(
+        primary_intent="record_retrieval_query",
+        secondary_intent="related_record_query",
+        confidence=0.92,
+        source="rule",
+        decision="accept",
+    )
+
+    result = pipeline.parse(
+        question="查询服务使用的隧道源端网络元素上的端口信息，包含端口详情、服务名称、隧道标准及元素IP。",
+        intent_result=intent,
+    )
+
+    assert result.validation.accepted is True
+    assert "[:TUNNEL_SRC]->(ne:NetworkElement)-[:HAS_PORT]->(p:Port)" in result.generated_cypher
+    assert "p" in result.generated_cypher
+    assert "ne.ip_address AS network_element_ip_address" in result.generated_cypher
+
+
+def test_semantic_pipeline_orders_two_stage_aggregate_by_first_count_phrases() -> None:
+    pipeline = SemanticPipeline()
+    intent = IntentRecognitionResult(
+        primary_intent="ranking_query",
+        secondary_intent="metric_ranking_query",
+        confidence=0.92,
+        source="rule",
+        decision="accept",
+    )
+
+    result = pipeline.parse(
+        question="统计各服务关联的目的网元总数，按首次统计数量降序排列，返回前5个服务的名称、时延及两次统计结果。",
+        intent_result=intent,
+    )
+
+    assert result.validation.accepted is True
+    assert "WITH s, count(ne) AS first_total" in result.generated_cypher
+    assert "ORDER BY first_total DESC" in result.generated_cypher

@@ -9,7 +9,7 @@ entities:
     label: NetworkElement
     alias: ne
     description: 网络中的设备或网元节点。
-    synonyms: [网元, 网络设备, 设备, 路由器, 交换机, 防火墙]
+    synonyms: [网元, 网络元素, 网络设备, 设备, 路由器, 交换机, 防火墙]
     primary_key: id
     display_fields: [id, name]
     default_order_by: name
@@ -176,9 +176,9 @@ dimensions:
   network_element.vendor: {name_zh: 网元厂商, owner: network_element, property: vendor, description: 网元厂商, synonyms: [厂商, 设备厂商], roles: [filter, return, group_by], value_type: string}
   network_element.elem_type: {name_zh: 网元类型, owner: network_element, property: elem_type, description: 网元类型, synonyms: [设备类型, 网元类型], roles: [filter, return, group_by], value_type: string}
   network_element.location: {name_zh: 网元位置, owner: network_element, property: location, description: 网元所在位置, synonyms: [位置, 地点], roles: [filter, return, group_by], value_type: string}
-  network_element.ip_address: {name_zh: 网元 IP 地址, owner: network_element, property: ip_address, description: 网元 IP 地址, synonyms: [IP 地址, IP地址, 网元IP地址, 网元 IP 地址, 设备IP地址, 设备 IP 地址, 管理地址], roles: [filter, return], value_type: string}
+  network_element.ip_address: {name_zh: 网元 IP 地址, owner: network_element, property: ip_address, description: 网元 IP 地址, synonyms: [IP 地址, IP地址, 网元IP地址, 网元 IP 地址, 设备IP地址, 设备 IP 地址, 元素IP, 元素 IP, 网络元素IP, 网络元素 IP, 管理地址], roles: [filter, return], value_type: string}
   network_element.model: {name_zh: 网元型号, owner: network_element, property: model, description: 网元型号, synonyms: [型号, 设备型号], roles: [filter, return], value_type: string}
-  network_element.software_version: {name_zh: 软件版本, owner: network_element, property: software_version, description: 网元软件版本, synonyms: [软件版本], roles: [filter, return], value_type: string}
+  network_element.software_version: {name_zh: 软件版本, owner: network_element, property: software_version, description: 网元软件版本, synonyms: [软件版本, 网元版本, 元素版本, 网络元素版本], roles: [filter, return], value_type: string}
   port.id: {name_zh: 端口编号, owner: port, property: id, description: 端口唯一标识, synonyms: [端口编号, 端口ID, 端口 ID, 接口ID, 接口 ID], roles: [filter, return], value_type: string}
   port.name: {name_zh: 端口名称, owner: port, property: name, description: 端口名称, synonyms: [端口名称, 接口名称], roles: [filter, return], value_type: string}
   port.status: {name_zh: 端口状态, owner: port, property: status, description: 端口运行状态, synonyms: [端口状态], roles: [filter, return, group_by], value_type: string}
@@ -336,7 +336,7 @@ path_semantics:
       - relationship: service_uses_tunnel
       - relationship: tunnel_src
       - relationship: has_port
-    trigger_phrases: [源网元端口, 源网络元素端口, 源端网络元素上的端口, 源端网元上的端口, 源网元上的端口, 隧道源网元端口]
+    trigger_phrases: [源网元端口, 源网元端口信息, 源网络元素端口, 源端网络元素上的端口, 源端网元上的端口, 源网元上的端口, 隧道源网元端口, 源网元厂商和端口, 源网元厂商和端口MAC地址, 源网元厂商和端口 MAC 地址]
     negative_phrases: [目的网元, 目的端网元]
     default_return_fields: [service.name, tunnel.name, network_element.ip_address, port.id, port.name]
   service.tunnel_destination_ports:
@@ -373,7 +373,7 @@ path_semantics:
     path:
       - relationship: service_uses_tunnel
       - relationship: tunnel_dst
-    trigger_phrases: [目的网元, 目的端网元, 目的网元位置, 目的端网元位置, 连接到各位置网元, 各位置网元, 到达的目的网元, 经隧道到达]
+    trigger_phrases: [目的网元, 目的端网元, 目的网元位置, 目的端网元位置, 连接到各位置网元, 各位置网元, 到达的目的网元, 经隧道到达, 隧道终点, 隧道终点数量, 终点数量]
     negative_phrases: [源网元]
     default_return_fields: [network_element.name, network_element.location]
   tunnel.path_through_network_element:
@@ -430,7 +430,7 @@ disambiguation_rules:
     explanation: 用户明确提到到达网元或目的网元下的端口时，选择目的端网元端口路径。
   - rule_id: source_port_prefers_tunnel_src_port
     name_zh: 源网元端口优先解释为源端网元端口
-    positive_patterns: [源网元端口, 源网络元素端口, 源端网络元素上的端口, 源端网元上的端口]
+    positive_patterns: [源网元端口, 源网元端口信息, 源网络元素端口, 源端网络元素上的端口, 源端网元上的端口, 源网元厂商和端口, 源网元厂商和端口MAC地址]
     negative_patterns: [目的网元, 目的端网元, 经过网元, 穿过]
     prefer: service.tunnel_source_ports
     reject: [service.tunnel_path_ports, service.tunnel_destination_ports]

@@ -261,10 +261,11 @@ class SemanticViewMatcher:
     ) -> list[SemanticMatchedReturn]:
         returns: list[SemanticMatchedReturn] = []
         path_target = _path_target_entity(paths, self.semantic_view)
-        if _contains(text, "详细信息") or _contains(text, "节点信息"):
+        if _contains(text, "详细信息") or _contains(text, "节点信息") or _contains(text, "详情"):
             target = path_target or (entities[-1] if entities else None)
             if target is not None:
-                returns.append(SemanticMatchedReturn(field=f"{target}.*", evidence="详细信息"))
+                evidence = "详情" if _contains(text, "详情") else "详细信息"
+                returns.append(SemanticMatchedReturn(field=f"{target}.*", evidence=evidence))
 
         ordered_fields = sorted(
             self.semantic_view.fields.values(),
@@ -274,11 +275,12 @@ class SemanticViewMatcher:
             if field.property == "id" and not _contains(text, "ID") and not _contains(text, "编号"):
                 continue
             terms = [field.name, f"{field.owner}.{field.property}", field.name_zh, *field.synonyms]
+            owner_terms: list[str] = []
             owner = self.semantic_view.entities.get(field.owner)
             if owner is not None:
                 for entity_term in (owner.name, owner.name_zh, owner.label, *owner.synonyms):
                     if field.property == "id":
-                        terms.extend(
+                        owner_terms.extend(
                             [
                                 f"{entity_term}编号",
                                 f"{entity_term}ID",
@@ -287,11 +289,12 @@ class SemanticViewMatcher:
                             ]
                         )
                     if field.property == "name":
-                        terms.append(f"{entity_term}名称")
+                        owner_terms.append(f"{entity_term}名称")
                     if field.property == "latency":
-                        terms.append(f"{entity_term}时延")
+                        owner_terms.append(f"{entity_term}时延")
                     if field.property == "elem_type":
-                        terms.append(f"{entity_term}类型")
+                        owner_terms.append(f"{entity_term}类型")
+                terms.extend(owner_terms)
                 has_generic_owner_context = _has_field_owner_context(text, owner, field.property)
                 can_use_generic_field = field.owner in entities and (
                     path_target is None or has_generic_owner_context
@@ -309,8 +312,14 @@ class SemanticViewMatcher:
                 ):
                     returns.append(SemanticMatchedReturn(field=field.name, evidence="类型"))
                     continue
-            if any(_contains(text, term) for term in terms):
-                returns.append(SemanticMatchedReturn(field=field.name, evidence=_field_evidence(text, terms)))
+            evidence_terms = terms
+            if path_target is not None and field.owner not in entities and owner is not None:
+                if has_generic_owner_context:
+                    evidence_terms = terms
+                else:
+                    evidence_terms = owner_terms
+            if any(_contains(text, term) for term in evidence_terms):
+                returns.append(SemanticMatchedReturn(field=field.name, evidence=_field_evidence(text, evidence_terms)))
 
         if not returns and _contains(text, "所有"):
             target = _path_target_entity(paths, self.semantic_view) or (entities[-1] if entities else None)
@@ -500,6 +509,9 @@ def _has_field_owner_context(text: str, owner: SemanticEntity, property_name: st
         "bandwidth": "带宽",
         "latency": "时延",
         "quality_of_service": "服务质量",
+        "ip_address": "IP",
+        "software_version": "版本",
+        "vendor": "厂商",
         "status": "状态",
         "elem_type": "类型",
     }.get(property_name)
@@ -533,6 +545,9 @@ def _generic_return_evidence(text: str, owner: SemanticEntity, property_name: st
         "bandwidth": "带宽",
         "latency": "时延",
         "quality_of_service": "服务质量",
+        "ip_address": "IP",
+        "software_version": "版本",
+        "vendor": "厂商",
         "status": "状态",
         "elem_type": "类型",
     }.get(property_name)
@@ -586,6 +601,12 @@ def _prune_return_owners(
     allowed = set(entities)
     if path_target is not None:
         allowed.add(path_target)
+    for path in paths:
+        for relationship_name in path.relationships:
+            relationship = semantic_view.relationships.get(relationship_name)
+            if relationship is not None:
+                allowed.add(relationship.from_entity)
+                allowed.add(relationship.to_entity)
     if not allowed:
         return returns
     preferred = [item for item in returns if item.field.split(".", 1)[0] in allowed]

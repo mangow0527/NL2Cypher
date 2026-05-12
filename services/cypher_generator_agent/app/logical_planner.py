@@ -97,7 +97,7 @@ class LogicalQueryPlanner:
                 output_alias="first_total",
             )
             metrics = (replace(first_metric, name="total_count", output_alias="total_count"),)
-            if order_by and _contains(question, "首次统计值"):
+            if order_by and _orders_by_first_stage(question):
                 order_by = tuple(
                     SemanticOrderBy(
                         expression="first_total" if item.expression == first_metric.output_alias else item.expression,
@@ -401,6 +401,14 @@ def _requires_two_stage_aggregate(
         or _contains(question, "首次统计的")
         or _contains(question, "两次统计结果")
         or _contains(question, "分阶段统计")
+    )
+
+
+def _orders_by_first_stage(question: str) -> bool:
+    return (
+        _contains(question, "首次统计值")
+        or _contains(question, "首次统计数量")
+        or _contains(question, "首次统计的")
     )
 
 
