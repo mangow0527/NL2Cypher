@@ -219,6 +219,8 @@ def test_semantic_pipeline_groups_metric_ranking_by_location_and_preserves_botto
     )
 
     assert result.validation.accepted is True
+    assert result.preflight is not None
+    assert result.preflight.accepted is True
     assert result.generated_cypher == (
         "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel)-[:TUNNEL_DST]->(ne:NetworkElement)\n"
         "RETURN ne.location AS network_element_location, count(ne) AS network_element_count\n"

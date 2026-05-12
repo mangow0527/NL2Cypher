@@ -63,7 +63,7 @@ entities:
     label: Link
     alias: l
     description: 网络链路资源。
-    synonyms: [链路, 连接]
+    synonyms: [链路]
     primary_key: id
     display_fields: [id, name]
     default_order_by: name
