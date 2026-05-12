@@ -495,6 +495,8 @@ def _service_tunnel_context_returns(text: str, paths: list[SemanticMatchedPath])
         return []
     if not _contains(text, "及其"):
         return []
+    if _contains(text, "返回"):
+        return []
     if not (
         _contains(text, "服务使用的隧道")
         or _contains(text, "业务使用的隧道")

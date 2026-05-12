@@ -1182,6 +1182,28 @@ def test_semantic_pipeline_includes_service_and_tunnel_context_for_service_tunne
     assert "t.name AS tunnel_name" in result.generated_cypher
 
 
+def test_semantic_pipeline_does_not_add_context_fields_when_return_clause_is_explicit() -> None:
+    pipeline = SemanticPipeline()
+    intent = IntentRecognitionResult(
+        primary_intent="record_retrieval_query",
+        secondary_intent="related_record_query",
+        confidence=0.92,
+        source="rule",
+        decision="accept",
+    )
+
+    result = pipeline.parse(
+        question="查询所有服务使用的隧道及其目的网元，返回厂商名称和隧道带宽。",
+        intent_result=intent,
+    )
+
+    assert result.validation.accepted is True
+    assert "ne.vendor AS network_element_vendor" in result.generated_cypher
+    assert "t.bandwidth AS tunnel_bandwidth" in result.generated_cypher
+    assert "s.name AS service_name" not in result.generated_cypher
+    assert "t.name AS tunnel_name" not in result.generated_cypher
+
+
 def test_semantic_pipeline_treats_filtered_projection_as_record_query_not_existence() -> None:
     pipeline = SemanticPipeline()
     intent = IntentRecognitionResult(
