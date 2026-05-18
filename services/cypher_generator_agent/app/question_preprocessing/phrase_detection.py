@@ -28,6 +28,7 @@ class PhraseSpan:
     start: int
     end: int
     rule_id: str
+    offset_basis: str = "cleaned_question"
 
     def to_dict(self) -> dict[str, str | int]:
         return {
@@ -36,6 +37,7 @@ class PhraseSpan:
             "action": self.action,
             "start": self.start,
             "end": self.end,
+            "offset_basis": self.offset_basis,
             "rule_id": self.rule_id,
         }
 
@@ -232,6 +234,7 @@ def _build_reference_candidates(
                 "marker_kind": span.kind,
                 "marker_start": span.start,
                 "marker_end": span.end,
+                "offset_basis": "cleaned_question",
                 "local_window_before": text[max(0, span.start - window_size) : span.start],
                 "local_window_after": text[span.end : span.end + window_size],
                 "candidate_policy": "defer_to_reference_resolution",

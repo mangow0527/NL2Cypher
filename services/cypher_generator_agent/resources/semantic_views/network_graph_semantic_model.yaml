@@ -7,7 +7,6 @@
 #
 # 事实来源:
 #   - services/testing_agent/docs/reference/schema.json
-#   - services/testing_agent/docs/reference/network_schema_v10_profile.md
 #   - 当前远端 testing-agent 同步配置中的 TuGraph:
 #       graph: network_schema_v10
 #       probed_at: 2026-05-14

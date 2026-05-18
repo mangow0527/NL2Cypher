@@ -46,6 +46,7 @@ def test_text_cleaning_inserts_light_punctuation_before_boundary_phrase() -> Non
         },
     )
 
+    assert result.to_dict()["original_question"] == "查询一下金牌服务 哦不对是银牌服务"
     assert result.cleaned_question == "查询一下金牌服务，哦不对是银牌服务"
     assert [normalization.rule for normalization in result.normalizations] == [
         "insert_light_punctuation_before_boundary_phrase"

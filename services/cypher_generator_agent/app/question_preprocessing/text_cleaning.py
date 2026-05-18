@@ -41,12 +41,14 @@ class TextNormalization:
 class CleanTextResult:
     """Text cleaning output passed to later preprocessing stages."""
 
+    original_question: str
     cleaned_question: str
     changed: bool
     normalizations: tuple[TextNormalization, ...]
 
     def to_dict(self) -> dict[str, object]:
         return {
+            "original_question": self.original_question,
             "cleaned_question": self.cleaned_question,
             "changed": self.changed,
             "normalizations": [normalization.to_dict() for normalization in self.normalizations],
@@ -79,6 +81,7 @@ def clean_text(
     text = _remove_safe_chinese_inner_spaces(text, cleaning_config, normalizations)
 
     return CleanTextResult(
+        original_question=original_question,
         cleaned_question=text,
         changed=text != original_question,
         normalizations=tuple(normalizations),
@@ -263,7 +266,7 @@ def _remove_safe_chinese_inner_spaces(
         return text
 
     # Only remove a single ASCII space between two CJK characters. This keeps
-    # mixed-language text such as "Gold 服务" intact for later stages.
+    # mixed-language text such as "ABC 服务" intact for later stages.
     pattern = re.compile(rf"(?P<left>[{_CJK_RE}]) (?P<right>[{_CJK_RE}])")
     while True:
         match = pattern.search(text)

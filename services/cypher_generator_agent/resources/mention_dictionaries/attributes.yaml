@@ -1,0 +1,444 @@
+version: 1
+source_schema: services/testing_agent/docs/reference/schema.json
+description: Attribute mention dictionary for schema-backed object properties.
+entries:
+  - canonical_id: NetworkElement.id
+    mention_type: attribute
+    surface_forms: [网元 ID, 网元ID, 网元编号, 设备 ID, 设备ID, 设备编号, NetworkElement id, unique identifier]
+    description: Business-visible unique identifier for NetworkElement; schema pattern is ne-[0-9]{4}.
+    parent_object: NetworkElement
+    column: id
+    value_type: STRING
+    belongs_to_hint: [NetworkElement]
+
+  - canonical_id: NetworkElement.ip_address
+    mention_type: attribute
+    surface_forms: [网元 IP 地址, 网元IP地址, 设备 IP 地址, 设备IP地址, IP 地址, IP地址, IPv4 address, ip_address, management address, 管理地址]
+    description: IPv4 address of a network element.
+    parent_object: NetworkElement
+    column: ip_address
+    value_type: STRING
+    belongs_to_hint: [NetworkElement, REL_TUNNEL_SRC, REL_TUNNEL_DST, REL_PATH_THROUGH]
+
+  - canonical_id: NetworkElement.location
+    mention_type: attribute
+    surface_forms: [网元位置, 设备位置, 位置, 站点, 地点, location, site]
+    description: Location or site of a network element.
+    parent_object: NetworkElement
+    column: location
+    value_type: STRING
+    belongs_to_hint: [NetworkElement]
+
+  - canonical_id: NetworkElement.model
+    mention_type: attribute
+    surface_forms: [网元型号, 设备型号, 型号, model]
+    description: Hardware or product model of a network element.
+    parent_object: NetworkElement
+    column: model
+    value_type: STRING
+    belongs_to_hint: [NetworkElement]
+
+  - canonical_id: NetworkElement.name
+    mention_type: attribute
+    surface_forms: [网元名称, 设备名称, 名称, name, NetworkElement name]
+    description: Display name of a network element.
+    parent_object: NetworkElement
+    column: name
+    value_type: STRING
+    belongs_to_hint: [NetworkElement]
+
+  - canonical_id: NetworkElement.software_version
+    mention_type: attribute
+    surface_forms: [软件版本, 网元版本, 设备版本, 网络元素版本, software version, software_version, version]
+    description: Software version of a network element.
+    parent_object: NetworkElement
+    column: software_version
+    value_type: STRING
+    belongs_to_hint: [NetworkElement]
+
+  - canonical_id: NetworkElement.elem_type
+    mention_type: attribute
+    surface_forms: [网元类型, 设备类型, 网络元素类型, 类型, elem_type, router, switch, firewall, load_balancer, wan_optimizer]
+    description: Network element type; schema comment lists router, switch, firewall, load_balancer, and wan_optimizer.
+    parent_object: NetworkElement
+    column: elem_type
+    value_type: STRING
+    belongs_to_hint: [NetworkElement]
+
+  - canonical_id: NetworkElement.vendor
+    mention_type: attribute
+    surface_forms: [网元厂商, 设备厂商, 厂商, vendor]
+    description: Vendor of a network element.
+    parent_object: NetworkElement
+    column: vendor
+    value_type: STRING
+    belongs_to_hint: [NetworkElement]
+
+  - canonical_id: Protocol.id
+    mention_type: attribute
+    surface_forms: [协议 ID, 协议ID, 协议编号, Protocol id, proto id]
+    description: Business-visible unique identifier for Protocol; schema pattern is proto-[a-z0-9-]+.
+    parent_object: Protocol
+    column: id
+    value_type: STRING
+    belongs_to_hint: [Protocol]
+
+  - canonical_id: Protocol.ietf_category
+    mention_type: attribute
+    surface_forms: [IETF 分类, IETF类别, 协议分类, ietf_category, Routing, Transport, Applications, Security, Management]
+    description: IETF category of a protocol.
+    parent_object: Protocol
+    column: ietf_category
+    value_type: STRING
+    belongs_to_hint: [Protocol]
+
+  - canonical_id: Protocol.name
+    mention_type: attribute
+    surface_forms: [协议名称, 名称, name, Protocol name]
+    description: Display name of a protocol.
+    parent_object: Protocol
+    column: name
+    value_type: STRING
+    belongs_to_hint: [Protocol]
+
+  - canonical_id: Protocol.standard
+    mention_type: attribute
+    surface_forms: [协议标准, 标准, IETF 标准, IETF标准, RFC 标准, RFC标准, RFC, standard]
+    description: Protocol standard; schema comment says values follow pattern RFC [0-9]+.
+    parent_object: Protocol
+    column: standard
+    value_type: STRING
+    belongs_to_hint: [Protocol]
+
+  - canonical_id: Protocol.version
+    mention_type: attribute
+    surface_forms: [协议版本, 版本, version, Protocol version]
+    description: Protocol version.
+    parent_object: Protocol
+    column: version
+    value_type: STRING
+    belongs_to_hint: [Protocol]
+
+  - canonical_id: Tunnel.bandwidth
+    mention_type: attribute
+    surface_forms: [隧道带宽, 带宽, bandwidth]
+    description: Bandwidth of a tunnel.
+    parent_object: Tunnel
+    column: bandwidth
+    value_type: DOUBLE
+    belongs_to_hint: [Tunnel]
+
+  - canonical_id: Tunnel.latency
+    mention_type: attribute
+    surface_forms: [隧道时延, 隧道延迟, 时延, 延迟, latency]
+    description: Latency of a tunnel.
+    parent_object: Tunnel
+    column: latency
+    value_type: DOUBLE
+    belongs_to_hint: [Tunnel]
+
+  - canonical_id: Tunnel.id
+    mention_type: attribute
+    surface_forms: [隧道 ID, 隧道ID, 隧道编号, Tunnel id]
+    description: Business-visible unique identifier for Tunnel; schema pattern is tun-[a-z-]+-[0-9]+.
+    parent_object: Tunnel
+    column: id
+    value_type: STRING
+    belongs_to_hint: [Tunnel]
+
+  - canonical_id: Tunnel.ietf_standard
+    mention_type: attribute
+    surface_forms: [隧道 IETF 标准, 隧道IETF标准, 隧道标准, IETF 标准, IETF标准, RFC 标准, RFC标准, RFC, ietf_standard]
+    description: IETF standard associated with a tunnel; schema comment says values follow pattern RFC [0-9]+.
+    parent_object: Tunnel
+    column: ietf_standard
+    value_type: STRING
+    belongs_to_hint: [Tunnel, Protocol]
+
+  - canonical_id: Tunnel.name
+    mention_type: attribute
+    surface_forms: [隧道名称, 名称, name, Tunnel name]
+    description: Display name of a tunnel.
+    parent_object: Tunnel
+    column: name
+    value_type: STRING
+    belongs_to_hint: [Tunnel]
+
+  - canonical_id: Tunnel.elem_type
+    mention_type: attribute
+    surface_forms: [隧道类型, 类型, elem_type, MPLS-TE, GRE, IPsec, L2TP, VXLAN, MPLS-VPN]
+    description: Tunnel type; schema comment lists MPLS-TE, GRE, IPsec, L2TP, VXLAN, and MPLS-VPN.
+    parent_object: Tunnel
+    column: elem_type
+    value_type: STRING
+    belongs_to_hint: [Tunnel]
+
+  - canonical_id: Service.bandwidth
+    mention_type: attribute
+    surface_forms: [服务带宽, 业务带宽, 带宽, bandwidth]
+    description: Bandwidth of a service.
+    parent_object: Service
+    column: bandwidth
+    value_type: DOUBLE
+    belongs_to_hint: [Service]
+
+  - canonical_id: Service.latency
+    mention_type: attribute
+    surface_forms: [服务时延, 业务时延, 服务延迟, 业务延迟, 时延, 延迟, latency]
+    description: Latency of a service.
+    parent_object: Service
+    column: latency
+    value_type: DOUBLE
+    belongs_to_hint: [Service]
+
+  - canonical_id: Service.id
+    mention_type: attribute
+    surface_forms: [服务 ID, 服务ID, 服务编号, 业务 ID, 业务ID, 业务编号, Service id]
+    description: Business-visible unique identifier for Service; schema pattern is svc-[a-z-]+-[0-9]+.
+    parent_object: Service
+    column: id
+    value_type: STRING
+    belongs_to_hint: [Service]
+
+  - canonical_id: Service.name
+    mention_type: attribute
+    surface_forms: [服务名称, 业务名称, 名称, name, Service name]
+    description: Display name of a service.
+    parent_object: Service
+    column: name
+    value_type: STRING
+    belongs_to_hint: [Service]
+
+  - canonical_id: Service.quality_of_service
+    mention_type: attribute
+    surface_forms: [服务质量, 服务质量等级, 服务等级, QoS, quality_of_service, Gold, Silver, Bronze, Best_Effort]
+    description: Service quality level; schema comment lists Gold, Silver, Bronze, and Best_Effort.
+    parent_object: Service
+    column: quality_of_service
+    value_type: STRING
+    belongs_to_hint: [Service]
+
+  - canonical_id: Service.elem_type
+    mention_type: attribute
+    surface_forms: [服务类型, 业务类型, 类型, elem_type, MPLS-VPN, QoS, L3VPN, MPLS-TE, Firewall_Service]
+    description: Service type; schema comment lists MPLS-VPN, QoS, L3VPN, MPLS-TE, and Firewall_Service.
+    parent_object: Service
+    column: elem_type
+    value_type: STRING
+    belongs_to_hint: [Service]
+
+  - canonical_id: Port.speed
+    mention_type: attribute
+    surface_forms: [端口速率, 接口速率, 速率, speed]
+    description: Speed of a port.
+    parent_object: Port
+    column: speed
+    value_type: DOUBLE
+    belongs_to_hint: [Port]
+
+  - canonical_id: Port.id
+    mention_type: attribute
+    surface_forms: [端口 ID, 端口ID, 端口编号, 接口 ID, 接口ID, 接口编号, Port id]
+    description: Business-visible unique identifier for Port; schema pattern is port-[a-z0-9-]+.
+    parent_object: Port
+    column: id
+    value_type: STRING
+    belongs_to_hint: [Port]
+
+  - canonical_id: Port.mac_address
+    mention_type: attribute
+    surface_forms: [端口 MAC 地址, 端口MAC地址, 接口 MAC 地址, 接口MAC地址, MAC 地址, MAC地址, mac_address]
+    description: MAC address of a port.
+    parent_object: Port
+    column: mac_address
+    value_type: STRING
+    belongs_to_hint: [Port]
+
+  - canonical_id: Port.name
+    mention_type: attribute
+    surface_forms: [端口名称, 接口名称, 名称, name, Port name]
+    description: Display name of a port.
+    parent_object: Port
+    column: name
+    value_type: STRING
+    belongs_to_hint: [Port]
+
+  - canonical_id: Port.status
+    mention_type: attribute
+    surface_forms: [端口状态, 接口状态, 状态, status, up, down, administratively_down]
+    description: Port operational status; schema comment lists up, down, and administratively_down.
+    parent_object: Port
+    column: status
+    value_type: STRING
+    belongs_to_hint: [Port]
+
+  - canonical_id: Port.elem_type
+    mention_type: attribute
+    surface_forms: [端口类型, 接口类型, 类型, elem_type, physical, logical, virtual]
+    description: Port type; schema comment lists physical, logical, and virtual.
+    parent_object: Port
+    column: elem_type
+    value_type: STRING
+    belongs_to_hint: [Port]
+
+  - canonical_id: Port.vlan_id
+    mention_type: attribute
+    surface_forms: [端口 VLAN, 接口 VLAN, VLAN, VLAN ID, vlan_id]
+    description: VLAN identifier of a port.
+    parent_object: Port
+    column: vlan_id
+    value_type: STRING
+    belongs_to_hint: [Port]
+
+  - canonical_id: Fiber.bandwidth_capacity
+    mention_type: attribute
+    surface_forms: [光纤带宽容量, 光纤容量, 带宽容量, bandwidth_capacity]
+    description: Bandwidth capacity of a fiber.
+    parent_object: Fiber
+    column: bandwidth_capacity
+    value_type: DOUBLE
+    belongs_to_hint: [Fiber]
+
+  - canonical_id: Fiber.length
+    mention_type: attribute
+    surface_forms: [光纤长度, 长度, length]
+    description: Length of a fiber.
+    parent_object: Fiber
+    column: length
+    value_type: DOUBLE
+    belongs_to_hint: [Fiber]
+
+  - canonical_id: Fiber.id
+    mention_type: attribute
+    surface_forms: [光纤 ID, 光纤ID, 光纤编号, Fiber id]
+    description: Business-visible unique identifier for Fiber; schema pattern is fiber-[0-9]{4}.
+    parent_object: Fiber
+    column: id
+    value_type: STRING
+    belongs_to_hint: [Fiber]
+
+  - canonical_id: Fiber.location
+    mention_type: attribute
+    surface_forms: [光纤位置, 位置, 地点, location]
+    description: Location of a fiber.
+    parent_object: Fiber
+    column: location
+    value_type: STRING
+    belongs_to_hint: [Fiber]
+
+  - canonical_id: Fiber.name
+    mention_type: attribute
+    surface_forms: [光纤名称, 名称, name, Fiber name]
+    description: Display name of a fiber.
+    parent_object: Fiber
+    column: name
+    value_type: STRING
+    belongs_to_hint: [Fiber]
+
+  - canonical_id: Fiber.elem_type
+    mention_type: attribute
+    surface_forms: [光纤类型, 类型, elem_type, single-mode, multi-mode, 单模, 多模]
+    description: Fiber type; schema comment lists single-mode and multi-mode.
+    parent_object: Fiber
+    column: elem_type
+    value_type: STRING
+    belongs_to_hint: [Fiber]
+
+  - canonical_id: Fiber.wavelength
+    mention_type: attribute
+    surface_forms: [光纤波长, 波长, wavelength, nm]
+    description: Fiber wavelength; schema comment says values follow pattern [0-9]+nm.
+    parent_object: Fiber
+    column: wavelength
+    value_type: STRING
+    belongs_to_hint: [Fiber]
+
+  - canonical_id: Link.bandwidth
+    mention_type: attribute
+    surface_forms: [链路带宽, 带宽, bandwidth]
+    description: Bandwidth of a link.
+    parent_object: Link
+    column: bandwidth
+    value_type: DOUBLE
+    belongs_to_hint: [Link]
+
+  - canonical_id: Link.latency
+    mention_type: attribute
+    surface_forms: [链路时延, 链路延迟, 时延, 延迟, latency]
+    description: Latency of a link.
+    parent_object: Link
+    column: latency
+    value_type: DOUBLE
+    belongs_to_hint: [Link]
+
+  - canonical_id: Link.mtu
+    mention_type: attribute
+    surface_forms: [链路 MTU, MTU, mtu]
+    description: MTU of a link.
+    parent_object: Link
+    column: mtu
+    value_type: INT32
+    belongs_to_hint: [Link]
+
+  - canonical_id: Link.admin_status
+    mention_type: attribute
+    surface_forms: [链路管理状态, 管理状态, admin_status, up, down, testing]
+    description: Link administrative status; schema comment lists up, down, and testing.
+    parent_object: Link
+    column: admin_status
+    value_type: STRING
+    belongs_to_hint: [Link]
+
+  - canonical_id: Link.id
+    mention_type: attribute
+    surface_forms: [链路 ID, 链路ID, 链路编号, Link id]
+    description: Business-visible unique identifier for Link; schema pattern is link-[0-9]{4}.
+    parent_object: Link
+    column: id
+    value_type: STRING
+    belongs_to_hint: [Link]
+
+  - canonical_id: Link.name
+    mention_type: attribute
+    surface_forms: [链路名称, 名称, name, Link name]
+    description: Display name of a link.
+    parent_object: Link
+    column: name
+    value_type: STRING
+    belongs_to_hint: [Link]
+
+  - canonical_id: Link.protocol
+    mention_type: attribute
+    surface_forms: [链路协议, 协议, protocol]
+    description: Scalar protocol field on Link.
+    parent_object: Link
+    column: protocol
+    value_type: STRING
+    belongs_to_hint: [Link]
+
+  - canonical_id: Link.status
+    mention_type: attribute
+    surface_forms: [链路状态, 状态, status]
+    description: Operational status of a link.
+    parent_object: Link
+    column: status
+    value_type: STRING
+    belongs_to_hint: [Link]
+
+  - canonical_id: Link.elem_type
+    mention_type: attribute
+    surface_forms: [链路类型, 类型, elem_type]
+    description: Link type.
+    parent_object: Link
+    column: elem_type
+    value_type: STRING
+    belongs_to_hint: [Link]
+
+  - canonical_id: Link.vlan_id
+    mention_type: attribute
+    surface_forms: [链路 VLAN, VLAN, VLAN ID, vlan_id]
+    description: VLAN identifier of a link.
+    parent_object: Link
+    column: vlan_id
+    value_type: STRING
+    belongs_to_hint: [Link]

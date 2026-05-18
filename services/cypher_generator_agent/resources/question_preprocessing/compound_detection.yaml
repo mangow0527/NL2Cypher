@@ -1,0 +1,52 @@
+# 自然语言问题预处理：复合查询检测配置
+#
+# 用于第 5 步“复合查询检测”。这里只识别明显的一问多查信号。
+
+version: 1
+resource_id: compound_detection_rules
+name_zh: 自然语言问题复合查询检测规则
+
+dependent_multi_step_patterns:
+  - id: multi_step_first_then_by_result
+    first_cue: 先
+    dependency_cues:
+      - 再根据
+      - 然后根据
+      - 再用
+      - 然后用
+
+parallel_compound_cues:
+  - id: parallel_query_separately
+    text: 分别查询
+  - id: parallel_query_simultaneously
+    text: 同时查询
+  - id: parallel_query_another
+    text: 另外查
+
+parallel_query_after_connector_patterns:
+  - id: parallel_connector_then_query
+    connector: 然后
+    query_cues:
+      - 查询
+      - 查询一下
+      - 查一下
+      - 帮我查
+  - id: parallel_connector_and_query
+    connector: 以及
+    query_cues:
+      - 查询
+      - 查询一下
+      - 查一下
+      - 帮我查
+
+allowed_single_query_cues:
+  sequence_connectors:
+    - id: connector_then
+      text: 然后
+  return_intros:
+    - id: return_intro_you_need_give_me_return
+      text: 你需要给我返回
+    - id: return_intro_give_me_return
+      text: 给我返回
+    - id: return_intro_return
+      text: 返回

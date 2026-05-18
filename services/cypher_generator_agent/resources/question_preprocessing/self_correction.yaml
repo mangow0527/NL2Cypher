@@ -1,0 +1,298 @@
+# 自然语言问题预处理：自我修正处理语料
+#
+# 这个文件用于第 3 步“自我修正处理”。
+# 第 2 步只负责识别 self_correction_marker；本文件负责说明这些 marker
+# 在第 3 步应该按哪类修正现象处理、需要满足什么触发条件、什么时候必须澄清。
+#
+# 边界：不放业务实体、业务字段、图谱 label / edge / property。
+# 这里的 A / B 只是文本片段占位符，不代表任何业务概念。
+
+version: 1
+resource_id: self_correction_corpus
+name_zh: 自然语言问题自我修正处理语料
+description: >
+  用于自然语言问题预处理第 3 步“自我修正处理”。
+  本配置只描述自然语言中的修正信号、替换方向和安全触发条件；
+  具体 abandoned_text / corrected_text 由代码基于 marker 前后窗口提取。
+
+# -----------------------------------------------------------------------------
+# 1. 输入依赖
+# -----------------------------------------------------------------------------
+# 本阶段不重新做全文短语匹配，默认消费第 2 步 phrase_detection 的输出。
+input_contract:
+  source_stage: phrase_detection
+  required_fields:
+    - cleaned_question
+    - phrase_spans
+    - scope_signals.has_self_correction
+  correction_span_filter:
+    kind: self_correction_marker
+    action: correction_signal
+
+# -----------------------------------------------------------------------------
+# 2. 通用窗口和边界策略
+# -----------------------------------------------------------------------------
+window_policy:
+  # marker 左侧最多回看多少字符，用于寻找被废弃片段 A。
+  max_left_chars: 24
+  # marker 右侧最多前看多少字符，用于寻找修正片段 B。
+  max_right_chars: 36
+  # 这些标点通常表示一个表达片段的边界。
+  hard_stop_punctuation:
+    - 。
+    - ？
+    - ！
+    - ；
+  # 这些标点可以作为局部片段边界，但不一定截断整个问题。
+  soft_stop_punctuation:
+    - ，
+    - 、
+    - ：
+  # 右侧修正片段前面允许出现的轻量引导词，提取 B 时可以跳过。
+  right_candidate_prefixes:
+    - 是
+    - 为
+    - 成
+    - 查
+    - 查询
+    - 查一下
+    - 查询一下
+    - 统计
+    - 统计一下
+    - 要
+    - 还是
+  # 这些是右侧候选 B 的停止短语，用于避免把关系描述吞进修正片段。
+  right_candidate_stop_phrases:
+    - 所使用的
+    - 使用的
+    - 所用的
+    - 对应的
+    - 关联的
+    - 包含的
+    - 拥有的
+    - 的
+    - 和
+    - 以及
+    - 然后
+    - 返回
+    - 给我返回
+    - 需要返回
+  # 这些词可以作为左侧候选 A 的边界。
+  left_boundary_phrases:
+    - 查询一下
+    - 需要查询一下
+    - 想查询一下
+    - 查询
+    - 查一下
+    - 帮我查
+    - 统计一下
+    - 需要统计
+    - 想统计
+    - 想先统计
+    - 统计
+    - 帮我统计
+    - 所以
+    - 因此
+
+post_correction_restatement_patterns:
+  # 处理“哦不对，先不看 A 了，还是 B”这类口语反悔。
+  # 第一次修正会先把 marker 左侧丢弃；本规则再丢弃右侧的废弃话题 A。
+  - id: abandon_topic_then_restate
+    abandoned_prefixes:
+      - 先不看
+      - 不用看
+      - 不是看
+    restatement_cues:
+      - 还是
+
+# -----------------------------------------------------------------------------
+# 3. 修正信号类别
+# -----------------------------------------------------------------------------
+marker_groups:
+  # 强修正：用户明确否定刚才说法，通常是“前一个片段 A 作废，后一个片段 B 生效”。
+  strong_restatement:
+    description: 明确口语自我纠错，适合在左右候选都存在且距离合理时自动应用。
+    confidence: high
+    direction: left_abandoned_right_corrected
+    trigger_conditions:
+      - marker 来自 phrase_detection 的 self_correction_marker。
+      - marker 左侧存在非空 abandoned_text 候选。
+      - marker 右侧存在非空 corrected_text 候选。
+      - abandoned_text 和 corrected_text 不跨越 hard_stop_punctuation。
+    items:
+      - id: correction_marker_oops_wrong
+        text: 哦不对
+        examples:
+          - A，哦不对是 B
+          - A 哦不对 B
+      - id: correction_marker_wait_wrong
+        text: 啊不对
+        examples:
+          - A，啊不对是 B
+      - id: correction_marker_double_wrong
+        text: 不对不对
+        examples:
+          - A，不对不对，B
+      - id: correction_marker_i_said_wrong
+        text: 我说错了
+        examples:
+          - A，我说错了，是 B
+      - id: correction_marker_said_wrong
+        text: 说错了
+        examples:
+          - A，说错了，B
+
+  # 显式替换：marker 自带“把 A 替换为 B”的方向。
+  explicit_replacement:
+    description: 明确替换表达，优先按 A -> B 处理。
+    confidence: high
+    direction: explicit_left_to_right
+    trigger_conditions:
+      - marker 左侧存在 abandoned_text 候选，或左侧存在“把 A”结构。
+      - marker 右侧存在 corrected_text 候选。
+      - marker 右侧不是空泛词，如“这个”“那个”“一些”。
+    items:
+      - id: correction_marker_change_to
+        text: 改成
+        examples:
+          - 把 A 改成 B
+          - A 改成 B
+      - id: correction_marker_replace_with
+        text: 改为
+        examples:
+          - 把 A 改为 B
+          - A 改为 B
+      - id: correction_marker_switch_to
+        text: 换成
+        examples:
+          - A 换成 B
+      - id: correction_marker_switch_as
+        text: 换为
+        examples:
+          - A 换为 B
+      - id: correction_marker_replace_to
+        text: 替换成
+        examples:
+          - 把 A 替换成 B
+
+  # 纠正引导：通常表示后面会重新给出更准确表达，但不一定总能确定要替换哪里。
+  correction_intro:
+    description: 修正声明或重新表述，需要右侧有清晰候选；左侧候选不清楚时进入澄清。
+    confidence: medium
+    direction: right_side_restatement
+    trigger_conditions:
+      - marker 右侧存在 corrected_text 候选。
+      - 如果左侧最近候选为空，不能自动替换，只能作为“后文重述”候选。
+      - 如果同一句内有多个可能 abandoned_text，进入澄清。
+    items:
+      - id: correction_marker_correction
+        text: 更正一下
+        examples:
+          - A，更正一下，B
+      - id: correction_marker_rectify
+        text: 纠正一下
+        examples:
+          - A，纠正一下，B
+      - id: correction_marker_precisely
+        text: 准确地说
+        examples:
+          - A，准确地说，B
+      - id: correction_marker_should_be
+        text: 应该是
+        examples:
+          - A，应该是 B
+
+  # 对比否定：靠“不是 A，而是 B / 不要 A，要 B”这类成对结构判断。
+  contrastive_correction:
+    description: 否定片段和肯定片段成对出现，满足结构时可自动应用。
+    confidence: high_when_paired
+    direction: negated_left_positive_right
+    trigger_conditions:
+      - 否定 cue 和肯定 cue 在同一局部窗口内成对出现。
+      - 否定 cue 后能提取 A，肯定 cue 后能提取 B。
+      - 如果只有“不是”但没有肯定 cue，不自动处理。
+    patterns:
+      - id: pattern_not_a_but_b
+        negative_cue: 不是
+        positive_cues:
+          - 而是
+          - 是
+        examples:
+          - 不是 A，而是 B
+          - 不是 A，是 B
+      - id: pattern_do_not_a_do_b
+        negative_cue: 不要
+        positive_cues:
+          - 要
+          - 查
+          - 查询
+        examples:
+          - 不要 A，要 B
+          - 不查 A，查 B
+
+  # 弱修正：容易和普通否定语义混淆，默认不单独触发自动替换。
+  weak_or_ambiguous:
+    description: 单独出现时歧义高，只作为澄清或等待结构匹配的信号。
+    confidence: low
+    direction: unknown_without_context
+    trigger_conditions:
+      - 只有 marker、没有明确右侧 corrected_text 时，进入澄清。
+      - marker 出现在普通谓词中时，不视为自我修正。
+      - 只有满足 contrastive_correction 的成对结构时，才允许自动应用。
+    items:
+      - id: correction_marker_wrong
+        text: 不对
+        ambiguous_examples:
+          - A 不对
+          - 这个结果不对
+      - id: correction_marker_not
+        text: 不是
+        ambiguous_examples:
+          - 不是所有 A 都要查
+          - 这个不是 B
+      - id: correction_marker_forget_it
+        text: 算了
+        ambiguous_examples:
+          - 算了，还是查 B
+
+# -----------------------------------------------------------------------------
+# 4. 自动应用和澄清策略
+# -----------------------------------------------------------------------------
+decision_policy:
+  auto_apply_when:
+    - marker_group 是 strong_restatement，且左右候选唯一。
+    - marker_group 是 explicit_replacement，且 A / B 都明确。
+    - marker_group 是 contrastive_correction，且否定 cue 和肯定 cue 成对出现。
+  clarification_required_when:
+    - 出现多个 self_correction_marker，且修正链路无法排序。
+    - 只有弱修正 marker，没有明确 B。
+    - 右侧 corrected_text 是空泛指代，如“这个”“那个”“刚才那个”。
+    - abandoned_text 或 corrected_text 跨越 hard_stop_punctuation。
+    - 无法判断是替换局部片段，还是用户重新提出了整个问题。
+  vague_corrected_texts:
+    - 这个
+    - 那个
+    - 刚才那个
+    - 刚才的那个
+    - 一些
+    - 某个
+
+# -----------------------------------------------------------------------------
+# 5. 输出状态约定
+# -----------------------------------------------------------------------------
+output_contract:
+  accepted_statuses:
+    - applied
+    - no_correction
+    - clarification_required
+  applied_fields:
+    - marker
+    - marker_group
+    - abandoned_text
+    - corrected_text
+    - result_question
+    - confidence
+  clarification_fields:
+    - reason
+    - user_message
+    - suggested_rewrites

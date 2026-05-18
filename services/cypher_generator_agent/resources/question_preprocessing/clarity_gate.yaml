@@ -1,0 +1,65 @@
+# 自然语言问题预处理：明确准入判断配置
+#
+# 用于第 7 步“明确准入判断”。只维护准入状态和澄清 reason code。
+
+version: 1
+resource_id: clarity_gate_rules
+name_zh: 自然语言问题明确准入判断规则
+
+accepted_reason:
+  reason_code: accepted
+  reason: 清理后存在明确核心查询文本，且没有检测到未解决的自我修正歧义、依赖式多步查询或并列复合查询。
+
+query_signal_fallback_phrases:
+  - 查询
+  - 查询一下
+  - 查一下
+  - 看一下
+  - 帮我查
+  - 统计
+  - 统计一下
+  - 帮我统计
+  - 需要统计
+  - 想统计
+  - 想先统计
+  - 麻烦统计
+  - 麻烦统计一下
+
+clarification_reasons:
+  query_intent_missing:
+    reason: 输入包含业务对象和背景状态，但缺少明确查询目标。
+    user_message: 请补充你想查询的具体对象、指标或关系。
+    expected_answer_type: free_text
+    options: []
+    suggested_rewrites:
+      - 查询某个对象的状态
+      - 查询某个对象关联的目标对象
+      - 查询某个对象的指定属性
+  core_question_empty:
+    reason: 清理后没有剩余可查询的核心问题。
+    user_message: 请直接描述你想查询的对象、关系或返回字段。
+    expected_answer_type: free_text
+    options: []
+    suggested_rewrites:
+      - 查询某个对象关联的目标对象
+  self_correction_unresolved:
+    reason: 自我修正没有被安全解析。
+    user_message: 请直接写出你最终想查询的问题。
+    expected_answer_type: free_text
+    options: []
+    suggested_rewrites:
+      - 查询某个对象关联的目标对象
+  compound_query_unresolved:
+    reason: 问题包含需要拆分的复合查询。
+    user_message: 请先选择一个查询目标，或拆成多个问题。
+    expected_answer_type: free_text
+    options: []
+    suggested_rewrites:
+      - 查询某个对象关联的目标对象
+  followup_without_context:
+    reason: 问题包含跨轮或不明确指代，但当前预处理没有可用上下文。
+    user_message: 请把“这个”“刚才那个”等指代改成明确对象。
+    expected_answer_type: free_text
+    options: []
+    suggested_rewrites:
+      - 查询某个明确对象关联的目标对象
