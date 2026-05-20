@@ -20,6 +20,39 @@
 3. 再检查 logical plan 是否符合业务语义。
 4. 最后把本体级计划编译成具体 Cypher。
 
+## 示例：一次完整流程
+
+示例问题：
+
+```text
+查询金牌服务使用的隧道及其源网元，返回隧道的IETF标准和源网元的IP地址
+```
+
+这个问题在各步骤中的输入输出如下。
+
+| 步骤 | 输入 | 输出 |
+|---|---|---|
+| 上游预处理 | 用户原始问题 | `core_question = 查询金牌服务使用的隧道及其源网元，返回隧道的IETF标准和源网元的IP地址` |
+| Step 1 词法层 | `core_question` | mention 序列：`查询`、`金牌`、`服务`、`使用`、`隧道`、`源网元`、`返回`、`IETF标准`、`IP地址`；同时输出“返回”后的投影区域线索。 |
+| 2.0 意图分类 | mention 序列 + shape 线索 | intent：查询记录；初始 shape：需要返回字段，不是只返回路径。 |
+| 2.1 对象提取与角色标注 | 用户问题 + intent + mention 序列 | 关注对象：`服务`、`隧道`、`源网元`；其中 `服务` 承担过滤和路径起点角色，`隧道` 承担路径和投影角色，`源网元` 承担路径和投影角色。 |
+| 2.2 Mention 映射到本体 | 被选中的对象 mention + 相关关系/属性/值 mention | `服务 -> Service`，`金牌 -> ServiceQuality.Gold`，`使用 -> SERVICE_USES_TUNNEL`，`隧道 -> Tunnel`，`源网元 -> TUNNEL_SRC 的目标 NetworkElement`，`IETF标准 -> Tunnel.ietf_standard`，`IP地址 -> NetworkElement.ip_address`。 |
+| 2.3 本体路径选择 | 本体对象和关系映射 | 接受路径：`Service -[SERVICE_USES_TUNNEL]-> Tunnel -[TUNNEL_SRC]-> NetworkElement`。 |
+| 2.4 指代消解 | 本体对象记录 | 合并同指对象：返回字段里的“隧道”就是路径中的 `Tunnel`；返回字段里的“源网元”就是路径中的 `NetworkElement`。 |
+| 2.5 属性、值与投影绑定 | 合并后的语义节点 + 属性/值 mention | filter：`Service.quality_of_service = ServiceQuality.Gold`；projection：`Tunnel.ietf_standard`、`NetworkElement.ip_address`。 |
+| 2.6 Shape 回填与结构预校验 | 路径、节点、过滤、投影 | logical plan：节点 `Service/Tunnel/NetworkElement`，边 `SERVICE_USES_TUNNEL/TUNNEL_SRC`，过滤金牌服务，返回隧道 IETF 标准和源网元 IP。 |
+| Step 3 语义校验 | logical plan | validated logical plan：对象、关系方向、属性归属和过滤值均合法。 |
+| Step 4 物理编译 | validated logical plan + mapping + physical schema | 生成可执行 Cypher。 |
+
+最终 Cypher 形态：
+
+```cypher
+MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel)-[:TUNNEL_SRC]->(n:NetworkElement)
+WHERE s.quality_of_service = 'Gold'
+RETURN t.ietf_standard AS tunnel_ietf_standard,
+       n.ip_address AS source_ne_ip
+```
+
 ## Step 1：词法层 Lexer
 
 Step 1 负责把标准化后的 `core_question` 转成 mention 序列和词法线索。
