@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from services.cypher_generator_agent.app.intent_classification import (
+from services.cypher_generator_agent.app.ontology_layer.intent_classification import (
     IntentRecognitionResult,
     evaluate_intent_recognizer,
     load_intent_eval_items,
@@ -15,7 +15,8 @@ from services.cypher_generator_agent.app.intent_classification import (
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-INTENT_RESOURCE_DIR = REPO_ROOT / "services/cypher_generator_agent/resources/intent"
+INTENT_RESOURCE_DIR = REPO_ROOT / "services/cypher_generator_agent/resources/runtime/ontology/intent"
+INTENT_EVALUATION_DIR = REPO_ROOT / "services/cypher_generator_agent/resources/offline/intent_evaluation"
 
 
 class IntentEvaluationTest(unittest.TestCase):
@@ -91,7 +92,7 @@ class IntentEvaluationTest(unittest.TestCase):
         )
 
     def test_resource_intent_eval_set_is_loadable_and_has_unique_ids(self) -> None:
-        items = load_intent_eval_items(INTENT_RESOURCE_DIR / "eval_set.jsonl")
+        items = load_intent_eval_items(INTENT_EVALUATION_DIR / "eval_set.jsonl")
 
         self.assertGreaterEqual(len(items), 50)
         self.assertEqual(len(items), len({item.id for item in items}))

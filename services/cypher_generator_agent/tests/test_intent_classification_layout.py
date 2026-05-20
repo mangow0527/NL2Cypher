@@ -1,7 +1,7 @@
 import importlib.util
 from pathlib import Path
 
-from services.cypher_generator_agent.app.intent_classification import (
+from services.cypher_generator_agent.app.ontology_layer.intent_classification import (
     EmbeddingIntentRecognizer,
     FallbackEmbeddingStore,
     IntentRecognitionResult,

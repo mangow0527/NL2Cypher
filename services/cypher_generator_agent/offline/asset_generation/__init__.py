@@ -1,0 +1,1 @@
+"""Offline asset generation commands."""

@@ -2,8 +2,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from services.cypher_generator_agent.app.config import Settings as CypherGeneratorAgentSettings
-from services.cypher_generator_agent.app.models import GenerationRunResult, ServiceFailureReason
+from services.cypher_generator_agent.app.infrastructure.config import Settings as CypherGeneratorAgentSettings
+from services.cypher_generator_agent.app.api.models import GenerationRunResult, ServiceFailureReason
 from services.repair_agent.app.config import Settings as RepairServiceSettings
 from console.runtime_console.app.config import Settings as RuntimeResultsSettings
 from services.testing_agent.app.config import Settings as TestingServiceSettings

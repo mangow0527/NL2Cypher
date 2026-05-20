@@ -4,14 +4,15 @@ import re
 
 import pytest
 
-from services.cypher_generator_agent.app.ontology_generation import OntologyGenerationPipeline
-from services.cypher_generator_agent.app.ontology_generation.assets import OntologyAssets
-from services.cypher_generator_agent.app.ontology_generation.errors import ClarificationNeeded, EngineeringFailure
-from services.cypher_generator_agent.app.intent_classification.ontology import OntologyIntentClassifier
-from services.cypher_generator_agent.app.ontology_generation.lexer import OntologyLexer
-from services.cypher_generator_agent.app.ontology_generation.mention_vector_recall import MentionVectorCandidate
-from services.cypher_generator_agent.app.ontology_generation.object_role_selection import OntologyObjectRoleSelectionService
-from services.cypher_generator_agent.app.ontology_generation.overlap_resolver import DictionaryPriorities
+from services.cypher_generator_agent.app.runtime_pipeline import OntologyGenerationPipeline
+from services.cypher_generator_agent.app.ontology_layer.assets import OntologyAssets
+from services.cypher_generator_agent.app.clarification_layer.errors import ClarificationNeeded
+from services.cypher_generator_agent.app.infrastructure.errors import EngineeringFailure
+from services.cypher_generator_agent.app.ontology_layer.intent_classification.ontology import OntologyIntentClassifier
+from services.cypher_generator_agent.app.lexical_layer.lexer import OntologyLexer
+from services.cypher_generator_agent.app.lexical_layer.mention_vector_recall import MentionVectorCandidate
+from services.cypher_generator_agent.app.ontology_layer.object_role_selection import OntologyObjectRoleSelectionService
+from services.cypher_generator_agent.app.lexical_layer.overlap_resolver import DictionaryPriorities
 
 
 class FakeMentionVectorRetriever:

@@ -8,7 +8,7 @@ from unittest.mock import patch
 import httpx
 import yaml
 
-from services.cypher_generator_agent.app.intent_classification import (
+from services.cypher_generator_agent.app.ontology_layer.intent_classification import (
     EmbeddingIntentRecognizer,
     FallbackEmbeddingStore,
     HybridIntentRecognizer,
@@ -28,7 +28,7 @@ from services.cypher_generator_agent.app.intent_classification import (
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-INTENT_RESOURCE_DIR = REPO_ROOT / "services/cypher_generator_agent/resources/intent"
+INTENT_RESOURCE_DIR = REPO_ROOT / "services/cypher_generator_agent/resources/runtime/ontology/intent"
 
 
 class RuleBasedIntentRecognizerTest(unittest.TestCase):

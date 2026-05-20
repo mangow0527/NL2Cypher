@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from services.cypher_generator_agent.app.ontology_generation import OntologyGenerationPipeline
-from services.cypher_generator_agent.app.ontology_generation.assets import OntologyAssets
-from services.cypher_generator_agent.app.ontology_generation.object_role_selection import OntologyObjectRoleSelectionService
-from services.cypher_generator_agent.app.ontology_generation.models import ContextSignal, IntentIdentity, IntentTrace, ShapeField
+from services.cypher_generator_agent.app.runtime_pipeline import OntologyGenerationPipeline
+from services.cypher_generator_agent.app.ontology_layer.assets import OntologyAssets
+from services.cypher_generator_agent.app.ontology_layer.object_role_selection import OntologyObjectRoleSelectionService
+from services.cypher_generator_agent.app.ontology_layer.models import ContextSignal, IntentIdentity, IntentTrace, ShapeField
 
 
 class _FixtureIntentClassifier:

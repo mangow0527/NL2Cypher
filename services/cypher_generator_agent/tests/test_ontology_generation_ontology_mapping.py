@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from services.cypher_generator_agent.app.ontology_generation.assets import OntologyAssets
-from services.cypher_generator_agent.app.ontology_generation.object_role_selection import (
+from services.cypher_generator_agent.app.ontology_layer.assets import OntologyAssets
+from services.cypher_generator_agent.app.ontology_layer.object_role_selection import (
     ObjectRoleSelection,
     SelectedObjectRole,
 )
-from services.cypher_generator_agent.app.ontology_generation.models import LexerTrace, Mention
-from services.cypher_generator_agent.app.ontology_generation.ontology_mapping import (
+from services.cypher_generator_agent.app.ontology_layer.models import LexerTrace, Mention
+from services.cypher_generator_agent.app.ontology_layer.ontology_mapping import (
     OntologyMappingError,
     OntologyMappingService,
 )

@@ -2,14 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from services.cypher_generator_agent.app.ontology_generation.assets import OntologyAssets
-from services.cypher_generator_agent.app.ontology_generation.errors import (
-    ClarificationNeeded,
-    EngineeringFailure,
-    ResourceMissing,
-)
-from services.cypher_generator_agent.app.ontology_generation.models import IntentIdentity, IntentTrace, ShapeField
-from services.cypher_generator_agent.app.ontology_generation.shape_finalization import (
+from services.cypher_generator_agent.app.ontology_layer.assets import OntologyAssets
+from services.cypher_generator_agent.app.clarification_layer.errors import ClarificationNeeded
+from services.cypher_generator_agent.app.infrastructure.errors import EngineeringFailure, ResourceMissing
+from services.cypher_generator_agent.app.ontology_layer.models import IntentIdentity, IntentTrace, ShapeField
+from services.cypher_generator_agent.app.ontology_layer.shape_finalization import (
     OntologyShapeFinalizer,
 )
 

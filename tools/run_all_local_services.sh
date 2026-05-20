@@ -72,7 +72,7 @@ python -m uvicorn services.repair_agent.app.main:app --host 0.0.0.0 --port 8002 
 pids+=("$!")
 python -m uvicorn services.testing_agent.app.main:app --host 0.0.0.0 --port 8003 &
 pids+=("$!")
-python -m uvicorn services.cypher_generator_agent.app.main:app --host 0.0.0.0 --port 8000 &
+python -m uvicorn services.cypher_generator_agent.app.api.main:app --host 0.0.0.0 --port 8000 &
 pids+=("$!")
 
 for _ in $(seq 1 30); do

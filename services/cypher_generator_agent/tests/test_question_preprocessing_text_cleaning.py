@@ -4,14 +4,15 @@ from pathlib import Path
 
 import yaml
 
-from services.cypher_generator_agent.app.question_preprocessing.text_cleaning import clean_text
+from services.cypher_generator_agent.app.natural_language_preprocessing.text_cleaning import clean_text
 
 
 def test_text_cleaning_config_uses_boundary_phrases_not_correction_markers() -> None:
     config_path = (
         Path(__file__).resolve().parents[1]
         / "resources"
-        / "question_preprocessing"
+        / "runtime"
+        / "natural_language_preprocessing"
         / "text_cleaning.yaml"
     )
 

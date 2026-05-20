@@ -6,10 +6,10 @@ import sys
 
 import httpx
 
-from services.cypher_generator_agent.app.ontology_generation.assets import OntologyAssets
-from services.cypher_generator_agent.app.ontology_generation.lexer import OntologyLexer
-from services.cypher_generator_agent.app.ontology_generation.lexer import _RawMatch
-from services.cypher_generator_agent.app.ontology_generation.mention_vector_recall import (
+from services.cypher_generator_agent.app.ontology_layer.assets import OntologyAssets
+from services.cypher_generator_agent.app.lexical_layer.lexer import OntologyLexer
+from services.cypher_generator_agent.app.lexical_layer.lexer import _RawMatch
+from services.cypher_generator_agent.app.lexical_layer.mention_vector_recall import (
     MentionVectorCandidate,
     RagMentionVectorRetriever,
     build_mention_vector_documents,

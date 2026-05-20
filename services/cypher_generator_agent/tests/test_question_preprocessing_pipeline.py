@@ -4,18 +4,18 @@ from pathlib import Path
 
 import yaml
 
-from services.cypher_generator_agent.app.question_preprocessing.background_strip import strip_background
-from services.cypher_generator_agent.app.question_preprocessing.clarity_gate import judge_clarity
-from services.cypher_generator_agent.app.question_preprocessing.compound_detection import detect_compound_query
-from services.cypher_generator_agent.app.question_preprocessing.input_guard import guard_input
-from services.cypher_generator_agent.app.question_preprocessing.noise_handling import handle_noise
-from services.cypher_generator_agent.app.question_preprocessing.phrase_detection import detect_phrase_signals
-from services.cypher_generator_agent.app.question_preprocessing.pipeline import preprocess_question
-from services.cypher_generator_agent.app.question_preprocessing.self_correction import apply_self_correction
-from services.cypher_generator_agent.app.question_preprocessing.text_cleaning import clean_text
+from services.cypher_generator_agent.app.natural_language_preprocessing.background_strip import strip_background
+from services.cypher_generator_agent.app.natural_language_preprocessing.clarity_gate import judge_clarity
+from services.cypher_generator_agent.app.natural_language_preprocessing.compound_detection import detect_compound_query
+from services.cypher_generator_agent.app.natural_language_preprocessing.input_guard import guard_input
+from services.cypher_generator_agent.app.natural_language_preprocessing.noise_handling import handle_noise
+from services.cypher_generator_agent.app.natural_language_preprocessing.phrase_detection import detect_phrase_signals
+from services.cypher_generator_agent.app.natural_language_preprocessing.pipeline import preprocess_question
+from services.cypher_generator_agent.app.natural_language_preprocessing.self_correction import apply_self_correction
+from services.cypher_generator_agent.app.natural_language_preprocessing.text_cleaning import clean_text
 
 
-RESOURCE_DIR = Path(__file__).resolve().parents[1] / "resources" / "question_preprocessing"
+RESOURCE_DIR = Path(__file__).resolve().parents[1] / "resources" / "runtime" / "natural_language_preprocessing"
 
 RAW_SAMPLE = (
     "你好，，现在就是我们遇到了一些咨询类  的问题，所以需要查询一下金牌服务 "

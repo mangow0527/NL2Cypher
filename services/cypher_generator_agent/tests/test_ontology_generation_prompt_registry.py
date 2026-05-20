@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from services.cypher_generator_agent.app.ontology_generation.prompts import (
+from services.cypher_generator_agent.app.ontology_layer.prompts import (
     BoundedLLMSelector,
     PromptOutputValidationError,
     PromptRegistry,

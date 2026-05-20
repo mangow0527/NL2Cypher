@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contracts.models import GenerationEvidence
-from services.cypher_generator_agent.app.models import CgaGenerationNonSuccessReport as GeneratorNonSuccessReport
+from services.cypher_generator_agent.app.api.models import CgaGenerationNonSuccessReport as GeneratorNonSuccessReport
 from services.testing_agent.app.models import (
     CgaGenerationNonSuccessReport as ReceiverNonSuccessReport,
     GeneratedCypherSubmissionRequest,

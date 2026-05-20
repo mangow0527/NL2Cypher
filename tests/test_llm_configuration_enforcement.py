@@ -6,11 +6,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pydantic import ValidationError
 
-from services.cypher_generator_agent.app.clients import (
+from services.cypher_generator_agent.app.infrastructure.clients import (
     CypherLLMClient,
     OpenAIChatCompletionCypherGenerator,
 )
-from services.cypher_generator_agent.app.config import Settings as CypherGeneratorAgentSettings
+from services.cypher_generator_agent.app.infrastructure.config import Settings as CypherGeneratorAgentSettings
 from services.repair_agent.app.config import Settings as RepairServiceSettings
 from services.testing_agent.app.clients import LLMEvaluationClient
 from services.testing_agent.app.config import Settings as TestingServiceSettings

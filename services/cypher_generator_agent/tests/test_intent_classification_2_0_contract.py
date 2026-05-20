@@ -1,15 +1,15 @@
-from services.cypher_generator_agent.app.intent_classification.ontology import OntologyIntentClassifier
-from services.cypher_generator_agent.app.intent_classification.recognition import (
+from services.cypher_generator_agent.app.ontology_layer.intent_classification.ontology import OntologyIntentClassifier
+from services.cypher_generator_agent.app.ontology_layer.intent_classification.recognition import (
     IntentRecognitionResult,
     IntentRule,
     RuleBasedIntentRecognizer,
 )
-from services.cypher_generator_agent.app.ontology_generation.models import ContextSignal
-from services.cypher_generator_agent.app import resource_paths
-from services.cypher_generator_agent.app.ontology_generation import OntologyGenerationPipeline
-from services.cypher_generator_agent.app.ontology_generation.assets import OntologyAssets
-from services.cypher_generator_agent.app.ontology_generation.object_role_selection import OntologyObjectRoleSelectionService
-from services.cypher_generator_agent.app.ontology_generation.models import IntentIdentity, IntentTrace, ShapeField
+from services.cypher_generator_agent.app.ontology_layer.models import ContextSignal
+from services.cypher_generator_agent.app.infrastructure import resource_paths
+from services.cypher_generator_agent.app.runtime_pipeline import OntologyGenerationPipeline
+from services.cypher_generator_agent.app.ontology_layer.assets import OntologyAssets
+from services.cypher_generator_agent.app.ontology_layer.object_role_selection import OntologyObjectRoleSelectionService
+from services.cypher_generator_agent.app.ontology_layer.models import IntentIdentity, IntentTrace, ShapeField
 
 import yaml
 

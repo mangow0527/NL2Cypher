@@ -5,9 +5,9 @@ from typing import Any, Dict, Optional
 
 import pytest
 
-import services.cypher_generator_agent.app.clients as clients_module
-from services.cypher_generator_agent.app.clients import TestingAgentClient
-from services.cypher_generator_agent.app.models import CgaGenerationNonSuccessReport, GeneratedCypherSubmissionRequest
+import services.cypher_generator_agent.app.infrastructure.clients as clients_module
+from services.cypher_generator_agent.app.infrastructure.clients import TestingAgentClient
+from services.cypher_generator_agent.app.api.models import CgaGenerationNonSuccessReport, GeneratedCypherSubmissionRequest
 
 
 class _FakeResponse:

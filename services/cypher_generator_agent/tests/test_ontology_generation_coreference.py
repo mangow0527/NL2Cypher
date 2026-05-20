@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from services.cypher_generator_agent.app.ontology_generation.coreference import (
+from services.cypher_generator_agent.app.ontology_layer.coreference import (
     CoreferenceValidationError,
     OntologyCoreferenceService,
 )

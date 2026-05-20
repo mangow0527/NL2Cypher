@@ -3,7 +3,7 @@
 Production service code should use service-local models.
 """
 
-from services.cypher_generator_agent.app.models import (
+from services.cypher_generator_agent.app.api.models import (
     GeneratedCypherSubmissionRequest,
     GenerationRunResult,
     PreflightCheck,

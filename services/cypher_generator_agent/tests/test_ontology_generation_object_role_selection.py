@@ -4,12 +4,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from services.cypher_generator_agent.app.ontology_generation.object_role_selection import (
+from services.cypher_generator_agent.app.ontology_layer.object_role_selection import (
     ALLOWED_OBJECT_ROLES,
     ObjectRoleSelectionValidationError,
     OntologyObjectRoleSelectionService,
 )
-from services.cypher_generator_agent.app.ontology_generation.models import (
+from services.cypher_generator_agent.app.ontology_layer.models import (
     ContextSignal,
     IntentIdentity,
     IntentTrace,
@@ -17,9 +17,9 @@ from services.cypher_generator_agent.app.ontology_generation.models import (
     Mention,
     ShapeField,
 )
-from services.cypher_generator_agent.app.ontology_generation import OntologyGenerationPipeline
-from services.cypher_generator_agent.app.ontology_generation.assets import OntologyAssets
-from services.cypher_generator_agent.app.ontology_generation.errors import ClarificationNeeded
+from services.cypher_generator_agent.app.runtime_pipeline import OntologyGenerationPipeline
+from services.cypher_generator_agent.app.ontology_layer.assets import OntologyAssets
+from services.cypher_generator_agent.app.clarification_layer.errors import ClarificationNeeded
 
 
 def _mention(

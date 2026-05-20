@@ -4,13 +4,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from services.cypher_generator_agent.app.ontology_generation.assets import OntologyAssets
-from services.cypher_generator_agent.app.ontology_generation.models import (
+from services.cypher_generator_agent.app.ontology_layer.assets import OntologyAssets
+from services.cypher_generator_agent.app.ontology_layer.models import (
     IntentIdentity,
     IntentTrace,
     ShapeField,
 )
-from services.cypher_generator_agent.app.ontology_generation.ontology_path_selection import (
+from services.cypher_generator_agent.app.ontology_layer.ontology_path_selection import (
     OntologyPathSelectionValidationError,
     OntologyPathSelectionService,
     PathRequest,
@@ -311,7 +311,7 @@ def test_trace_root_dict_uses_ontology_path_selection_field() -> None:
 
 
 def test_legacy_path_filling_import_keeps_new_root_field() -> None:
-    from services.cypher_generator_agent.app.ontology_generation.path_filling import OntologyPathFillingService
+    from services.cypher_generator_agent.app.ontology_layer.path_filling import OntologyPathFillingService
 
     class Selector:
         def select(self, prompt_name: str, variables: dict[str, object]):

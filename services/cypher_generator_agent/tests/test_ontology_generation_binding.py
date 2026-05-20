@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from services.cypher_generator_agent.app.ontology_generation.binding import OntologyBindingService
-from services.cypher_generator_agent.app.ontology_generation.models import (
+from services.cypher_generator_agent.app.ontology_layer.binding import OntologyBindingService
+from services.cypher_generator_agent.app.ontology_layer.models import (
     ContextSignal,
     IntentIdentity,
     IntentTrace,
     ShapeField,
 )
-from services.cypher_generator_agent.app.ontology_generation.prompts import PromptRegistry
+from services.cypher_generator_agent.app.ontology_layer.prompts import PromptRegistry
 
 
 def _intent_trace() -> IntentTrace:

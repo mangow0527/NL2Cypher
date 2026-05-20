@@ -13,9 +13,9 @@ from tools.validate_mention_dictionaries import DictionaryValidationError, valid
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = REPO_ROOT / "services/testing_agent/docs/reference/schema.json"
 RULES_PATH = (
-    REPO_ROOT / "services/cypher_generator_agent/resources/mention_dictionary_generation/generation_rules.yaml"
+    REPO_ROOT / "services/cypher_generator_agent/resources/offline/lexical_asset_generation/generation_rules.yaml"
 )
-DICT_DIR = REPO_ROOT / "services/cypher_generator_agent/resources/mention_dictionaries"
+DICT_DIR = REPO_ROOT / "services/cypher_generator_agent/resources/runtime/lexical/mention_dictionaries"
 
 
 def test_validate_current_mention_dictionaries_against_schema() -> None:
