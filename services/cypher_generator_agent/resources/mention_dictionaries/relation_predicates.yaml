@@ -4,7 +4,7 @@ description: Relation predicate mention dictionary for graph edges and join path
 entries:
   - canonical_id: REL_HAS_PORT
     mention_type: relation_predicate
-    surface_forms: [拥有端口, 包含端口, 下挂端口, 设备端口, 网元端口, HAS_PORT, owns port, has port, Interfaces MIB, RFC 2863]
+    surface_forms: [拥有端口, 包含端口, 下挂端口, 设备端口, 网元端口, HAS_PORT, owns port, has port]
     description: NetworkElement owns Port.
     domain: NetworkElement
     range: Port
@@ -102,7 +102,7 @@ entries:
 
   - canonical_id: REL_TUNNEL_PROTO
     mention_type: relation_predicate
-    surface_forms: [隧道协议, 隧道使用协议, 使用协议, 绑定协议, TUNNEL_PROTO, tunnel protocol binding, RFC 3209]
+    surface_forms: [隧道协议, 隧道使用协议, 使用协议, 绑定协议, TUNNEL_PROTO, tunnel protocol binding]
     description: Tunnel protocol binding to Protocol.
     domain: Tunnel
     range: Protocol
@@ -116,7 +116,7 @@ entries:
 
   - canonical_id: REL_PATH_THROUGH
     mention_type: relation_predicate
-    surface_forms: [隧道经过网元, 经过网元, 路径经过, 穿过, 途经, PATH_THROUGH, path through, tunnel path sequence, ERO, hop_order, ingress LSR, egress LSR]
+    surface_forms: [隧道经过网元, 经过网元, 路径经过, 穿过, 途经, PATH_THROUGH, path through, tunnel path sequence]
     description: Tunnel path sequence through NetworkElement; hop_order defines path order.
     domain: Tunnel
     range: NetworkElement
@@ -130,7 +130,7 @@ entries:
 
   - canonical_id: REL_SERVICE_USES_TUNNEL
     mention_type: relation_predicate
-    surface_forms: [服务使用隧道, 业务使用隧道, 使用的隧道, 服务承载隧道, 承载于, 依赖隧道, SERVICE_USES_TUNNEL, service uses tunnel, service leverages tunnel, MPLS-VPN, RFC 4364]
+    surface_forms: [服务使用隧道, 业务使用隧道, 使用的隧道, 服务承载隧道, 承载于, 依赖隧道, SERVICE_USES_TUNNEL, service uses tunnel, service leverages tunnel]
     description: Service leverages Tunnel.
     domain: Service
     range: Tunnel

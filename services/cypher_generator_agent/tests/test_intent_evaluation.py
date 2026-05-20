@@ -5,13 +5,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from services.cypher_generator_agent.app.intent_evaluation import (
+from services.cypher_generator_agent.app.intent_classification import (
+    IntentRecognitionResult,
     evaluate_intent_recognizer,
     load_intent_eval_items,
     load_intent_pressure_items,
     summarize_intent_pressure,
 )
-from services.cypher_generator_agent.app.intent_recognition import IntentRecognitionResult
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]

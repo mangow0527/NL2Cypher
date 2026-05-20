@@ -237,14 +237,20 @@ def _extract_left_candidate(text: str, marker_start: int, config: dict[str, Any]
     )
 
 
-def _extract_right_candidate(text: str, marker_end: int, config: dict[str, Any]) -> TextSpan | None:
+def _extract_right_candidate(
+    text: str,
+    marker_end: int,
+    config: dict[str, Any],
+    *,
+    skip_right_prefixes: bool = True,
+) -> TextSpan | None:
     policy = config.get("window_policy", {})
     right_limit = min(len(text), marker_end + int(policy.get("max_right_chars", 36)))
     raw = text[marker_end:right_limit].lstrip("，、：。？！； ")
     skipped = len(text[marker_end:right_limit]) - len(raw)
     start = marker_end + skipped
 
-    prefix = _first_prefix(raw, string_list(policy.get("right_candidate_prefixes")))
+    prefix = _first_prefix(raw, string_list(policy.get("right_candidate_prefixes"))) if skip_right_prefixes else None
     if prefix:
         raw = raw[len(prefix) :].lstrip("，、：。？！； ")
         start += len(prefix)
@@ -312,7 +318,9 @@ def _apply_contrastive_correction(
     cue, cue_index = cue_match
     abandoned_text = right[:cue_index].strip("，、：。？！； ")
     corrected_start = marker.end + cue_index + len(cue)
-    corrected = _extract_right_candidate(cleaned_question, corrected_start, config)
+    # 对比修正里的右侧片段通常是用户重新说出的完整查询表达；
+    # 这里保留“查询/统计”等动作词，避免把结果压缩成裸对象。
+    corrected = _extract_right_candidate(cleaned_question, corrected_start, config, skip_right_prefixes=False)
     if not abandoned_text or corrected is None:
         return _clarification_result(
             cleaned_question,

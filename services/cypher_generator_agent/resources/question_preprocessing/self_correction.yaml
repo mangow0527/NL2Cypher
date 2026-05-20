@@ -259,6 +259,7 @@ marker_groups:
 # 4. 自动应用和澄清策略
 # -----------------------------------------------------------------------------
 decision_policy:
+  preserve_query_expression_when_possible: true
   auto_apply_when:
     - marker_group 是 strong_restatement，且左右候选唯一。
     - marker_group 是 explicit_replacement，且 A / B 都明确。

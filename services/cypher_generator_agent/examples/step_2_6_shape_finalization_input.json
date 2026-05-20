@@ -1,0 +1,217 @@
+{
+  "question": "查询金牌服务经过的隧道及其源网元，返回隧道的IETF标准和源网元的IP地址",
+  "intent": {
+    "primary": "record_retrieval_query",
+    "secondary": "related_record_query",
+    "source": "rule",
+    "decision": "accept",
+    "confidence": 0.91
+  },
+  "initial_shape": {
+    "answer_type": {
+      "value": "attribute_table",
+      "source": "taxonomy.secondary.default_answer_type",
+      "decision": "accept",
+      "confidence": 1.0
+    },
+    "projection_expected": {
+      "value": true,
+      "source": "taxonomy.secondary.shape_profile",
+      "decision": "accept",
+      "confidence": 1.0
+    },
+    "relation_resolution_expected": {
+      "value": true,
+      "source": "taxonomy.secondary.shape_profile",
+      "decision": "pending",
+      "confidence": 0.8,
+      "pending_until": "step_2_3"
+    },
+    "path_answer_required": {
+      "value": false,
+      "source": "taxonomy.secondary.shape_profile",
+      "decision": "accept",
+      "confidence": 1.0
+    },
+    "aggregation_functions": {
+      "value": [],
+      "source": "taxonomy.shape_profile",
+      "decision": "accept",
+      "confidence": 1.0
+    },
+    "group_by_required": {
+      "value": false,
+      "source": "taxonomy.secondary.shape_profile",
+      "decision": "accept",
+      "confidence": 1.0
+    },
+    "order_required": {
+      "value": false,
+      "source": "taxonomy.secondary.shape_profile",
+      "decision": "accept",
+      "confidence": 1.0
+    },
+    "limit_required": {
+      "value": false,
+      "source": "taxonomy.secondary.shape_profile",
+      "decision": "accept",
+      "confidence": 1.0
+    },
+    "time_grain_required": {
+      "value": false,
+      "source": "taxonomy.secondary.shape_profile",
+      "decision": "accept",
+      "confidence": 1.0
+    }
+  },
+  "ontology_mapping": {
+    "mapped_mentions": [
+      {
+        "mapping_id": "OM1",
+        "mention_id": "m_service_1",
+        "mention_type": "OBJECT",
+        "surface": "服务",
+        "span": [4, 6],
+        "ontology_kind": "class",
+        "ontology_id": "Service"
+      },
+      {
+        "mapping_id": "OM2",
+        "mention_id": "m_tunnel_1",
+        "mention_type": "OBJECT",
+        "surface": "隧道",
+        "span": [9, 11],
+        "ontology_kind": "class",
+        "ontology_id": "Tunnel"
+      },
+      {
+        "mapping_id": "OM3",
+        "mention_id": "m_source_ne_1",
+        "mention_type": "RELATION",
+        "surface": "源网元",
+        "span": [13, 16],
+        "ontology_kind": "relation_role",
+        "ontology_id": "TUNNEL_SRC",
+        "role": "source",
+        "target_class": "NetworkElement"
+      },
+      {
+        "mapping_id": "OM4",
+        "mention_id": "m_gold_1",
+        "mention_type": "VALUE",
+        "surface": "金牌",
+        "span": [2, 4],
+        "ontology_kind": "enum_value",
+        "ontology_id": "ServiceQuality.Gold",
+        "constrains_attribute": "Service.quality_of_service"
+      },
+      {
+        "mapping_id": "OM5",
+        "mention_id": "m_ietf_1",
+        "mention_type": "ATTRIBUTE",
+        "surface": "IETF标准",
+        "span": [22, 28],
+        "ontology_kind": "attribute",
+        "ontology_id": "Tunnel.ietf_standard",
+        "parent_class": "Tunnel"
+      },
+      {
+        "mapping_id": "OM6",
+        "mention_id": "m_ip_1",
+        "mention_type": "ATTRIBUTE",
+        "surface": "IP地址",
+        "span": [33, 37],
+        "ontology_kind": "attribute",
+        "ontology_id": "NetworkElement.ip_address",
+        "parent_class": "NetworkElement"
+      }
+    ]
+  },
+  "ontology_path_selection": {
+    "selected_paths": [
+      {
+        "request_id": "PR1",
+        "path_id": "P1",
+        "relation_chain": ["REL_SERVICE_USES_TUNNEL"],
+        "evidence_ids": ["PE1"]
+      },
+      {
+        "request_id": "PR2",
+        "path_id": "P2",
+        "relation_chain": ["REL_TUNNEL_SRC"],
+        "evidence_ids": ["PE2"]
+      }
+    ],
+    "shape_updates": {
+      "hop_count": {
+        "value": 2,
+        "source": "ontology_path_selection",
+        "decision": "accept",
+        "confidence": 1.0
+      },
+      "relation_chain_type": {
+        "value": "fixed_chain",
+        "source": "ontology_path_selection",
+        "decision": "accept",
+        "confidence": 1.0
+      }
+    },
+    "unresolved_items": []
+  },
+  "coreference": {
+    "merged_nodes": [
+      {"node_id": "s1", "class_id": "Service", "mapping_ids": ["OM1"]},
+      {"node_id": "t1", "class_id": "Tunnel", "mapping_ids": ["OM2"]},
+      {"node_id": "n1", "class_id": "NetworkElement", "mapping_ids": ["OM3"]}
+    ],
+    "unresolved_items": []
+  },
+  "binding": {
+    "filters": [
+      {
+        "item": "金牌@2-4",
+        "kind": "filter",
+        "decision": "accept",
+        "result": {
+          "node": "s1",
+          "attribute": "Service.quality_of_service",
+          "operator": "equals",
+          "value": "ServiceQuality.Gold"
+        }
+      }
+    ],
+    "projections": [
+      {
+        "item": "IETF标准@22-28",
+        "kind": "projection",
+        "decision": "accept",
+        "result": {
+          "node": "t1",
+          "attribute": "Tunnel.ietf_standard",
+          "alias": "tunnel_ietf_standard"
+        }
+      },
+      {
+        "item": "IP地址@33-37",
+        "kind": "projection",
+        "decision": "accept",
+        "result": {
+          "node": "n1",
+          "attribute": "NetworkElement.ip_address",
+          "alias": "source_ne_ip"
+        }
+      }
+    ],
+    "shape_updates": {
+      "filter_level": {
+        "value": "record_filter",
+        "source": "binding",
+        "decision": "accept",
+        "confidence": 1.0
+      }
+    },
+    "unresolved_items": []
+  },
+  "unresolved_items": [],
+  "warnings": []
+}

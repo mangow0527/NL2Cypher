@@ -12,9 +12,8 @@
 
 1. `cypher-generator-agent`（端口 `8000`）
    - 接收 `id + question`
-   - 在正式入口执行语义资产对齐检查
-   - 通过语义流水线把自然语言编译为 `SemanticQuerySpec`
-   - 优先使用确定性 renderer 生成只读 Cypher，必要时使用受控 LLM fallback
+   - 通过本体生成流水线把自然语言编译为 logical plan
+   - 基于 ontology mapping 编译只读 Cypher
    - 将生成成功或生成失败报告提交给 `testing-agent`
 2. `testing-agent`（端口 `8003`）
    - 接收 Golden Answer（标准答案）
@@ -34,7 +33,7 @@
 只启动本仓库内服务。
 
 当前 `cypher-generator-agent` 的正式职责定义以
-[cypher-generator-agent-design.md](services/cypher_generator_agent/docs/cypher-generator-agent-design.md)
+[cypher-generation-design-based-on-ontology.md](services/cypher_generator_agent/docs/cypher-generation-design-based-on-ontology.md)
 为准。
 
 ## 快速开始
@@ -56,8 +55,7 @@
 ## 当前工作流
 
 1. `qa-agent` 向 `cypher-generator-agent` 提交 `id + question`
-2. `cypher-generator-agent` 检查语义资产、知识目录和 TuGraph schema 的对齐状态
-3. `cypher-generator-agent` 运行语义流水线，生成 `SemanticQuerySpec` 后渲染 Cypher
+2. `cypher-generator-agent` 运行本体生成流水线，生成 logical plan 后编译 Cypher
 4. `cypher-generator-agent` 把成功 submission 或 generation failure report 提交给 `testing-agent`
 5. `testing-agent` 执行 TuGraph，等待或合并对应的 Golden Answer
 6. `testing-agent` 完成评测，失败时创建 `IssueTicket`
@@ -133,6 +131,10 @@ curl http://localhost:8003/api/v1/issues/{ticket_id}
 - `CYPHER_GENERATOR_AGENT_KNOWLEDGE_DOCS_DIR`
 - `CYPHER_GENERATOR_AGENT_KNOWLEDGE_CONTEXT_SOURCE`
 - `CYPHER_GENERATOR_AGENT_RAG_SERVICE_URL`
+- `NL2CYPHER_MENTION_EMBEDDING_STORE`
+- `NL2CYPHER_MENTION_RAG_SERVICE_URL`
+- `NL2CYPHER_MENTION_RAG_COLLECTION`
+- `NL2CYPHER_MENTION_RAG_ENDPOINT`
 - `CYPHER_GENERATOR_AGENT_LLM_ENABLED`
 - `CYPHER_GENERATOR_AGENT_LLM_PROVIDER`
 - `CYPHER_GENERATOR_AGENT_LLM_BASE_URL`
@@ -177,5 +179,5 @@ curl http://localhost:8003/api/v1/issues/{ticket_id}
 - 非成功输出统一使用 `CgaGenerationNonSuccessReport`，覆盖 `clarification_required`、`generation_failed` 和 `service_failed`。
 - `input_prompt_snapshot` 保存 `cga_trace_v2` 分层生成证据；LLM prompt/raw output 只放在对应阶段的 trace 中。
 - 若文档与
-  [cypher-generator-agent-design.md](/Users/mangowmac/Desktop/code/NL2Cypher/services/cypher_generator_agent/docs/cypher-generator-agent-design.md)
+  [cypher-generation-design-based-on-ontology.md](/Users/mangowmac/Desktop/code/NL2Cypher/services/cypher_generator_agent/docs/cypher-generation-design-based-on-ontology.md)
   冲突，以该设计文档为准。

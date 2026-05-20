@@ -58,7 +58,7 @@ entries:
 
   - canonical_id: NetworkElement.elem_type
     mention_type: attribute
-    surface_forms: [网元类型, 设备类型, 网络元素类型, 类型, elem_type, router, switch, firewall, load_balancer, wan_optimizer]
+    surface_forms: [网元类型, 设备类型, 网络元素类型, 类型, elem_type]
     description: Network element type; schema comment lists router, switch, firewall, load_balancer, and wan_optimizer.
     parent_object: NetworkElement
     column: elem_type
@@ -85,7 +85,7 @@ entries:
 
   - canonical_id: Protocol.ietf_category
     mention_type: attribute
-    surface_forms: [IETF 分类, IETF类别, 协议分类, ietf_category, Routing, Transport, Applications, Security, Management]
+    surface_forms: [IETF 分类, IETF类别, 协议分类, ietf_category]
     description: IETF category of a protocol.
     parent_object: Protocol
     column: ietf_category
@@ -103,7 +103,7 @@ entries:
 
   - canonical_id: Protocol.standard
     mention_type: attribute
-    surface_forms: [协议标准, 标准, IETF 标准, IETF标准, RFC 标准, RFC标准, RFC, standard]
+    surface_forms: [协议标准, 标准, IETF 标准, IETF标准, RFC 标准, RFC标准, standard]
     description: Protocol standard; schema comment says values follow pattern RFC [0-9]+.
     parent_object: Protocol
     column: standard
@@ -148,7 +148,7 @@ entries:
 
   - canonical_id: Tunnel.ietf_standard
     mention_type: attribute
-    surface_forms: [隧道 IETF 标准, 隧道IETF标准, 隧道标准, IETF 标准, IETF标准, RFC 标准, RFC标准, RFC, ietf_standard]
+    surface_forms: [隧道 IETF 标准, 隧道IETF标准, 隧道标准, IETF 标准, IETF标准, RFC 标准, RFC标准, ietf_standard]
     description: IETF standard associated with a tunnel; schema comment says values follow pattern RFC [0-9]+.
     parent_object: Tunnel
     column: ietf_standard
@@ -166,7 +166,7 @@ entries:
 
   - canonical_id: Tunnel.elem_type
     mention_type: attribute
-    surface_forms: [隧道类型, 类型, elem_type, MPLS-TE, GRE, IPsec, L2TP, VXLAN, MPLS-VPN]
+    surface_forms: [隧道类型, 类型, elem_type]
     description: Tunnel type; schema comment lists MPLS-TE, GRE, IPsec, L2TP, VXLAN, and MPLS-VPN.
     parent_object: Tunnel
     column: elem_type
@@ -211,7 +211,7 @@ entries:
 
   - canonical_id: Service.quality_of_service
     mention_type: attribute
-    surface_forms: [服务质量, 服务质量等级, 服务等级, QoS, quality_of_service, Gold, Silver, Bronze, Best_Effort]
+    surface_forms: [服务质量, 服务质量等级, 服务等级, QoS, quality_of_service]
     description: Service quality level; schema comment lists Gold, Silver, Bronze, and Best_Effort.
     parent_object: Service
     column: quality_of_service
@@ -220,7 +220,7 @@ entries:
 
   - canonical_id: Service.elem_type
     mention_type: attribute
-    surface_forms: [服务类型, 业务类型, 类型, elem_type, MPLS-VPN, QoS, L3VPN, MPLS-TE, Firewall_Service]
+    surface_forms: [服务类型, 业务类型, 类型, elem_type]
     description: Service type; schema comment lists MPLS-VPN, QoS, L3VPN, MPLS-TE, and Firewall_Service.
     parent_object: Service
     column: elem_type
@@ -265,7 +265,7 @@ entries:
 
   - canonical_id: Port.status
     mention_type: attribute
-    surface_forms: [端口状态, 接口状态, 状态, status, up, down, administratively_down]
+    surface_forms: [端口状态, 接口状态, 状态, status]
     description: Port operational status; schema comment lists up, down, and administratively_down.
     parent_object: Port
     column: status
@@ -274,7 +274,7 @@ entries:
 
   - canonical_id: Port.elem_type
     mention_type: attribute
-    surface_forms: [端口类型, 接口类型, 类型, elem_type, physical, logical, virtual]
+    surface_forms: [端口类型, 接口类型, 类型, elem_type]
     description: Port type; schema comment lists physical, logical, and virtual.
     parent_object: Port
     column: elem_type
@@ -337,7 +337,7 @@ entries:
 
   - canonical_id: Fiber.elem_type
     mention_type: attribute
-    surface_forms: [光纤类型, 类型, elem_type, single-mode, multi-mode, 单模, 多模]
+    surface_forms: [光纤类型, 类型, elem_type]
     description: Fiber type; schema comment lists single-mode and multi-mode.
     parent_object: Fiber
     column: elem_type
@@ -346,7 +346,7 @@ entries:
 
   - canonical_id: Fiber.wavelength
     mention_type: attribute
-    surface_forms: [光纤波长, 波长, wavelength, nm]
+    surface_forms: [光纤波长, 波长, wavelength]
     description: Fiber wavelength; schema comment says values follow pattern [0-9]+nm.
     parent_object: Fiber
     column: wavelength
@@ -382,7 +382,7 @@ entries:
 
   - canonical_id: Link.admin_status
     mention_type: attribute
-    surface_forms: [链路管理状态, 管理状态, admin_status, up, down, testing]
+    surface_forms: [链路管理状态, 管理状态, admin_status]
     description: Link administrative status; schema comment lists up, down, and testing.
     parent_object: Link
     column: admin_status

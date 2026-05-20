@@ -1,0 +1,73 @@
+version: 1
+metadata:
+  target: tugraph_cypher
+  ontology_version: 1
+  physical_schema_version: 1
+
+class_mappings:
+  - ontology_class: Service
+    node_label: Service
+    variable: s
+  - ontology_class: Tunnel
+    node_label: Tunnel
+    variable: t
+  - ontology_class: NetworkElement
+    node_label: NetworkElement
+    variable: ne
+  - ontology_class: Port
+    node_label: Port
+    variable: p
+  - ontology_class: Protocol
+    node_label: Protocol
+    variable: proto
+
+attribute_mappings:
+  - ontology_attribute: Service.name
+    node_property: name
+  - ontology_attribute: Service.bandwidth
+    node_property: bandwidth
+  - ontology_attribute: Service.quality_of_service
+    node_property: quality_of_service
+    value_transform:
+      Gold: Gold
+      Silver: Silver
+      Bronze: Bronze
+      Best_Effort: Best_Effort
+  - ontology_attribute: Tunnel.name
+    node_property: name
+  - ontology_attribute: Tunnel.ietf_standard
+    node_property: ietf_standard
+  - ontology_attribute: NetworkElement.name
+    node_property: name
+  - ontology_attribute: NetworkElement.elem_type
+    node_property: elem_type
+  - ontology_attribute: NetworkElement.ip_address
+    node_property: ip_address
+  - ontology_attribute: Port.name
+    node_property: name
+  - ontology_attribute: Port.elem_type
+    node_property: elem_type
+  - ontology_attribute: Port.status
+    node_property: status
+  - ontology_attribute: Protocol.standard
+    node_property: standard
+
+relation_mappings:
+  - ontology_relation: REL_SERVICE_USES_TUNNEL
+    edge_type: SERVICE_USES_TUNNEL
+    direction: outgoing
+  - ontology_relation: REL_TUNNEL_SRC
+    edge_type: TUNNEL_SRC
+    direction: outgoing
+  - ontology_relation: REL_TUNNEL_DST
+    edge_type: TUNNEL_DST
+    direction: outgoing
+  - ontology_relation: REL_PATH_THROUGH
+    edge_type: PATH_THROUGH
+    direction: outgoing
+  - ontology_relation: REL_HAS_PORT
+    edge_type: HAS_PORT
+    direction: outgoing
+  - ontology_relation: REL_TUNNEL_PROTO
+    edge_type: TUNNEL_PROTO
+    direction: outgoing

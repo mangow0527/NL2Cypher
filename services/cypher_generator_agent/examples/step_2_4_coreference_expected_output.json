@@ -1,0 +1,39 @@
+{
+  "candidate_pairs": [
+    {
+      "candidate_pair_id": "CR1",
+      "left_mapping_id": "OM2",
+      "right_mapping_id": "OM5",
+      "class_id": "Tunnel",
+      "evidence": ["same_class", "right_mapping_in_projection_region", "no_distinguishing_qualifier", "same_path_anchor"]
+    },
+    {
+      "candidate_pair_id": "CR2",
+      "left_mapping_id": "OM3",
+      "right_mapping_id": "OM6",
+      "class_id": "NetworkElement",
+      "evidence": ["same_class", "same_role", "right_mapping_in_projection_region", "no_distinguishing_qualifier", "same_path_anchor"]
+    }
+  ],
+  "resolved_pairs": [],
+  "merged_nodes": [],
+  "unresolved_items": [
+    {
+      "type": "ambiguous_coreference",
+      "blocking": true,
+      "candidate_pair_id": "CR1",
+      "mapping_ids": ["OM2", "OM5"],
+      "reason": "缺少 LLM 选择器，无法判断两个本体对象记录是否同指。",
+      "options": ["same_instance", "distinct_instances"]
+    },
+    {
+      "type": "ambiguous_coreference",
+      "blocking": true,
+      "candidate_pair_id": "CR2",
+      "mapping_ids": ["OM3", "OM6"],
+      "reason": "缺少 LLM 选择器，无法判断两个本体对象记录是否同指。",
+      "options": ["same_instance", "distinct_instances"]
+    }
+  ],
+  "llm_decision_traces": []
+}

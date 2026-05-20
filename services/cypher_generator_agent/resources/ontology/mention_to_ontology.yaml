@@ -1,0 +1,168 @@
+version: 1
+description: Step 2.2 mention canonical id to ontology reference mapping.
+mappings:
+  - mention_id: NetworkElement
+    ontology_kind: class
+    ontology_id: NetworkElement
+  - mention_id: Protocol
+    ontology_kind: class
+    ontology_id: Protocol
+  - mention_id: Tunnel
+    ontology_kind: class
+    ontology_id: Tunnel
+  - mention_id: Service
+    ontology_kind: class
+    ontology_id: Service
+  - mention_id: Port
+    ontology_kind: class
+    ontology_id: Port
+  - mention_id: Fiber
+    ontology_kind: class
+    ontology_id: Fiber
+  - mention_id: Link
+    ontology_kind: class
+    ontology_id: Link
+  - mention_id: REL_HAS_PORT
+    ontology_kind: relation
+    ontology_id: HAS_PORT
+  - mention_id: REL_FIBER_SRC
+    ontology_kind: relation_role
+    ontology_id: FIBER_SRC
+    role: source
+    target_class: Port
+  - mention_id: REL_FIBER_DST
+    ontology_kind: relation_role
+    ontology_id: FIBER_DST
+    role: destination
+    target_class: Port
+  - mention_id: REL_LINK_SRC
+    ontology_kind: relation_role
+    ontology_id: LINK_SRC
+    role: source
+    target_class: Port
+  - mention_id: REL_LINK_DST
+    ontology_kind: relation_role
+    ontology_id: LINK_DST
+    role: destination
+    target_class: Port
+  - mention_id: REL_TUNNEL_SRC
+    ontology_kind: relation_role
+    ontology_id: TUNNEL_SRC
+    role: source
+    target_class: NetworkElement
+  - mention_id: REL_TUNNEL_DST
+    ontology_kind: relation_role
+    ontology_id: TUNNEL_DST
+    role: destination
+    target_class: NetworkElement
+  - mention_id: REL_TUNNEL_PROTO
+    ontology_kind: relation
+    ontology_id: TUNNEL_PROTO
+  - mention_id: REL_PATH_THROUGH
+    ontology_kind: relation
+    ontology_id: PATH_THROUGH
+  - mention_id: REL_SERVICE_USES_TUNNEL
+    ontology_kind: relation
+    ontology_id: SERVICE_USES_TUNNEL
+  - mention_id: NetworkElement.id
+    ontology_kind: attribute
+    ontology_id: NetworkElement.id
+  - mention_id: NetworkElement.ip_address
+    ontology_kind: attribute
+    ontology_id: NetworkElement.ip_address
+  - mention_id: NetworkElement.location
+    ontology_kind: attribute
+    ontology_id: NetworkElement.location
+  - mention_id: NetworkElement.model
+    ontology_kind: attribute
+    ontology_id: NetworkElement.model
+  - mention_id: NetworkElement.name
+    ontology_kind: attribute
+    ontology_id: NetworkElement.name
+  - mention_id: NetworkElement.software_version
+    ontology_kind: attribute
+    ontology_id: NetworkElement.software_version
+  - mention_id: NetworkElement.elem_type
+    ontology_kind: attribute
+    ontology_id: NetworkElement.elem_type
+  - mention_id: NetworkElement.vendor
+    ontology_kind: attribute
+    ontology_id: NetworkElement.vendor
+  - mention_id: Protocol.id
+    ontology_kind: attribute
+    ontology_id: Protocol.id
+  - mention_id: Protocol.ietf_category
+    ontology_kind: attribute
+    ontology_id: Protocol.ietf_category
+  - mention_id: Protocol.name
+    ontology_kind: attribute
+    ontology_id: Protocol.name
+  - mention_id: Protocol.standard
+    ontology_kind: attribute
+    ontology_id: Protocol.standard
+  - mention_id: Protocol.version
+    ontology_kind: attribute
+    ontology_id: Protocol.version
+  - mention_id: Tunnel.bandwidth
+    ontology_kind: attribute
+    ontology_id: Tunnel.bandwidth
+  - mention_id: Tunnel.latency
+    ontology_kind: attribute
+    ontology_id: Tunnel.latency
+  - mention_id: Tunnel.id
+    ontology_kind: attribute
+    ontology_id: Tunnel.id
+  - mention_id: Tunnel.ietf_standard
+    ontology_kind: attribute
+    ontology_id: Tunnel.ietf_standard
+  - mention_id: Tunnel.name
+    ontology_kind: attribute
+    ontology_id: Tunnel.name
+  - mention_id: Tunnel.elem_type
+    ontology_kind: attribute
+    ontology_id: Tunnel.elem_type
+  - mention_id: Service.bandwidth
+    ontology_kind: attribute
+    ontology_id: Service.bandwidth
+  - mention_id: Service.latency
+    ontology_kind: attribute
+    ontology_id: Service.latency
+  - mention_id: Service.id
+    ontology_kind: attribute
+    ontology_id: Service.id
+  - mention_id: Service.name
+    ontology_kind: attribute
+    ontology_id: Service.name
+  - mention_id: Service.quality_of_service
+    ontology_kind: attribute
+    ontology_id: Service.quality_of_service
+  - mention_id: Service.elem_type
+    ontology_kind: attribute
+    ontology_id: Service.elem_type
+  - mention_id: NetworkElementType.router
+    ontology_kind: enum_value
+    ontology_id: NetworkElementType.router
+  - mention_id: NetworkElementType.switch
+    ontology_kind: enum_value
+    ontology_id: NetworkElementType.switch
+  - mention_id: NetworkElementType.firewall
+    ontology_kind: enum_value
+    ontology_id: NetworkElementType.firewall
+  - mention_id: NetworkElementType.load_balancer
+    ontology_kind: enum_value
+    ontology_id: NetworkElementType.load_balancer
+  - mention_id: NetworkElementType.wan_optimizer
+    ontology_kind: enum_value
+    ontology_id: NetworkElementType.wan_optimizer
+  - mention_id: ServiceQuality.Gold
+    ontology_kind: enum_value
+    ontology_id: ServiceQuality.Gold
+  - mention_id: ServiceQuality.Silver
+    ontology_kind: enum_value
+    ontology_id: ServiceQuality.Silver
+  - mention_id: ServiceQuality.Bronze
+    ontology_kind: enum_value
+    ontology_id: ServiceQuality.Bronze
+  - mention_id: ServiceQuality.Best_Effort
+    ontology_kind: enum_value
+    ontology_id: ServiceQuality.Best_Effort

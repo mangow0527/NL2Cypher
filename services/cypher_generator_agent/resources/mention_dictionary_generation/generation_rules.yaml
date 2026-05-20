@@ -1,0 +1,401 @@
+version: 1
+description: Fixed human-maintained rules used by tools/generate_mention_dictionaries.py.
+include_id_attributes:
+  - NetworkElement.id
+  - Protocol.id
+  - Tunnel.id
+  - Service.id
+  - Port.id
+  - Fiber.id
+  - Link.id
+
+objects:
+  NetworkElement:
+    ontology_class: NetworkDevice
+    surface_forms: [网元, 网络元素, 网络设备, 设备, NetworkElement, network element]
+    description: Network element node, covering routers, switches, firewalls, load balancers, and WAN optimizers.
+  Protocol:
+    ontology_class: ProtocolDefinition
+    surface_forms: [协议, 网络协议, 协议定义, Protocol, network protocol]
+    description: Network protocol definition object.
+  Tunnel:
+    ontology_class: NetworkTunnel
+    surface_forms: [隧道, 网络隧道, Tunnel, network tunnel]
+    description: Network tunnel instance; tunnel paths are represented through PATH_THROUGH edges.
+  Service:
+    ontology_class: BusinessService
+    surface_forms: [服务, 业务, 业务服务, 网络服务, Service, business service, service layer]
+    description: Business or service layer object carried by network resources.
+  Port:
+    ontology_class: NetworkPort
+    surface_forms: [端口, 接口, 网络接口, Port, interface, physical interface, logical interface]
+    description: Physical or logical interface on a network element.
+  Fiber:
+    ontology_class: PhysicalFiber
+    surface_forms: [光纤, 纤芯, 光缆, Fiber, fiber optic cable, physical fiber]
+    description: Physical fiber optic cable resource.
+  Link:
+    ontology_class: NetworkLink
+    surface_forms: [链路, 连接, 网络链路, 物理链路, 逻辑链路, Link, network link, physical link, logical link]
+    description: Logical or physical link between ports.
+
+attributes:
+  NetworkElement.id:
+    surface_forms: [网元 ID, 网元ID, 网元编号, 设备 ID, 设备ID, 设备编号, NetworkElement id, unique identifier]
+  Tunnel.ietf_standard:
+    surface_forms: [隧道 IETF 标准, 隧道IETF标准, 隧道标准, IETF 标准, IETF标准, RFC 标准, RFC标准, ietf_standard]
+    belongs_to_hint: [Tunnel, Protocol]
+  Service.quality_of_service:
+    surface_forms: [服务质量, 服务质量等级, 服务等级, QoS, quality_of_service]
+  NetworkElement.ip_address:
+    surface_forms: [网元 IP 地址, 网元IP地址, 设备 IP 地址, 设备IP地址, IP 地址, IP地址, IPv4 address, ip_address, management address, 管理地址]
+    belongs_to_hint: [NetworkElement, REL_TUNNEL_SRC, REL_TUNNEL_DST, REL_PATH_THROUGH]
+
+attribute_value_aliases:
+  NetworkElement.elem_type:
+    router:
+      enum_name: NetworkElementType
+      surface_forms: [路由器]
+    switch:
+      enum_name: NetworkElementType
+      surface_forms: [交换机]
+    firewall:
+      enum_name: NetworkElementType
+      surface_forms: [防火墙]
+    load_balancer:
+      enum_name: NetworkElementType
+      surface_forms: [load balancer, 负载均衡, 负载均衡器]
+    wan_optimizer:
+      enum_name: NetworkElementType
+      surface_forms: [WAN optimizer, 广域网优化器]
+  Protocol.ietf_category:
+    Routing:
+      enum_name: ProtocolIetfCategory
+      surface_forms: [路由, 路由类]
+    Transport:
+      enum_name: ProtocolIetfCategory
+      surface_forms: [传输, 传输类]
+    Applications:
+      enum_name: ProtocolIetfCategory
+      surface_forms: [Application, 应用, 应用类]
+    Security:
+      enum_name: ProtocolIetfCategory
+      surface_forms: [安全, 安全类]
+    Management:
+      enum_name: ProtocolIetfCategory
+      surface_forms: [管理, 管理类]
+  Service.quality_of_service:
+    Gold:
+      enum_name: ServiceQuality
+      surface_forms: [gold, 金牌, 黄金级, 金牌服务]
+    Silver:
+      enum_name: ServiceQuality
+      surface_forms: [silver, 银牌, 银牌服务]
+    Bronze:
+      enum_name: ServiceQuality
+      surface_forms: [bronze, 铜牌, 铜牌服务]
+    Best_Effort:
+      enum_name: ServiceQuality
+      surface_forms: [best effort, 尽力而为, 普通级]
+  Tunnel.elem_type:
+    MPLS-TE:
+      enum_name: TunnelType
+      surface_forms: [MPLS TE, MPLS流量工程, 流量工程隧道]
+    GRE:
+      enum_name: TunnelType
+      surface_forms: [GRE隧道]
+    IPsec:
+      enum_name: TunnelType
+      surface_forms: [IPSec, IPsec隧道]
+    L2TP:
+      enum_name: TunnelType
+      surface_forms: [L2TP隧道]
+    VXLAN:
+      enum_name: TunnelType
+      surface_forms: [VXLAN隧道]
+    MPLS-VPN:
+      enum_name: TunnelType
+      surface_forms: [MPLS VPN, MPLS虚拟专用网]
+  Service.elem_type:
+    MPLS-VPN:
+      enum_name: ServiceType
+      surface_forms: [MPLS VPN, L3VPN业务]
+    QoS:
+      enum_name: ServiceType
+      surface_forms: [服务质量业务]
+    L3VPN:
+      enum_name: ServiceType
+      surface_forms: [三层VPN, 三层虚拟专用网]
+    MPLS-TE:
+      enum_name: ServiceType
+      surface_forms: [MPLS流量工程业务]
+    Firewall_Service:
+      enum_name: ServiceType
+      surface_forms: [firewall service, 防火墙服务]
+  Port.status:
+    up:
+      enum_name: PortStatus
+      surface_forms: [UP, 启用, 正常, 在线]
+    down:
+      enum_name: PortStatus
+      surface_forms: [DOWN, 关闭, 故障, 离线]
+    administratively_down:
+      enum_name: PortStatus
+      surface_forms: [administratively down, 管理关闭]
+  Port.elem_type:
+    physical:
+      enum_name: PortType
+      surface_forms: [物理, 物理端口, 物理接口]
+    logical:
+      enum_name: PortType
+      surface_forms: [逻辑, 逻辑端口, 逻辑接口]
+    virtual:
+      enum_name: PortType
+      surface_forms: [虚拟, 虚拟端口, 虚拟接口]
+  Fiber.elem_type:
+    single-mode:
+      enum_name: FiberType
+      surface_forms: [single mode, 单模, 单模光纤]
+    multi-mode:
+      enum_name: FiberType
+      surface_forms: [multi mode, 多模, 多模光纤]
+  Link.admin_status:
+    up:
+      enum_name: LinkAdminStatus
+      surface_forms: [UP, 管理启用, 管理正常]
+    down:
+      enum_name: LinkAdminStatus
+      surface_forms: [DOWN, 管理关闭]
+    testing:
+      enum_name: LinkAdminStatus
+      surface_forms: [测试, 测试中]
+
+relations:
+  HAS_PORT:
+    surface_forms: [拥有端口, 包含端口, 下挂端口, 设备端口, 网元端口, HAS_PORT, owns port, has port]
+    description: NetworkElement owns Port.
+  FIBER_SRC:
+    role: source
+    surface_forms: [光纤源端口, 光纤源端, 光纤起点端口, FIBER_SRC, fiber source, source termination]
+    description: Fiber source termination to Port.
+  FIBER_DST:
+    role: destination
+    surface_forms: [光纤目的端口, 光纤目的端, 光纤终点端口, FIBER_DST, fiber destination, destination termination]
+    description: Fiber destination termination to Port.
+  LINK_SRC:
+    role: source
+    surface_forms: [链路源端口, 链路源端, 链路起点端口, LINK_SRC, link source, source termination]
+    description: Link source termination to Port.
+  LINK_DST:
+    role: destination
+    surface_forms: [链路目的端口, 链路目的端, 链路终点端口, LINK_DST, link destination, destination termination]
+    description: Link destination termination to Port.
+  TUNNEL_SRC:
+    role: source
+    surface_forms: [隧道源网元, 隧道源端网元, 源网元, 源端网元, TUNNEL_SRC, tunnel source endpoint, source endpoint, ingress LSR]
+    description: Tunnel source endpoint to NetworkElement.
+  TUNNEL_DST:
+    role: destination
+    surface_forms: [隧道目的网元, 隧道目的端网元, 目的网元, 目的端网元, 终点网元, TUNNEL_DST, tunnel destination endpoint, destination endpoint, egress LSR]
+    description: Tunnel destination endpoint to NetworkElement.
+  TUNNEL_PROTO:
+    surface_forms: [隧道协议, 隧道使用协议, 使用协议, 绑定协议, TUNNEL_PROTO, tunnel protocol binding]
+    description: Tunnel protocol binding to Protocol.
+  PATH_THROUGH:
+    role: path_through
+    surface_forms: [隧道经过网元, 经过网元, 路径经过, 穿过, 途经, PATH_THROUGH, path through, tunnel path sequence]
+    description: Tunnel path sequence through NetworkElement; hop_order defines path order.
+  SERVICE_USES_TUNNEL:
+    surface_forms: [服务使用隧道, 业务使用隧道, 使用的隧道, 服务承载隧道, 承载于, 依赖隧道, SERVICE_USES_TUNNEL, service uses tunnel, service leverages tunnel]
+    description: Service leverages Tunnel.
+
+operation_intents:
+  - canonical_id: OP_QUERY
+    mention_type: operation_intent
+    surface_forms: [查询, 查找, 查看, 列出, 获取, 显示, search, query, list, show, get]
+    description: Retrieve records or fields.
+    intent: record_retrieval_query
+  - canonical_id: OP_DETAIL
+    mention_type: operation_intent
+    surface_forms: [详情, 详细信息, 节点信息, 全部信息, detail, details]
+    description: Ask for full object details.
+    intent: entity_detail_query
+  - canonical_id: OP_COUNT
+    mention_type: operation_intent
+    surface_forms: [统计, 数量, 总数, 多少, 计数, count, total, number of]
+    description: Count records or values.
+    intent: metric_query
+  - canonical_id: OP_GROUP_BY
+    mention_type: operation_intent
+    surface_forms: [按, 分组, 分布, 各, 每个, group by, breakdown, distribution, per]
+    description: Group results by a dimension.
+    intent: breakdown_query
+  - canonical_id: OP_RANK
+    mention_type: operation_intent
+    surface_forms: [排名, 排序, 前, top, Top, TOP, 最多, 最少, 最高, 最低, 最大, 最小, ranking, rank]
+    description: Rank, top-k, or bottom-k query.
+    intent: ranking_query
+  - canonical_id: OP_SORT_ASC
+    mention_type: operation_intent
+    surface_forms: [升序, 从小到大, 递增, ascending, asc]
+    description: Ascending ordering cue.
+    intent: sort_ascending
+  - canonical_id: OP_SORT_DESC
+    mention_type: operation_intent
+    surface_forms: [降序, 从大到小, 递减, descending, desc]
+    description: Descending ordering cue.
+    intent: sort_descending
+  - canonical_id: OP_LIMIT
+    mention_type: operation_intent
+    surface_forms: [前几个, 前N个, 前5个, top N, limit, 限制, 返回前]
+    description: Limit result count.
+    intent: limit_query
+  - canonical_id: OP_EXISTENCE
+    mention_type: operation_intent
+    surface_forms: [是否存在, 有没有, 是否有, 是否, 存在, exists, existence]
+    description: Existence check.
+    intent: existence_query
+  - canonical_id: OP_FILTER
+    mention_type: operation_intent
+    surface_forms: [为, 是, 等于, 大于, 小于, 不等于, 满足, 过滤, filter, where, equals, greater than, less than]
+    description: Filter condition cue.
+    intent: filter_condition
+  - canonical_id: OP_RELATIONSHIP_PATH
+    mention_type: operation_intent
+    surface_forms: [关系, 对应关系, 关联, 连接, 路径, 经过, 使用, 到达, path, relationship, related, connected]
+    description: Relationship or path query cue.
+    intent: relationship_path_query
+  - canonical_id: OP_RETURN_FIELD
+    mention_type: operation_intent
+    surface_forms: [返回, 输出, 展示, return field, projection]
+    description: Requested projection or returned field cue.
+    intent: attribute_projection_query
+
+synonyms:
+  - canonical_id: SYN_Service
+    mention_type: synonym_group
+    surface_forms: [服务, 业务, 业务服务, 网络服务, Service]
+    description: Synonyms for Service only.
+    members: [服务, 业务, 业务服务, 网络服务, Service]
+    applied_to: [Service]
+  - canonical_id: SYN_NetworkElement
+    mention_type: synonym_group
+    surface_forms: [网元, 网络元素, 网络设备, 设备, NetworkElement]
+    description: Synonyms for NetworkElement only.
+    members: [网元, 网络元素, 网络设备, 设备, NetworkElement]
+    applied_to: [NetworkElement]
+  - canonical_id: SYN_Port
+    mention_type: synonym_group
+    surface_forms: [端口, 接口, 网络接口, Port, interface]
+    description: Synonyms for Port only.
+    members: [端口, 接口, 网络接口, Port, interface]
+    applied_to: [Port]
+  - canonical_id: SYN_Tunnel
+    mention_type: synonym_group
+    surface_forms: [隧道, 网络隧道, Tunnel, network tunnel]
+    description: Synonyms for Tunnel only.
+    members: [隧道, 网络隧道, Tunnel, network tunnel]
+    applied_to: [Tunnel]
+  - canonical_id: SYN_Fiber
+    mention_type: synonym_group
+    surface_forms: [光纤, 纤芯, 光缆, Fiber]
+    description: Synonyms for Fiber only.
+    members: [光纤, 纤芯, 光缆, Fiber]
+    applied_to: [Fiber]
+  - canonical_id: SYN_Link
+    mention_type: synonym_group
+    surface_forms: [链路, 连接, 网络链路, Link]
+    description: Synonyms for Link only.
+    members: [链路, 连接, 网络链路, Link]
+    applied_to: [Link]
+  - canonical_id: SYN_Protocol
+    mention_type: synonym_group
+    surface_forms: [协议, 网络协议, 协议定义, Protocol]
+    description: Synonyms for Protocol only.
+    members: [协议, 网络协议, 协议定义, Protocol]
+    applied_to: [Protocol]
+  - canonical_id: SYN_SourceRole
+    mention_type: synonym_group
+    surface_forms: [源, 源端, 起点, 入口, ingress, source]
+    description: Source-side role synonyms scoped to source relationships.
+    members: [源, 源端, 起点, 入口, ingress, source]
+    applied_to: [REL_FIBER_SRC, REL_LINK_SRC, REL_TUNNEL_SRC]
+  - canonical_id: SYN_DestinationRole
+    mention_type: synonym_group
+    surface_forms: [目的, 目的端, 终点, 出口, egress, destination, dst]
+    description: Destination-side role synonyms scoped to destination relationships.
+    members: [目的, 目的端, 终点, 出口, egress, destination, dst]
+    applied_to: [REL_FIBER_DST, REL_LINK_DST, REL_TUNNEL_DST]
+  - canonical_id: SYN_PathThrough
+    mention_type: synonym_group
+    surface_forms: [经过, 途经, 穿过, 路径经过, path through]
+    description: Path-through synonyms scoped to PATH_THROUGH.
+    members: [经过, 途经, 穿过, 路径经过, path through]
+    applied_to: [REL_PATH_THROUGH]
+  - canonical_id: SYN_QoS
+    mention_type: synonym_group
+    surface_forms: [QoS, 服务质量, 服务质量等级, 服务等级, quality of service]
+    description: Service quality synonyms scoped to Service.quality_of_service.
+    members: [QoS, 服务质量, 服务质量等级, 服务等级, quality of service]
+    applied_to: [Service.quality_of_service]
+  - canonical_id: SYN_IPAddress
+    mention_type: synonym_group
+    surface_forms: [IP地址, IP 地址, IPv4 address, 管理地址]
+    description: IP address synonyms scoped to NetworkElement.ip_address.
+    members: [IP地址, IP 地址, IPv4 address, 管理地址]
+    applied_to: [NetworkElement.ip_address]
+  - canonical_id: SYN_MACAddress
+    mention_type: synonym_group
+    surface_forms: [MAC地址, MAC 地址, mac_address]
+    description: MAC address synonyms scoped to Port.mac_address.
+    members: [MAC地址, MAC 地址, mac_address]
+    applied_to: [Port.mac_address]
+  - canonical_id: SYN_IETFStandard
+    mention_type: synonym_group
+    surface_forms: [IETF标准, IETF 标准, RFC标准, RFC 标准, RFC]
+    description: Standard-related synonyms scoped to tunnel and protocol standard fields.
+    members: [IETF标准, IETF 标准, RFC标准, RFC 标准, RFC]
+    applied_to: [Tunnel.ietf_standard, Protocol.standard]
+uncertain_entries:
+  - candidate_id: UNC_ProtocolEmptyLiveData
+    issue_type: data_coverage
+    evidence:
+      - schema.json defines Protocol as a vertex label.
+      - Live TuGraph query returned zero distinct Protocol.ietf_category values.
+    judgement: Keep Protocol in business_objects.yaml because it is schema-backed, but review whether it should be prioritized during matching while live data has no Protocol nodes.
+  - candidate_id: UNC_EdgeProperty_HAS_PORT_admin_status
+    issue_type: modeling_gap
+    evidence:
+      - schema.json defines edge property HAS_PORT.admin_status.
+      - The requested attribute dictionary canonical form is Object.field, which does not naturally cover edge properties.
+    judgement: Do not put HAS_PORT.admin_status into attributes.yaml yet. Consider a future relation-attribute dictionary if users ask about edge administrative status.
+  - candidate_id: UNC_EdgeProperty_PATH_THROUGH_hop_order
+    issue_type: modeling_gap
+    evidence:
+      - schema.json defines edge property PATH_THROUGH.hop_order.
+      - hop_order is important for path sequence semantics but is not an object property.
+    judgement: Keep hop_order as a relation surface form on REL_PATH_THROUGH for now; review whether path-order mentions need a dedicated edge-property dictionary.
+  - candidate_id: UNC_LinkStatusValues
+    issue_type: incomplete_enum
+    evidence:
+      - schema.json does not document Link.status enum values.
+      - Live TuGraph currently returns only up for Link.status.
+    judgement: Do not add LinkStatus values to attribute_values.yaml until the business enum is confirmed.
+  - candidate_id: UNC_LinkTypeValues
+    issue_type: incomplete_enum
+    evidence:
+      - schema.json does not document Link.elem_type enum values.
+      - Live TuGraph currently returns only ethernet for Link.elem_type.
+    judgement: Do not add LinkType values to attribute_values.yaml until the business enum is confirmed.
+  - candidate_id: UNC_LinkProtocolScalar
+    issue_type: semantic_ambiguity
+    evidence:
+      - schema.json defines Link.protocol as a scalar string property.
+      - schema.json also defines TUNNEL_PROTO as a graph relationship from Tunnel to Protocol.
+    judgement: Keep Link.protocol as an attribute because it is a real scalar property; make sure semantic composition does not confuse it with REL_TUNNEL_PROTO.
+  - candidate_id: UNC_InstanceLikeValues
+    issue_type: instance_values
+    evidence:
+      - Live TuGraph samples include VendorA, Site_01, VLAN IDs, RFC 3209, and 1550nm.
+      - These look like instance values or pattern-constrained values rather than closed business enums.
+    judgement: Do not inject these values into attribute_values.yaml automatically. If users commonly filter on them, add them through a reviewed value dictionary update.

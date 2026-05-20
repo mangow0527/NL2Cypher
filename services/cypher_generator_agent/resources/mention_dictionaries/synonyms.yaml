@@ -11,9 +11,9 @@ entries:
 
   - canonical_id: SYN_NetworkElement
     mention_type: synonym_group
-    surface_forms: [网元, 网络元素, 网络设备, 设备, 路由器, 交换机, 防火墙, NetworkElement]
+    surface_forms: [网元, 网络元素, 网络设备, 设备, NetworkElement]
     description: Synonyms for NetworkElement only.
-    members: [网元, 网络元素, 网络设备, 设备, 路由器, 交换机, 防火墙, NetworkElement]
+    members: [网元, 网络元素, 网络设备, 设备, NetworkElement]
     applied_to: [NetworkElement]
 
   - canonical_id: SYN_Port
@@ -99,10 +99,3 @@ entries:
     description: Standard-related synonyms scoped to tunnel and protocol standard fields.
     members: [IETF标准, IETF 标准, RFC标准, RFC 标准, RFC]
     applied_to: [Tunnel.ietf_standard, Protocol.standard]
-
-  - canonical_id: SYN_StatusUpDown
-    mention_type: synonym_group
-    surface_forms: [up, down, 正常, 关闭, 在线, 离线]
-    description: Status words scoped to status/admin status fields.
-    members: [up, down, 正常, 关闭, 在线, 离线]
-    applied_to: [Port.status, Link.admin_status, Link.status]

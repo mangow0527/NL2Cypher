@@ -111,20 +111,52 @@ def _has_query_signal(
     diagnostics: dict[str, object],
     config: dict[str, Any],
 ) -> bool:
-    """优先信任第 2 步信号；漏识别时基于清理后的问题做轻量复核。"""
+    """基于最终核心文本复核查询表达；第 2 步信号只作为诊断证据。"""
 
-    has_query_signal = _diagnostic_value(
-        diagnostics,
-        ("phrase_detection", "scope_signals", "has_query_signal"),
-    )
-    if has_query_signal is True:
-        return True
+    if _is_consultation_or_explanation(core_question, config):
+        return False
 
     fallback_phrases = string_list(config.get("query_signal_fallback_phrases"))
-    if not fallback_phrases:
-        return False
     texts = (core_question.strip(), retrieval_question.strip())
-    return any(phrase in text for text in texts for phrase in fallback_phrases)
+    if any(phrase in text for text in texts for phrase in fallback_phrases):
+        return True
+
+    if any(_has_constrained_statistical_signal(text, config) for text in texts):
+        return True
+
+    boundary_text = _diagnostic_value(diagnostics, ("background_strip", "boundary_span", "text"))
+    if isinstance(boundary_text, str):
+        return any(phrase in boundary_text for phrase in fallback_phrases) or _has_constrained_statistical_signal(
+            boundary_text,
+            config,
+        )
+
+    return False
+
+
+def _is_consultation_or_explanation(text: str, config: dict[str, Any]) -> bool:
+    phrases = string_list(config.get("consultation_rejection_phrases"))
+    return any(phrase in text for phrase in phrases)
+
+
+def _has_constrained_statistical_signal(text: str, config: dict[str, Any]) -> bool:
+    statistical = config.get("statistical_query_signal", {})
+    if not isinstance(statistical, dict):
+        return False
+
+    verbs = string_list(statistical.get("verbs"))
+    result_terms = string_list(statistical.get("result_terms"))
+    if not verbs or not result_terms:
+        return False
+
+    for verb in verbs:
+        index = text.find(verb)
+        if index < 0:
+            continue
+        right_text = text[index + len(verb) :]
+        if any(term in right_text for term in result_terms):
+            return True
+    return False
 
 
 def _is_vague_reference_only(core_question: str) -> bool:

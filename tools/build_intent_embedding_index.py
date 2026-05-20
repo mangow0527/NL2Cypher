@@ -12,7 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from services.cypher_generator_agent.app.intent_recognition import (
+from services.cypher_generator_agent.app.intent_classification import (
     IntentEmbeddingSample,
     build_text_embedder,
     write_embedding_index,

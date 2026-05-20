@@ -85,7 +85,7 @@ def _business_objects(schema: list[dict[str, Any]], rules: dict[str, Any]) -> li
     for item in _vertices(schema):
         label = str(item["label"])
         override = overrides.get(label, {})
-        surface_forms = _unique([label, _split_pascal(label), *override.get("surface_forms", [])])
+        surface_forms = _unique([label, *override.get("surface_forms", [])])
         entries.append(
             {
                 "canonical_id": label,
@@ -213,11 +213,10 @@ def _document(schema_path: Path, description: str, entries: list[dict[str, Any]]
 def _field_surface_forms(label: str, object_zh: str, prop: dict[str, Any], override: dict[str, Any]) -> list[str]:
     name = str(prop["name"])
     field_zh = override.get("name_zh") or _PROPERTY_ZH.get(name)
-    forms = [name, f"{label} {name}", f"{label}.{name}"]
+    forms = [name]
     if field_zh:
         forms.extend([f"{object_zh}{field_zh}", field_zh])
     description = str(prop.get("description") or "")
-    forms.extend(_enum_values_from_description(description))
     forms.extend(override.get("surface_forms", []))
     return _unique(forms)
 

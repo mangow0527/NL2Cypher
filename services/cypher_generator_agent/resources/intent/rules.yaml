@@ -607,6 +607,9 @@ rules:
     primary_intent: relationship_path_query
     secondary_intent: path_enumeration_query
     confidence: 0.86
+    require_shape_any:
+      - path_enumeration_hint
+      - path_answer_hint
     include_any:
       - 所有路径
       - 全部路径
@@ -622,6 +625,8 @@ rules:
     primary_intent: relationship_path_query
     secondary_intent: topology_subgraph_query
     confidence: 0.855
+    require_shape_any:
+      - topology_answer_hint
     include_any:
       - 周边拓扑
       - 局部拓扑
@@ -634,6 +639,8 @@ rules:
     primary_intent: relationship_path_query
     secondary_intent: reachable_entity_query
     confidence: 0.85
+    prefer_shape_any:
+      - path_answer_hint
     include_any:
       - 可达
       - 可以到达
@@ -655,6 +662,8 @@ rules:
     primary_intent: relationship_path_query
     secondary_intent: path_trace_query
     confidence: 0.845
+    require_shape_any:
+      - path_answer_hint
     include_any:
       - 完整路径
       - 路径详情
@@ -682,6 +691,9 @@ rules:
     primary_intent: relationship_path_query
     secondary_intent: relationship_detail_query
     confidence: 0.84
+    exclude_shape_any:
+      - answer_projection_region
+      - project_marker
     include_any:
       - 关系详情
       - 关系属性
@@ -699,9 +711,20 @@ rules:
     primary_intent: record_retrieval_query
     secondary_intent: related_record_query
     confidence: 0.835
+    exclude_shape_any:
+      - path_answer_hint
+      - path_enumeration_hint
+      - topology_answer_hint
+    prefer_shape_any:
+      - answer_projection_region
+      - project_marker
     include_any:
       - 服务所使用
       - 服务使用的
+      - 使用的
+      - 所使用的
+      - 经过
+      - 经过的
       - 使用了哪些
       - 使用哪些
       - 业务使用隧道对应

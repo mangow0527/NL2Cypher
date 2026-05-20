@@ -6,8 +6,9 @@ from fastapi import FastAPI
 from fastapi.responses import Response
 import uvicorn
 
-from .intent_recognition import get_hybrid_intent_recognizer
+from .intent_classification import get_hybrid_intent_recognizer
 from .models import IntentRecognitionRequest, QAQuestionRequest, SemanticParseRequest
+from .ontology_generation import OntologyGenerationPipeline
 from .config import get_settings
 from .service import get_generator_status, get_workflow_service
 
@@ -45,12 +46,16 @@ async def recognize_intent(request: IntentRecognitionRequest) -> Dict[str, objec
 
 @app.post("/api/v1/semantic/parse")
 async def parse_semantics(request: SemanticParseRequest) -> Dict[str, object]:
-    result = await get_workflow_service().semantic_pipeline.parse_with_fallback(
-        id=request.id,
-        question=request.question,
-        generation_run_id=request.generation_run_id,
+    result = OntologyGenerationPipeline.from_default_resources().generate(
+        request.question,
+        trace_id=request.generation_run_id or request.id or "api",
     )
-    return result.to_dict()
+    return {
+        "status": result.status,
+        "cypher": result.cypher,
+        "logical_plan": result.logical_plan.to_dict(),
+        "trace": result.trace.to_dict(),
+    }
 
 
 if __name__ == "__main__":

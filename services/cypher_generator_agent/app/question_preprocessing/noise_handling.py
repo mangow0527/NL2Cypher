@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+import re
 
 from .common import TextSpan, load_yaml_mapping, mapping_items, resource_path, string_list
 
@@ -129,6 +130,25 @@ def _collect_removed_spans(text: str, config: dict[str, Any]) -> list[TextSpan]:
                 )
                 occupied.append((index, end))
             start = index + 1
+    for item in mapping_items(config.get("remove_patterns")):
+        pattern = item.get("pattern")
+        if not isinstance(pattern, str) or not pattern:
+            continue
+        for match in re.finditer(pattern, text):
+            index, end = match.span()
+            if _overlaps(index, end, occupied):
+                continue
+            spans.append(
+                TextSpan(
+                    text=match.group(0),
+                    kind=str(item.get("kind", "noise")),
+                    start=index,
+                    end=end,
+                    offset_basis="core_candidate",
+                    rule_id=str(item["id"]),
+                )
+            )
+            occupied.append((index, end))
     return spans
 
 

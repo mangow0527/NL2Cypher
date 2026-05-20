@@ -19,9 +19,6 @@ remove_phrases:
   - id: wrapper_convenient_for_you
     text: 你这边方便的话
     kind: expression_wrapper
-  - id: wrapper_repeated_service_context
-    text: 我们现在看服务这块，嗯还是服务这块，麻烦
-    kind: expression_wrapper
   - id: wrapper_result_only
     text: 这个结果给我就可以
     kind: expression_wrapper
@@ -49,6 +46,14 @@ remove_phrases:
   - id: politeness_thanks
     text: 谢谢
     kind: politeness
+
+remove_patterns:
+  # 通用重复话题包装，例如：
+  # “我们现在看端口这块，嗯还是端口这块，麻烦查询端口名称”
+  # 这里只识别重复表达结构，不在配置里维护任何业务词。
+  - id: wrapper_repeated_context
+    pattern: 我们现在看(?P<topic>[^，,。！？；]{1,20})这块，嗯还是(?P=topic)这块，麻烦
+    kind: expression_wrapper
 
 pronoun_prefix_normalizations:
   - id: pronoun_style_normalization_his

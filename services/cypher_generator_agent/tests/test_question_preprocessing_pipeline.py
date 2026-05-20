@@ -7,6 +7,7 @@ import yaml
 from services.cypher_generator_agent.app.question_preprocessing.background_strip import strip_background
 from services.cypher_generator_agent.app.question_preprocessing.clarity_gate import judge_clarity
 from services.cypher_generator_agent.app.question_preprocessing.compound_detection import detect_compound_query
+from services.cypher_generator_agent.app.question_preprocessing.input_guard import guard_input
 from services.cypher_generator_agent.app.question_preprocessing.noise_handling import handle_noise
 from services.cypher_generator_agent.app.question_preprocessing.phrase_detection import detect_phrase_signals
 from services.cypher_generator_agent.app.question_preprocessing.pipeline import preprocess_question
@@ -20,6 +21,17 @@ RAW_SAMPLE = (
     "你好，，现在就是我们遇到了一些咨询类  的问题，所以需要查询一下金牌服务 "
     "哦不对是银牌服务所使用的隧道和他的源网元，然后你需要 给我返 回隧道的IETF标准和源网元的IP，谢谢啦！"
 )
+
+
+def test_input_guard_can_run_as_independent_step() -> None:
+    accepted = guard_input("查询服务名称").to_dict()
+    rejected = guard_input("查询\u0000服务名称").to_dict()
+
+    assert accepted["accepted"] is True
+    assert accepted["guarded_question"] == "查询服务名称"
+    assert rejected["accepted"] is False
+    assert rejected["guarded_question"] is None
+    assert rejected["rejection"]["reason_code"] == "invalid_control_character"
 
 
 def test_self_correction_applies_strong_restatement_from_phrase_detection() -> None:
@@ -149,12 +161,15 @@ def test_pipeline_preprocesses_sample_without_main_cypher_flow() -> None:
     result = preprocess_question(RAW_SAMPLE).to_dict()
 
     assert result["accepted"] is True
+    assert result["guarded_question"] == RAW_SAMPLE
     assert result["core_question"] == "银牌服务所使用的隧道和其源网元，返回隧道的IETF标准和源网元的IP"
     assert result["retrieval_question"] == result["core_question"]
     assert result["clarification"] is None
+    assert result["diagnostics"]["input_guard"]["accepted"] is True
     assert result["diagnostics"]["self_correction"]["status"] == "applied"
     assert result["diagnostics"]["compound_detection"]["can_continue"] is True
     assert set(result["diagnostics"]) == {
+        "input_guard",
         "text_cleaning",
         "phrase_detection",
         "self_correction",
@@ -169,10 +184,23 @@ def test_pipeline_requires_explicit_query_signal() -> None:
     result = preprocess_question("Gold 服务最近有点慢，帮我看看").to_dict()
 
     assert result["accepted"] is False
+    assert result["guarded_question"] == "Gold 服务最近有点慢，帮我看看"
     assert result["core_candidate"] is None
     assert result["core_question"] is None
     assert result["clarification"]["reason_code"] == "query_intent_missing"
     assert result["diagnostics"]["clarity_gate"]["accepted"] is False
+
+
+def test_pipeline_rejects_invalid_control_characters_before_cleaning() -> None:
+    result = preprocess_question("查询\u0000服务名称").to_dict()
+
+    assert result["accepted"] is False
+    assert result["guarded_question"] is None
+    assert result["cleaned_question"] is None
+    assert result["clarification"]["source_stage"] == "input_guard"
+    assert result["clarification"]["reason_code"] == "invalid_control_character"
+    assert result["diagnostics"]["input_guard"]["accepted"] is False
+    assert result["diagnostics"]["text_cleaning"] is None
 
 
 def test_pipeline_accepts_colloquial_statistics_query() -> None:
@@ -218,6 +246,48 @@ def test_clarity_gate_rechecks_query_signal_after_noise_handling() -> None:
 
     assert result["accepted"] is True
     assert result["reason_code"] == "accepted"
+
+
+def test_clarity_gate_rejects_statistical_consultation_texts() -> None:
+    broken_report = preprocess_question("统计报表坏了怎么办").to_dict()
+    word_meaning = preprocess_question("统计这个词是什么意思").to_dict()
+
+    assert broken_report["accepted"] is False
+    assert broken_report["clarification"]["reason_code"] == "query_intent_missing"
+    assert word_meaning["accepted"] is False
+    assert word_meaning["clarification"]["reason_code"] == "query_intent_missing"
+
+
+def test_pipeline_strips_statistics_background_boundary() -> None:
+    result = preprocess_question("我们这边要核对，所以需要统计服务数量").to_dict()
+
+    assert result["accepted"] is True
+    assert result["core_candidate"] == "统计服务数量"
+    assert result["core_question"] == "统计服务数量"
+    assert result["diagnostics"]["background_strip"]["boundary_span"]["rule_id"] == "background_boundary_so_need"
+
+
+def test_self_correction_contrastive_keeps_query_action() -> None:
+    result = preprocess_question("不是要查询服务，是查询隧道").to_dict()
+
+    assert result["accepted"] is True
+    assert result["core_question"] == "查询隧道"
+    assert result["diagnostics"]["self_correction"]["corrections"][0]["marker_group"] == "contrastive_correction"
+
+
+def test_noise_handling_yaml_does_not_contain_business_terms_in_remove_phrases() -> None:
+    with (RESOURCE_DIR / "noise_handling.yaml").open(encoding="utf-8") as handle:
+        noise_handling = yaml.safe_load(handle)
+
+    remove_phrases = [item["text"] for item in noise_handling["remove_phrases"]]
+    assert all("服务" not in phrase for phrase in remove_phrases)
+
+
+def test_noise_handling_removes_generic_repeated_context_prefix() -> None:
+    result = preprocess_question("我们现在看端口这块，嗯还是端口这块，麻烦查询端口名称。").to_dict()
+
+    assert result["accepted"] is True
+    assert result["core_question"] == "查询端口名称"
 
 
 def test_self_correction_applies_contrastive_do_not_pattern() -> None:

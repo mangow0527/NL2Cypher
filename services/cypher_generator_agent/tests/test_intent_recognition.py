@@ -8,24 +8,22 @@ from unittest.mock import patch
 import httpx
 import yaml
 
-from services.cypher_generator_agent.app.intent_recognition import (
+from services.cypher_generator_agent.app.intent_classification import (
     EmbeddingIntentRecognizer,
+    FallbackEmbeddingStore,
     HybridIntentRecognizer,
     InMemoryEmbeddingStore,
     IntentEmbeddingSample,
     JsonlEmbeddingStore,
     LocalTextEmbedder,
+    RagIntentEmbeddingStore,
+    RagIntentSearchError,
     RuleBasedIntentRecognizer,
     SentenceTransformerTextEmbedder,
     build_text_embedder,
     extract_query_structural_features,
-    write_embedding_index,
     get_hybrid_intent_recognizer,
-)
-from services.cypher_generator_agent.app.intent_vector_store import (
-    FallbackEmbeddingStore,
-    RagIntentEmbeddingStore,
-    RagIntentSearchError,
+    write_embedding_index,
 )
 
 

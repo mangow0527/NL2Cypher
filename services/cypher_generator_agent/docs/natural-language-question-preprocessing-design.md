@@ -2,7 +2,7 @@
 
 本文档定义 cypher-generator-agent 中自然语言问题预处理层的流程、每一步的输入输出标准、YAML 资源边界和 Python 模块设计。后续实现必须逐项对齐本文档；不允许用空实现、mock 输出或只返回固定样例的方式通过测试。
 
-自然语言问题预处理层位于正式生成链路最前面，但在当前阶段作为独立模块实现和测试，暂不接入整体 Cypher 生成流程。它只负责清理真实用户表达、处理明确自我修正、剥离背景噪声、识别明显复合或多步查询，并在无法安全继续时输出结构化澄清反馈。
+自然语言问题预处理层位于正式生成链路最前面，但在当前阶段作为独立模块实现和测试，暂不接入整体 Cypher 生成流程。它负责请求文本安全准入、清理真实用户表达、处理明确自我修正、剥离背景噪声、识别明显复合或多步查询，并在无法安全继续时输出结构化反馈。
 
 预处理层不做意图识别，不做语义视图匹配，不提取业务查询结构，不做图谱 label、edge、property 映射。
 
@@ -10,7 +10,10 @@
 
 ```mermaid
 graph LR
-    A[自然语言原始问题<br/>original_question] --> B[1. 文本清洗<br/>text_cleaning]
+    A[自然语言原始问题<br/>original_question] --> G0[0. 请求文本安全准入<br/>input_guard]
+    G0 --> GQ{文本是否可安全处理?}
+    GQ -- 否 --> RJ[安全拒绝<br/>rejected]
+    GQ -- 是 --> B[1. 文本清洗<br/>text_cleaning]
     B --> C[2. 识别短语和结构信号<br/>phrase_detection]
     C --> D[3. 自我修正处理<br/>self_correction]
 
@@ -42,6 +45,7 @@ graph LR
 | 字段 | 含义 | 产生阶段 |
 | --- | --- | --- |
 | `original_question` | 用户原始输入，不做任何修改。 | 外部输入 |
+| `guarded_question` | 通过请求文本安全准入后的原始问题文本；内容与 `original_question` 相同。 | 0. 请求文本安全准入 |
 | `cleaned_question` | 文本清洗后的问题。 | 1. 文本清洗 |
 | `question_after_correction` | 自我修正处理后的问题；没有修正时等于 `cleaned_question`。 | 3. 自我修正处理 |
 | `core_candidate` | 背景剥离后的候选核心问题。 | 4. 背景剥离 |
@@ -69,6 +73,23 @@ graph LR
 - 每个 span 必须说明自己的坐标基准字段，例如 `offset_basis: "cleaned_question"` 或 `offset_basis: "core_candidate"`。
 - `rule_id` 必须来自对应 YAML；如果该步骤没有 YAML，则必须来自代码中稳定定义的规则常量。
 
+### 安全拒绝出口标准
+
+第 0 步发现输入文本不适合进入系统处理时，直接输出安全拒绝，不进入文本清洗。安全拒绝对象统一为：
+
+```json
+{
+  "source_stage": "input_guard",
+  "reason_code": "invalid_control_character",
+  "user_message": "输入包含不可见控制字符，请删除后重新输入。",
+  "expected_answer_type": "free_text",
+  "options": [],
+  "suggested_rewrites": []
+}
+```
+
+第 0 步只处理工程安全准入，不做自然语言语义判断，不改写问题文本。
+
 ### 澄清出口标准
 
 第 3、5、7 步可以中断流程并进入澄清。澄清对象统一为：
@@ -90,12 +111,13 @@ graph LR
 
 ### 独立实现边界
 
-每一步都必须能单独调用、单独测试。整体预处理可以有编排器，但编排器只串联这 7 步，不接入 Cypher 生成、语义资产对齐或意图识别。
+每一步都必须能单独调用、单独测试。整体预处理可以有编排器，但编排器只串联第 0-7 步，不接入 Cypher 生成、语义资产对齐或意图识别。
 
 推荐文件布局：
 
 ```text
 services/cypher_generator_agent/app/question_preprocessing/
+  input_guard.py
   text_cleaning.py
   phrase_detection.py
   self_correction.py
@@ -106,6 +128,7 @@ services/cypher_generator_agent/app/question_preprocessing/
   pipeline.py
 
 services/cypher_generator_agent/resources/question_preprocessing/
+  input_guard.yaml
   text_cleaning.yaml
   phrase_signals.yaml
   self_correction.yaml
@@ -114,6 +137,115 @@ services/cypher_generator_agent/resources/question_preprocessing/
   noise_handling.yaml
   clarity_gate.yaml
 ```
+
+## 0. 请求文本安全准入
+
+### YAML
+
+资源文件：`services/cypher_generator_agent/resources/question_preprocessing/input_guard.yaml`
+
+只维护请求文本进入预处理链路前的工程安全规则：
+
+- 最大输入长度。
+- 非法控制字符集合。
+- 可允许进入文本清洗的空白控制字符，例如 tab、换行和回车。
+
+不维护业务词，不维护自然语言改写规则，不判断问题是否清晰。
+
+建议第一版配置：
+
+```yaml
+version: 1
+resource_id: input_guard_rules
+name_zh: 自然语言问题输入安全准入规则
+
+max_original_question_chars: 512
+
+control_char_policy:
+  allow:
+    - "\t"
+    - "\n"
+    - "\r"
+  reject_categories:
+    - Cc
+    - Cf
+  explicit_reject:
+    - "\u0000"
+
+rejection_reasons:
+  input_too_long:
+    reason: 输入文本超过系统可安全处理的长度上限。
+    user_message: 问题过长，请拆分或缩短后重新输入。
+  invalid_control_character:
+    reason: 输入文本包含不可见控制字符。
+    user_message: 输入包含不可见控制字符，请删除后重新输入。
+```
+
+### Python
+
+模块：`services/cypher_generator_agent/app/question_preprocessing/input_guard.py`
+
+建议接口：
+
+```python
+def guard_input(original_question: str) -> InputGuardResult:
+    ...
+```
+
+### 输入
+
+```json
+{
+  "original_question": "查询服务名称"
+}
+```
+
+### 输出：通过
+
+```json
+{
+  "input_guard": {
+    "accepted": true,
+    "original_question": "查询服务名称",
+    "guarded_question": "查询服务名称",
+    "checks": [
+      {"rule": "type_is_string", "accepted": true},
+      {"rule": "length_within_limit", "accepted": true, "limit": 512, "actual": 6},
+      {"rule": "control_characters_allowed", "accepted": true}
+    ],
+    "rejection": null
+  }
+}
+```
+
+### 输出：拒绝
+
+```json
+{
+  "input_guard": {
+    "accepted": false,
+    "original_question": "查询\u0000服务名称",
+    "guarded_question": null,
+    "checks": [
+      {"rule": "type_is_string", "accepted": true},
+      {"rule": "length_within_limit", "accepted": true, "limit": 512, "actual": 7},
+      {"rule": "control_characters_allowed", "accepted": false, "codepoint": "U+0000", "index": 2}
+    ],
+    "rejection": {
+      "source_stage": "input_guard",
+      "reason_code": "invalid_control_character",
+      "user_message": "输入包含不可见控制字符，请删除后重新输入。",
+      "expected_answer_type": "free_text",
+      "options": [],
+      "suggested_rewrites": []
+    }
+  }
+}
+```
+
+### 交接
+
+如果 `accepted` 为 true，下一步输入 `input_guard.guarded_question`。如果为 false，流程停止。
 
 ## 1. 文本清洗
 
@@ -137,7 +269,7 @@ services/cypher_generator_agent/resources/question_preprocessing/
 建议接口：
 
 ```python
-def clean_text(original_question: str) -> TextCleaningResult:
+def clean_text(guarded_question: str) -> TextCleaningResult:
     ...
 ```
 
@@ -145,7 +277,7 @@ def clean_text(original_question: str) -> TextCleaningResult:
 
 ```json
 {
-  "original_question": "你好，，现在就是我们遇到了一些咨询类  的问题，所以需要查询一下金牌服务 哦不对是银牌服务所使用的隧道和他的源网元，然后你需要 给我返 回隧道的IETF标准和源网元的IP，谢谢啦！"
+  "guarded_question": "你好，，现在就是我们遇到了一些咨询类  的问题，所以需要查询一下金牌服务 哦不对是银牌服务所使用的隧道和他的源网元，然后你需要 给我返 回隧道的IETF标准和源网元的IP，谢谢啦！"
 }
 ```
 
@@ -155,6 +287,7 @@ def clean_text(original_question: str) -> TextCleaningResult:
 {
   "text_cleaning": {
     "original_question": "你好，，现在就是我们遇到了一些咨询类  的问题，所以需要查询一下金牌服务 哦不对是银牌服务所使用的隧道和他的源网元，然后你需要 给我返 回隧道的IETF标准和源网元的IP，谢谢啦！",
+    "guarded_question": "你好，，现在就是我们遇到了一些咨询类  的问题，所以需要查询一下金牌服务 哦不对是银牌服务所使用的隧道和他的源网元，然后你需要 给我返 回隧道的IETF标准和源网元的IP，谢谢啦！",
     "cleaned_question": "你好，现在就是我们遇到了一些咨询类的问题，所以需要查询一下金牌服务，哦不对是银牌服务所使用的隧道和他的源网元，然后你需要给我返回隧道的IETF标准和源网元的IP，谢谢啦！",
     "changed": true,
     "normalizations": [
@@ -184,7 +317,7 @@ def clean_text(original_question: str) -> TextCleaningResult:
 - 寒暄。
 - 口语填充。
 - 背景边界。
-- 查询动作信号。
+- 查询动作信号。这里只作为文本证据，不等价于第 7 步“明确查询请求”。
 - 自我修正 marker。
 - 连接词。
 - 返回引导词。
@@ -192,6 +325,8 @@ def clean_text(original_question: str) -> TextCleaningResult:
 - 句内指代和跨轮指代。
 
 不维护业务实体、字段、图谱结构。
+
+第 2 步不判断问题是否可查询；它只标注“出现过某类语言信号”。最终是否准入必须由第 7 步基于 `core_question` / `retrieval_question` 重新判断。
 
 ### Python
 
@@ -308,6 +443,7 @@ def apply_self_correction(
 - 根据 marker 的 `start/end` 回到 `cleaned_question` 提取左右窗口。
 - 根据 `self_correction.yaml` 判断 marker 分组、左右边界和是否可自动应用。
 - 自动修正只允许替换明确局部片段，不允许猜业务语义。
+- 自动修正后的文本必须尽量保留用户明确说过的查询动作、返回包装和关系表达；如果无法判断这些表达是否应被继承，进入澄清。
 
 ### 输入
 
@@ -623,11 +759,14 @@ def handle_noise(core_candidate: str) -> NoiseHandlingResult:
 
 维护准入规则和 reason code：
 
-- 是否存在明确查询信号。
+- 最终 `core_question` / `retrieval_question` 是否存在明确查询表达。
 - 核心问题是否为空。
 - 是否存在未解决的自我修正歧义。
 - 是否存在需要拆分的复合查询。
 - 是否是纯背景、纯寒暄或无上下文追问。
+- 是否命中咨询、解释、故障处理类表达，例如 `是什么意思`、`怎么办`，这类表达不能仅因包含 `查询` / `统计` 字样而准入。
+
+第 7 步不能只信任第 2 步的 `has_query_signal`。第 2 步信号来自 `cleaned_question`，可能位于后续被丢弃的背景或废弃片段里；第 7 步必须基于最终核心文本重新复核，并可参考 `background_strip.boundary_span` 这类已经被第 4 步确认过的查询边界证据。
 
 ### Python
 
@@ -653,7 +792,7 @@ def judge_clarity(
   "diagnostics": {
     "self_correction.status": "applied",
     "compound_detection.can_continue": true,
-    "phrase_detection.scope_signals.has_query_signal": true
+    "background_strip.boundary_span.text": "所以需要查询一下"
   }
 }
 ```
@@ -712,6 +851,7 @@ def preprocess_question(original_question: str) -> QuestionPreprocessingResult:
 {
   "accepted": true,
   "original_question": "你好，，现在就是我们遇到了一些咨询类  的问题，所以需要查询一下金牌服务 哦不对是银牌服务所使用的隧道和他的源网元，然后你需要 给我返 回隧道的IETF标准和源网元的IP，谢谢啦！",
+  "guarded_question": "你好，，现在就是我们遇到了一些咨询类  的问题，所以需要查询一下金牌服务 哦不对是银牌服务所使用的隧道和他的源网元，然后你需要 给我返 回隧道的IETF标准和源网元的IP，谢谢啦！",
   "cleaned_question": "你好，现在就是我们遇到了一些咨询类的问题，所以需要查询一下金牌服务，哦不对是银牌服务所使用的隧道和他的源网元，然后你需要给我返回隧道的IETF标准和源网元的IP，谢谢啦！",
   "question_after_correction": "你好，现在就是我们遇到了一些咨询类的问题，所以需要查询一下银牌服务所使用的隧道和他的源网元，然后你需要给我返回隧道的IETF标准和源网元的IP，谢谢啦！",
   "core_candidate": "银牌服务所使用的隧道和他的源网元，然后你需要给我返回隧道的IETF标准和源网元的IP，谢谢啦！",
@@ -719,6 +859,7 @@ def preprocess_question(original_question: str) -> QuestionPreprocessingResult:
   "retrieval_question": "银牌服务所使用的隧道和其源网元，返回隧道的IETF标准和源网元的IP",
   "clarification": null,
   "diagnostics": {
+    "input_guard": {},
     "text_cleaning": {},
     "phrase_detection": {},
     "self_correction": {},
@@ -736,6 +877,7 @@ def preprocess_question(original_question: str) -> QuestionPreprocessingResult:
 {
   "accepted": false,
   "original_question": "Gold 服务最近有点慢，帮我看看",
+  "guarded_question": "Gold 服务最近有点慢，帮我看看",
   "cleaned_question": "Gold 服务最近有点慢，帮我看看",
   "question_after_correction": "Gold 服务最近有点慢，帮我看看",
   "core_candidate": null,
@@ -748,12 +890,13 @@ def preprocess_question(original_question: str) -> QuestionPreprocessingResult:
     "expected_answer_type": "free_text",
     "options": [],
     "suggested_rewrites": [
-      "查询 Gold 服务的状态",
-      "查询 Gold 服务使用的隧道",
-      "查询 Gold 服务的时延"
+      "查询某个对象的状态",
+      "查询某个对象关联的目标对象",
+      "查询某个对象的指定属性"
     ]
   },
   "diagnostics": {
+    "input_guard": {},
     "text_cleaning": {},
     "phrase_detection": {},
     "self_correction": {},
@@ -779,5 +922,5 @@ def preprocess_question(original_question: str) -> QuestionPreprocessingResult:
 整体开发完成后进行三轮代码检视：
 
 1. 契约检视：逐字段比对本文档的输入输出、状态枚举、reason code 和 span 坐标基准。
-2. 行为检视：用多组真实自然语言问题逐步运行 7 个模块，检查每步输出是否真实来自规则和 YAML。
+2. 行为检视：用多组真实自然语言问题逐步运行第 0-7 步，检查每步输出是否真实来自规则和 YAML。
 3. 边界检视：确认没有业务语义映射、没有空实现、没有 mock 实现、没有固定样例输出、没有接入主 Cypher 生成流程。

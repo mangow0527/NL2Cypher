@@ -49,6 +49,7 @@ class CleanTextResult:
     def to_dict(self) -> dict[str, object]:
         return {
             "original_question": self.original_question,
+            "guarded_question": self.original_question,
             "cleaned_question": self.cleaned_question,
             "changed": self.changed,
             "normalizations": [normalization.to_dict() for normalization in self.normalizations],
@@ -56,18 +57,18 @@ class CleanTextResult:
 
 
 def clean_text(
-    original_question: str,
+    guarded_question: str,
     *,
     config: dict[str, Any] | None = None,
 ) -> CleanTextResult:
     """Apply character-level cleaning without rewriting the question."""
 
-    if not isinstance(original_question, str):
-        raise TypeError("original_question must be a string")
+    if not isinstance(guarded_question, str):
+        raise TypeError("guarded_question must be a string")
 
     cleaning_config = config if config is not None else load_text_cleaning_config()
     normalizations: list[TextNormalization] = []
-    text = original_question
+    text = guarded_question
 
     # Order matters:
     # - collapse whitespace before pattern-based rules so all spacing is stable;
@@ -81,9 +82,9 @@ def clean_text(
     text = _remove_safe_chinese_inner_spaces(text, cleaning_config, normalizations)
 
     return CleanTextResult(
-        original_question=original_question,
+        original_question=guarded_question,
         cleaned_question=text,
-        changed=text != original_question,
+        changed=text != guarded_question,
         normalizations=tuple(normalizations),
     )
 

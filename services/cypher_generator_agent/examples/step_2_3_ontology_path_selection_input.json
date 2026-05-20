@@ -1,0 +1,69 @@
+{
+  "question": "查询金牌服务经过的隧道及其源网元，返回隧道的IETF标准和源网元的IP地址",
+  "intent": {
+    "primary": "record_retrieval_query",
+    "secondary": "related_record_query",
+    "source": "rule",
+    "decision": "accept",
+    "confidence": 0.91
+  },
+  "initial_shape": {
+    "projection_expected": {
+      "value": true,
+      "source": "taxonomy.secondary.shape_profile",
+      "decision": "accept",
+      "confidence": 1.0
+    },
+    "relation_resolution_expected": {
+      "value": true,
+      "source": "taxonomy.secondary.shape_profile",
+      "decision": "pending",
+      "confidence": 0.8,
+      "pending_until": "step_2_3"
+    }
+  },
+  "ontology_mapping": {
+    "mapped_mentions": [
+      {
+        "mapping_id": "OM1",
+        "mention_id": "m_service_1",
+        "mention_type": "OBJECT",
+        "surface": "服务",
+        "span": [4, 6],
+        "ontology_kind": "class",
+        "ontology_id": "Service",
+        "object_candidate_id": "SM1",
+        "selected_roles": ["filter_subject", "path_subject"],
+        "map_source": "mention_to_ontology"
+      },
+      {
+        "mapping_id": "OM2",
+        "mention_id": "m_path_through_1",
+        "mention_type": "RELATION",
+        "surface": "经过",
+        "span": [6, 8],
+        "ontology_kind": "relation",
+        "ontology_id": "REL_SERVICE_USES_TUNNEL",
+        "domain_class": "Service",
+        "range_class": "Tunnel",
+        "object_candidate_id": "SM2",
+        "selected_roles": ["path_subject"],
+        "map_source": "mention_to_ontology"
+      },
+      {
+        "mapping_id": "OM3",
+        "mention_id": "m_source_ne_1",
+        "mention_type": "RELATION",
+        "surface": "源网元",
+        "span": [13, 16],
+        "ontology_kind": "relation_role",
+        "ontology_id": "REL_TUNNEL_SRC",
+        "role": "source",
+        "target_class": "NetworkElement",
+        "object_candidate_id": "SM3",
+        "selected_roles": ["path_subject"],
+        "map_source": "mention_to_ontology"
+      }
+    ]
+  }
+}

@@ -4,7 +4,7 @@ description: Operation intent mention dictionary for first-stage operation cue e
 entries:
   - canonical_id: OP_QUERY
     mention_type: operation_intent
-    surface_forms: [查询, 查找, 查看, 列出, 返回, 获取, 显示, search, query, list, show, return, get]
+    surface_forms: [查询, 查找, 查看, 列出, 获取, 显示, search, query, list, show, get]
     description: Retrieve records or fields.
     intent: record_retrieval_query
 
@@ -70,6 +70,6 @@ entries:
 
   - canonical_id: OP_RETURN_FIELD
     mention_type: operation_intent
-    surface_forms: [返回, 输出, 展示, 包含, 以及, 和, return field, projection]
+    surface_forms: [返回, 输出, 展示, return field, projection]
     description: Requested projection or returned field cue.
     intent: attribute_projection_query

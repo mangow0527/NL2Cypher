@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     llm_api_key: Optional[str] = None
     llm_model: Optional[str] = None
     llm_temperature: float = 0.1
+    llm_enable_thinking: Optional[bool] = None
     readonly_call_whitelist: tuple[str, ...] = ()
 
     model_config = SettingsConfigDict(

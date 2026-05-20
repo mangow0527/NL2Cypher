@@ -13,7 +13,7 @@ from tools.validate_mention_dictionaries import DictionaryValidationError, valid
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = REPO_ROOT / "services/testing_agent/docs/reference/schema.json"
 RULES_PATH = (
-    REPO_ROOT / "services/cypher_generator_agent/resources/mention_dictionaries/generation_rules.yaml"
+    REPO_ROOT / "services/cypher_generator_agent/resources/mention_dictionary_generation/generation_rules.yaml"
 )
 DICT_DIR = REPO_ROOT / "services/cypher_generator_agent/resources/mention_dictionaries"
 
@@ -36,7 +36,7 @@ def test_generate_dictionaries_from_schema_and_rules(tmp_path: Path) -> None:
     )
 
     assert summary["files_written"] == 7
-    assert summary["canonical_id_count"] == 129
+    assert summary["canonical_id_count"] == 128
     assert validate_dictionaries(schema_path=SCHEMA_PATH, dict_dir=output_dir)["errors"] == []
     assert _canonical_ids(output_dir) == _canonical_ids(DICT_DIR)
 
@@ -59,6 +59,10 @@ def test_generate_dictionaries_from_schema_and_rules(tmp_path: Path) -> None:
     assert relations["REL_TUNNEL_SRC"]["join_path"] == [
         {"edge": "TUNNEL_SRC", "from": "Tunnel", "to": "NetworkElement", "direction": "out"}
     ]
+    assert "返回" not in _entries_by_id(output_dir / "operation_intents.yaml")["OP_QUERY"]["surface_forms"]
+    assert "up" not in attributes["Port.status"]["surface_forms"]
+    assert "ERO" not in relations["REL_PATH_THROUGH"]["surface_forms"]
+    assert not (DICT_DIR / "generation_rules.yaml").exists()
 
     uncertain = yaml.safe_load((output_dir / "uncertain.yaml").read_text(encoding="utf-8"))
     assert any(item["candidate_id"] == "UNC_EdgeProperty_HAS_PORT_admin_status" for item in uncertain["entries"])

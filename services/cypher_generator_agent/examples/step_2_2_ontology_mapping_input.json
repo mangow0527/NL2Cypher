@@ -1,0 +1,82 @@
+{
+  "lexer_output": {
+    "question": "查询金牌服务经过的隧道及其源网元，返回隧道的IETF标准和源网元的IP地址",
+    "mentions": [
+      {
+        "canonical_id": "ServiceQuality.Gold",
+        "mention_type": "VALUE",
+        "surface": "金牌",
+        "span": [2, 4],
+        "metadata": {
+          "constrains_field": "Service.quality_of_service"
+        }
+      },
+      {
+        "canonical_id": "Service",
+        "mention_type": "OBJECT",
+        "surface": "服务",
+        "span": [4, 6],
+        "metadata": {}
+      },
+      {
+        "canonical_id": "REL_SERVICE_USES_TUNNEL",
+        "mention_type": "RELATION",
+        "surface": "经过",
+        "span": [6, 8],
+        "metadata": {}
+      },
+      {
+        "canonical_id": "Tunnel",
+        "mention_type": "OBJECT",
+        "surface": "隧道",
+        "span": [9, 11],
+        "metadata": {}
+      },
+      {
+        "canonical_id": "REL_TUNNEL_SRC",
+        "mention_type": "RELATION",
+        "surface": "源网元",
+        "span": [13, 16],
+        "metadata": {
+          "role": "source"
+        }
+      },
+      {
+        "canonical_id": "Protocol.standard",
+        "mention_type": "ATTRIBUTE",
+        "surface": "IETF标准",
+        "span": [22, 28],
+        "metadata": {
+          "candidate_refs": ["Protocol.standard", "Tunnel.ietf_standard"]
+        }
+      },
+      {
+        "canonical_id": "SEM_GOLD_SERVICE",
+        "mention_type": "OBJECT",
+        "surface": "金牌服务",
+        "span": [41, 45],
+        "metadata": {}
+      }
+    ]
+  },
+  "object_role_selection": {
+    "selected_objects": [
+      {
+        "candidate_id": "SM1",
+        "mention_id": "m_service_1",
+        "roles": ["filter_subject", "path_subject"],
+        "evidence_ids": ["E1"],
+        "selected_by": "llm",
+        "reason": "金牌修饰服务"
+      },
+      {
+        "candidate_id": "SM2",
+        "mention_id": "m_rel_tunnel_src_1",
+        "roles": ["path_subject"],
+        "evidence_ids": ["E2"],
+        "selected_by": "llm",
+        "reason": "源网元是角色化对象"
+      }
+    ]
+  }
+}

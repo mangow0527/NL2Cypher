@@ -9,16 +9,8 @@ entries:
       - 网络元素
       - 网络设备
       - 设备
-      - 路由器
-      - 交换机
-      - 防火墙
       - NetworkElement
       - network element
-      - router
-      - switch
-      - firewall
-      - RFC 1812
-      - RFC 2401
     description: Network element node, covering routers, switches, firewalls, load balancers, and WAN optimizers.
     schema_table: NetworkElement
     ontology_class: NetworkDevice
@@ -31,10 +23,6 @@ entries:
       - 协议定义
       - Protocol
       - network protocol
-      - IP
-      - BGP
-      - RFC 791
-      - RFC 4271
     description: Network protocol definition object.
     schema_table: Protocol
     ontology_class: ProtocolDefinition
@@ -46,10 +34,6 @@ entries:
       - 网络隧道
       - Tunnel
       - network tunnel
-      - MPLS-TE
-      - IPsec
-      - RFC 3209
-      - RFC 4301
     description: Network tunnel instance; tunnel paths are represented through PATH_THROUGH edges.
     schema_table: Tunnel
     ontology_class: NetworkTunnel
@@ -64,10 +48,6 @@ entries:
       - Service
       - business service
       - service layer
-      - MPLS-VPN
-      - DiffServ
-      - RFC 4364
-      - RFC 2475
     description: Business or service layer object carried by network resources.
     schema_table: Service
     ontology_class: BusinessService
@@ -78,15 +58,10 @@ entries:
       - 端口
       - 接口
       - 网络接口
-      - 物理端口
-      - 逻辑端口
       - Port
       - interface
       - physical interface
       - logical interface
-      - Interfaces MIB
-      - IEEE 802.3
-      - RFC 2863
     description: Physical or logical interface on a network element.
     schema_table: Port
     ontology_class: NetworkPort
@@ -100,9 +75,6 @@ entries:
       - Fiber
       - fiber optic cable
       - physical fiber
-      - ITU-T G.652
-      - ITU-T G.657
-      - RFC 2615
     description: Physical fiber optic cable resource.
     schema_table: Fiber
     ontology_class: PhysicalFiber
@@ -119,10 +91,6 @@ entries:
       - network link
       - physical link
       - logical link
-      - ifTable
-      - MIB-II
-      - RFC 2863
-      - RFC 1213
     description: Logical or physical link between ports.
     schema_table: Link
     ontology_class: NetworkLink

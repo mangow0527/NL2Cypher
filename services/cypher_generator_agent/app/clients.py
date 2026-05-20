@@ -30,12 +30,14 @@ class OpenAIChatCompletionCypherGenerator:
         model: str,
         timeout_seconds: float,
         temperature: float,
+        enable_thinking: bool | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
         self.timeout_seconds = timeout_seconds
         self.temperature = temperature
+        self.enable_thinking = enable_thinking
 
     async def generate_from_prompt(
         self,
@@ -60,17 +62,20 @@ class OpenAIChatCompletionCypherGenerator:
         )
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             try:
+                payload: dict[str, Any] = {
+                    "model": self.model,
+                    "temperature": self.temperature,
+                    "messages": [{"role": "user", "content": llm_prompt}],
+                }
+                if self.enable_thinking is not None:
+                    payload["enable_thinking"] = self.enable_thinking
                 response = await client.post(
                     f"{self.base_url}/chat/completions",
                     headers={
                         "Authorization": f"Bearer {self.api_key}",
                         "Content-Type": "application/json",
                     },
-                    json={
-                        "model": self.model,
-                        "temperature": self.temperature,
-                        "messages": [{"role": "user", "content": llm_prompt}],
-                    },
+                    json=payload,
                 )
                 response.raise_for_status()
                 payload = response.json()

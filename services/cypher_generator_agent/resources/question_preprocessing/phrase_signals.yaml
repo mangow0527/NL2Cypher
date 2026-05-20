@@ -72,13 +72,6 @@ phrase_groups:
         text: 需要查询一下
       - id: background_want_query
         text: 想查询一下
-      - id: background_need_stat
-        text: 需要统计
-      - id: background_want_stat
-        text: 想统计
-      - id: background_want_first_stat
-        text: 想先统计
-
   query_intros:
     kind: query_intro
     action: query_signal
@@ -94,8 +87,6 @@ phrase_groups:
         text: 看一下
       - id: query_intro_help_find
         text: 帮我查
-      - id: query_intro_stat
-        text: 统计
       - id: query_intro_stat_once
         text: 统计一下
       - id: query_intro_help_stat
