@@ -10,8 +10,8 @@ OFFLINE_RESOURCE_ROOT = RESOURCE_ROOT / "offline"
 
 NATURAL_LANGUAGE_PREPROCESSING_RESOURCE_DIR = RUNTIME_RESOURCE_ROOT / "natural_language_preprocessing"
 LEXICAL_RESOURCE_DIR = RUNTIME_RESOURCE_ROOT / "lexical"
+INTENT_RESOURCE_DIR = RUNTIME_RESOURCE_ROOT / "intent"
 ONTOLOGY_RESOURCE_DIR = RUNTIME_RESOURCE_ROOT / "ontology"
-INTENT_RESOURCE_DIR = ONTOLOGY_RESOURCE_DIR / "intent"
 VALIDATION_RESOURCE_DIR = RUNTIME_RESOURCE_ROOT / "validation"
 PHYSICAL_ORCHESTRATION_RESOURCE_DIR = RUNTIME_RESOURCE_ROOT / "physical_orchestration"
 CLARIFICATION_RESOURCE_DIR = RUNTIME_RESOURCE_ROOT / "clarification"
@@ -71,6 +71,22 @@ def intent_llm_fewshots_path() -> Path:
 
 def lexer_dictionary_priorities_path() -> Path:
     return LEXICAL_RESOURCE_DIR / "dictionary_priorities.yaml"
+
+
+def lexer_signal_rules_path() -> Path:
+    return LEXICAL_RESOURCE_DIR / "signal_rules.yaml"
+
+
+def lexer_operators_path() -> Path:
+    return LEXICAL_RESOURCE_DIR / "operators.yaml"
+
+
+def lexer_quantifiers_path() -> Path:
+    return LEXICAL_RESOURCE_DIR / "quantifiers.yaml"
+
+
+def lexer_literal_patterns_path() -> Path:
+    return LEXICAL_RESOURCE_DIR / "literal_patterns.yaml"
 
 
 def lexer_mention_vector_corpus_path() -> Path:

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from services.cypher_generator_agent.app.ontology_layer.intent_classification import (
+from services.cypher_generator_agent.app.intent_layer import (
     IntentRecognitionResult,
     evaluate_intent_recognizer,
     load_intent_eval_items,
@@ -15,7 +15,7 @@ from services.cypher_generator_agent.app.ontology_layer.intent_classification im
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-INTENT_RESOURCE_DIR = REPO_ROOT / "services/cypher_generator_agent/resources/runtime/ontology/intent"
+INTENT_RESOURCE_DIR = REPO_ROOT / "services/cypher_generator_agent/resources/runtime/intent"
 INTENT_EVALUATION_DIR = REPO_ROOT / "services/cypher_generator_agent/resources/offline/intent_evaluation"
 
 

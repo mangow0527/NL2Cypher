@@ -8,10 +8,13 @@ from services.cypher_generator_agent.app.runtime_pipeline import OntologyGenerat
 from services.cypher_generator_agent.app.ontology_layer.assets import OntologyAssets
 from services.cypher_generator_agent.app.clarification_layer.errors import ClarificationNeeded
 from services.cypher_generator_agent.app.infrastructure.errors import EngineeringFailure
-from services.cypher_generator_agent.app.ontology_layer.intent_classification.ontology import OntologyIntentClassifier
+from services.cypher_generator_agent.app.intent_layer.layer import IntentLayer
 from services.cypher_generator_agent.app.lexical_layer.lexer import OntologyLexer
 from services.cypher_generator_agent.app.lexical_layer.mention_vector_recall import MentionVectorCandidate
 from services.cypher_generator_agent.app.ontology_layer.object_role_selection import OntologyObjectRoleSelectionService
+from services.cypher_generator_agent.app.ontology_layer.coreference import OntologyCoreferenceService
+from services.cypher_generator_agent.app.ontology_layer.binding import OntologyBindingService
+from services.cypher_generator_agent.app.ontology_layer.logical_planning import OntologyLogicalPlanningService
 from services.cypher_generator_agent.app.lexical_layer.overlap_resolver import DictionaryPriorities
 
 
@@ -54,12 +57,86 @@ class FixtureObjectRoleSelector:
         return Selection()
 
 
+class FixtureCoreferenceSelector:
+    def select(self, prompt_name: str, variables: dict[str, object]):
+        assert prompt_name == "coreference_selection"
+
+        class Selection:
+            raw_response = "选择 C1。理由：fixture"
+
+        return Selection()
+
+
+class FixtureBindingSelector:
+    def select(self, prompt_name: str, variables: dict[str, object]):
+        assert prompt_name == "binding_selection"
+        candidate_lines = str(variables.get("binding_candidate_list_with_ids") or "")
+        signal_lines = str(variables.get("signal_list_with_ids") or "")
+        question = str(variables.get("question") or "")
+        candidate_id = _question_preferred_candidate(candidate_lines, question)
+        if candidate_id is None:
+            candidate_id = _first_supported_binding_candidate(signal_lines)
+        if candidate_id is None:
+            candidate_id = _first_binding_candidate(candidate_lines)
+
+        class Selection:
+            raw_response = f"选择 {candidate_id}。理由：fixture"
+
+        return Selection()
+
+
+def _first_supported_binding_candidate(signal_lines: str) -> str | None:
+    match = re.search(r"supports=([^\\s]+)", signal_lines)
+    if match is None:
+        return None
+    return match.group(1).split(",", 1)[0]
+
+
+def _question_preferred_candidate(candidate_lines: str, question: str) -> str | None:
+    for keyword, attribute in (
+        ("源网元", "NetworkElement.ip_address"),
+        ("IP", "NetworkElement.ip_address"),
+        ("IETF", "Tunnel.ietf_standard"),
+        ("隧道", "Tunnel.name"),
+        ("端口", "Port.name"),
+        ("带宽", "Service.bandwidth"),
+    ):
+        if keyword not in question:
+            continue
+        candidate_id = _candidate_for_attribute(candidate_lines, attribute)
+        if candidate_id is not None:
+            return candidate_id
+    return None
+
+
+def _candidate_for_attribute(candidate_lines: str, attribute: str) -> str | None:
+    for line in candidate_lines.splitlines():
+        if f"attribute={attribute}" not in line:
+            continue
+        match = re.match(r"(bc_[A-Za-z0-9_]+):", line)
+        if match:
+            return match.group(1)
+    return None
+
+
+def _first_binding_candidate(candidate_lines: str) -> str:
+    match = re.search(r"(bc_[A-Za-z0-9_]+):", candidate_lines)
+    if match:
+        return match.group(1)
+    raise AssertionError("binding fixture did not receive candidates")
+
+
 def _pipeline(*, assets: OntologyAssets | None = None, lexer: OntologyLexer | None = None) -> OntologyGenerationPipeline:
     assets = assets or OntologyAssets.from_default_resources()
     return OntologyGenerationPipeline(
         assets=assets,
         lexer=lexer,
         object_role_selection_service=OntologyObjectRoleSelectionService(llm_selector=FixtureObjectRoleSelector()),
+        logical_planning_service=OntologyLogicalPlanningService(
+            assets=assets,
+            coreference_service=OntologyCoreferenceService(llm_selector=FixtureCoreferenceSelector()),
+            binding_service=OntologyBindingService(llm_selector=FixtureBindingSelector()),
+        ),
     )
 
 
@@ -108,6 +185,11 @@ def test_lexer_does_not_perform_literal_extraction() -> None:
         mention["surface"] == "NetworkElement_003" and mention["mention_type"] == "VALUE"
         for mention in lexer["mentions"]
     )
+    assert not any(
+        mention["surface"] == "NetworkElement" and mention["mention_type"] == "OBJECT"
+        for mention in lexer["mentions"]
+    )
+    assert any(item["surface"] == "NetworkElement_003" for item in lexer["unmatched_fragments"])
 
 
 def test_lexer_keeps_dictionary_canonical_ids_without_contextual_rewrite() -> None:
@@ -170,7 +252,10 @@ def test_dictionary_priority_table_covers_used_mention_types_and_limits_override
     }
 
     assert priorities.override_semantics == "replace"
-    assert "literal_extract" not in priorities.match_source_priorities
+    assert priorities.match_source_priorities["literal_extract"] == 110
+    assert priorities.match_source_priorities["operator_extract"] == 108
+    assert priorities.match_source_priorities["quantifier_extract"] == 105
+    assert priorities.match_source_priorities["ac_exact"] == 100
     assert used_types <= set(priorities.by_type)
     assert "synonym_group" not in priorities.by_type
     assert "OP_RETURN_FIELD" not in priorities.by_canonical_id
@@ -277,7 +362,7 @@ def test_object_type_words_are_values_not_business_object_aliases() -> None:
     )
 
 
-def test_generic_attribute_mentions_keep_candidate_refs_and_planner_binds_by_context() -> None:
+def test_generic_attribute_mentions_keep_candidate_refs_and_binding_uses_context() -> None:
     pipeline = _pipeline()
 
     lexer = pipeline.lexer.run("查询路由器名称").to_dict()
@@ -290,7 +375,7 @@ def test_generic_attribute_mentions_keep_candidate_refs_and_planner_binds_by_con
     assert "Fiber.name" in candidate_refs
     with pytest.raises(ClarificationNeeded) as exc_info:
         pipeline.generate("查询路由器名称", trace_id="trace-router-name")
-    assert exc_info.value.stage == "step_2_1"
+    assert exc_info.value.stage == "step_3_1"
 
 
 def test_multi_target_synonym_mentions_keep_candidate_family() -> None:
@@ -320,7 +405,7 @@ def test_type_value_and_object_attribute_composition_survives_overlap_resolution
     ]
     with pytest.raises(ClarificationNeeded) as exc_info:
         pipeline.generate("查询物理端口名称", trace_id="trace-physical-port-name")
-    assert exc_info.value.stage == "step_2_1"
+    assert exc_info.value.stage == "step_3_1"
 
 
 def test_intent_classifier_uses_taxonomy_rules_and_embedding_not_hardcoded_pair() -> None:
@@ -336,15 +421,15 @@ def test_intent_classifier_uses_taxonomy_rules_and_embedding_not_hardcoded_pair(
     assert result.trace.to_dict()["intent"]["diagnostics"]["taxonomy_version"] == 3
 
 
-def test_planner_fills_dynamic_multihop_path_from_relation_dictionary() -> None:
+def test_logical_planning_fills_dynamic_multihop_path_from_relation_dictionary() -> None:
     pipeline = _pipeline()
 
     result = pipeline.generate("查询金牌服务使用的隧道所经过网元上的所有端口名称", trace_id="trace-multihop")
 
     assert [edge.relation for edge in result.logical_plan.edges] == [
-        "REL_SERVICE_USES_TUNNEL",
-        "REL_PATH_THROUGH",
-        "REL_HAS_PORT",
+        "SERVICE_USES_TUNNEL",
+        "PATH_THROUGH",
+        "HAS_PORT",
     ]
     assert result.cypher.startswith(
         "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel)-[:PATH_THROUGH]->(ne:NetworkElement)-[:HAS_PORT]->(p:Port)"
@@ -374,7 +459,7 @@ def test_validator_uses_constraints_and_cardinality_assets() -> None:
     assert any(check["check"] == "constraint_rule" and check["constraint_id"] == "return_items_required" for check in checks)
     assert any(
         check["check"] == "relation_cardinality_policy"
-        and check["relation"] == "REL_SERVICE_USES_TUNNEL"
+        and check["relation"] == "SERVICE_USES_TUNNEL"
         and check["confidence"] == "needs_review"
         for check in checks
     )
@@ -396,10 +481,18 @@ def test_grouped_service_bandwidth_query_no_longer_extracts_runtime_literal_in_l
     )
     assert result.logical_plan.shape["group_by_required"].value is True
     assert [projection.alias for projection in result.logical_plan.projections] == ["service_bandwidth"]
-    assert [metric.alias for metric in result.logical_plan.metrics] == ["tunnel_count"]
+    assert [metric.alias for metric in result.logical_plan.metrics] == ["tunnel_count", "source_ne_tunnel_count"]
+    assert result.logical_plan.metrics[1].function == "conditional_count"
+    assert result.logical_plan.metrics[1].condition[0].to_dict() == {
+        "node": "n1",
+        "attr": "id",
+        "operator": "=",
+        "value": "NetworkElement_003",
+    }
     assert result.cypher == (
         "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel)-[:TUNNEL_SRC]->(ne:NetworkElement)\n"
-        "RETURN s.bandwidth AS service_bandwidth, count(t) AS tunnel_count"
+        "RETURN s.bandwidth AS service_bandwidth, count(t) AS tunnel_count, "
+        "sum(CASE WHEN ne.id = 'NetworkElement_003' THEN 1 ELSE 0 END) AS source_ne_tunnel_count"
     )
 
 
@@ -465,11 +558,11 @@ def test_intent_classifier_can_call_bounded_llm_fallback_when_rules_are_uncertai
             return Selection()
 
     selector = FakeSelector()
-    classifier = OntologyIntentClassifier(recognizer=UncertainRecognizer(), llm_selector=selector)
+    classifier = IntentLayer(recognizer=UncertainRecognizer(), llm_selector=selector)
 
-    intent_trace = classifier.classify(lexer_trace)
+    intent_output = classifier.run(core_question=lexer_trace.question, shape_signals=lexer_trace.shape_signals)
 
     assert selector.called is True
-    assert intent_trace.intent.source == "llm"
-    assert intent_trace.intent.primary == "record_retrieval_query"
-    assert intent_trace.to_dict()["diagnostics"]["llm_prompt_name"] == "intent_selection"
+    assert intent_output.intent.source == "llm"
+    assert intent_output.intent.primary == "record_retrieval_query"
+    assert intent_output.to_dict()["diagnostics"]["llm_prompt_name"] == "intent_selection"

@@ -34,6 +34,7 @@ class MappedMention:
     attribute_candidates: tuple[str, ...] = ()
     semantic_object_kind: str | None = None
     definition_ref: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -66,15 +67,27 @@ class MappedMention:
                 payload[key] = value
         if self.attribute_candidates:
             payload["attribute_candidates"] = list(self.attribute_candidates)
+        if self.metadata:
+            payload["metadata"] = dict(self.metadata)
         return payload
 
 
 @dataclass(frozen=True)
 class OntologyMapping:
-    mapped_mentions: tuple[MappedMention, ...] = field(default_factory=tuple)
+    ontology_objects: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    ontology_relation_hints: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    ontology_attributes: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    ontology_values: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    evidence: tuple[dict[str, Any], ...] = field(default_factory=tuple)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"mapped_mentions": [item.to_dict() for item in self.mapped_mentions]}
+        return {
+            "ontology_objects": [dict(item) for item in self.ontology_objects],
+            "ontology_relation_hints": [dict(item) for item in self.ontology_relation_hints],
+            "ontology_attributes": [dict(item) for item in self.ontology_attributes],
+            "ontology_values": [dict(item) for item in self.ontology_values],
+            "evidence": [dict(item) for item in self.evidence],
+        }
 
 
 class OntologyMappingService:
@@ -115,7 +128,8 @@ class OntologyMappingService:
                     }
                 )
             mapped.append(mapping)
-        return OntologyMapping(mapped_mentions=tuple(mapped))
+        mapped = _contextualize_service_tunnel_traversal(mapped, self._semantic_objects)
+        return _ontology_mapping_ir(mapped)
 
     def _map_mention(self, mention_id: str, mention: Mention, index: int) -> MappedMention | None:
         mapping = self._mention_mappings.get(mention.canonical_id)
@@ -133,6 +147,17 @@ class OntologyMappingService:
                 "ontology_id": _normalize_ontology_id(mention.canonical_id, ontology_kind),
                 "map_source": "candidate_refs",
             }
+        if mapping is None and mention.mention_type in {
+            "LITERAL_VALUE",
+            "COMPARISON_OPERATOR",
+            "QUANTIFIER",
+            "TIME_EXPRESSION",
+        }:
+            mapping = {
+                "ontology_kind": "structured_mention",
+                "ontology_id": mention.canonical_id,
+                "map_source": "structured_extract",
+            }
         if mapping is None:
             return None
 
@@ -149,6 +174,7 @@ class OntologyMappingService:
             "ontology_id": ontology_id,
             "map_source": str(mapping.get("map_source") or "mention_to_ontology"),
             "candidate_refs": candidate_refs,
+            "metadata": dict(mention.metadata),
         }
         self._validate_candidate_refs(candidate_refs, mention.mention_type)
 
@@ -167,6 +193,7 @@ class OntologyMappingService:
             return MappedMention(
                 **common,
                 role=str(mapping.get("role") or relation.get("role")),
+                domain_class=str(relation["domain_class"]),
                 target_class=str(mapping.get("target_class") or relation["range_class"]),
             )
         if ontology_kind == "attribute":
@@ -183,6 +210,8 @@ class OntologyMappingService:
         if ontology_kind == "enum_value":
             value = self._require(ontology_id, self._values, "value")
             return MappedMention(**common, constrains_attribute=str(value["constrains_attribute"]))
+        if ontology_kind == "structured_mention":
+            return MappedMention(**common)
         if ontology_kind == "semantic_object":
             semantic = self._semantic_objects.get(mention.canonical_id) or _semantic_by_id(
                 self._semantic_objects,
@@ -194,6 +223,8 @@ class OntologyMappingService:
                 **common,
                 semantic_object_kind=str(semantic["kind"]),
                 definition_ref=f"semantic_objects.{ontology_id}",
+                domain_class=str(semantic.get("from_class")) if semantic.get("from_class") is not None else None,
+                range_class=str(semantic.get("to_class")) if semantic.get("to_class") is not None else None,
             )
         raise OntologyMappingError(f"unsupported ontology_kind: {ontology_kind}")
 
@@ -238,6 +269,164 @@ def _mapping_entries(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {str(item["mention_id"]): dict(item) for item in entries if isinstance(item, dict) and "mention_id" in item}
 
 
+def _ontology_mapping_ir(mention_rows: list[MappedMention]) -> OntologyMapping:
+    ontology_objects: list[dict[str, Any]] = []
+    ontology_relation_hints: list[dict[str, Any]] = []
+    ontology_attributes: list[dict[str, Any]] = []
+    ontology_values: list[dict[str, Any]] = []
+    evidence: list[dict[str, Any]] = []
+    object_index = 0
+    relation_hint_index = 0
+    attribute_index = 0
+    value_index = 0
+
+    for order, mapped in enumerate(mention_rows, start=1):
+        evidence_id = f"E{order}"
+        evidence.append(_evidence_record(mapped, evidence_id))
+        evidence_refs = [evidence_id]
+        if mapped.ontology_kind == "class":
+            object_index += 1
+            ontology_objects.append(
+                _without_none(
+                    {
+                        "object_id": f"OO{object_index}",
+                        "class_id": mapped.ontology_id,
+                        "object_candidate_id": mapped.object_candidate_id,
+                        "selected_roles": list(mapped.selected_roles),
+                        "evidence_refs": evidence_refs,
+                        "order": order,
+                    }
+                )
+            )
+        elif mapped.ontology_kind == "relation":
+            relation_hint_index += 1
+            ontology_relation_hints.append(
+                _without_none(
+                    {
+                        "relation_hint_id": f"ORH{relation_hint_index}",
+                        "relation_id": mapped.ontology_id,
+                        "from_class": mapped.domain_class,
+                        "to_class": mapped.range_class,
+                        "object_candidate_id": mapped.object_candidate_id,
+                        "selected_roles": list(mapped.selected_roles),
+                        "evidence_refs": evidence_refs,
+                        "order": order,
+                    }
+                )
+            )
+        elif mapped.ontology_kind == "relation_role":
+            relation_hint_index += 1
+            relation_hint_id = f"ORH{relation_hint_index}"
+            relation_hint = _without_none(
+                {
+                    "relation_hint_id": relation_hint_id,
+                    "relation_id": mapped.ontology_id,
+                    "from_class": mapped.domain_class,
+                    "to_class": mapped.target_class or mapped.range_class,
+                    "role": mapped.role,
+                    "object_candidate_id": mapped.object_candidate_id,
+                    "selected_roles": list(mapped.selected_roles),
+                    "evidence_refs": evidence_refs,
+                    "order": order,
+                }
+            )
+            ontology_relation_hints.append(relation_hint)
+            object_index += 1
+            ontology_objects.append(
+                _without_none(
+                    {
+                        "object_id": f"OO{object_index}",
+                        "class_id": mapped.target_class or mapped.range_class,
+                        "object_candidate_id": mapped.object_candidate_id,
+                        "selected_roles": list(mapped.selected_roles),
+                        "role_hint": {
+                            "relation_hint_id": relation_hint_id,
+                            "relation_id": mapped.ontology_id,
+                            "role": mapped.role,
+                            "source_class": mapped.domain_class,
+                        },
+                        "evidence_refs": evidence_refs,
+                        "order": order,
+                    }
+                )
+            )
+        elif mapped.ontology_kind == "attribute":
+            attribute_index += 1
+            ontology_attributes.append(
+                _without_none(
+                    {
+                        "attribute_ref_id": f"OA{attribute_index}",
+                        "attribute_id": mapped.ontology_id,
+                        "parent_class": mapped.parent_class,
+                        "attribute_candidates": list(mapped.attribute_candidates),
+                        "evidence_refs": evidence_refs,
+                        "order": order,
+                    }
+                )
+            )
+        elif mapped.ontology_kind == "enum_value":
+            value_index += 1
+            ontology_values.append(
+                _without_none(
+                    {
+                        "value_ref_id": f"OV{value_index}",
+                        "value_id": mapped.ontology_id,
+                        "constrains_attribute": mapped.constrains_attribute,
+                        "evidence_refs": evidence_refs,
+                        "order": order,
+                    }
+                )
+            )
+        elif mapped.ontology_kind == "semantic_object":
+            relation_hint_index += 1
+            ontology_relation_hints.append(
+                _without_none(
+                    {
+                        "relation_hint_id": f"ORH{relation_hint_index}",
+                        "semantic_object_id": mapped.ontology_id,
+                        "semantic_object_kind": mapped.semantic_object_kind,
+                        "definition_ref": mapped.definition_ref,
+                        "from_class": mapped.domain_class,
+                        "to_class": mapped.range_class,
+                        "evidence_refs": evidence_refs,
+                        "order": order,
+                    }
+                )
+            )
+
+    return OntologyMapping(
+        ontology_objects=tuple(ontology_objects),
+        ontology_relation_hints=tuple(ontology_relation_hints),
+        ontology_attributes=tuple(ontology_attributes),
+        ontology_values=tuple(ontology_values),
+        evidence=tuple(evidence),
+    )
+
+
+def _evidence_record(mapped: MappedMention, evidence_id: str) -> dict[str, Any]:
+    return _without_none(
+        {
+            "evidence_id": evidence_id,
+            "mapping_id": mapped.mapping_id,
+            "mention_id": mapped.mention_id,
+            "mention_type": mapped.mention_type,
+            "surface": mapped.surface,
+            "span": list(mapped.span),
+            "ontology_kind": mapped.ontology_kind,
+            "ontology_id": mapped.ontology_id,
+            "map_source": mapped.map_source,
+            "candidate_refs": list(mapped.candidate_refs),
+            "object_candidate_id": mapped.object_candidate_id,
+            "selected_roles": list(mapped.selected_roles),
+            "metadata": dict(mapped.metadata),
+        }
+    )
+
+
+def _without_none(payload: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in payload.items() if value is not None and value != []}
+
+
 def _domain_section(payload: dict[str, Any], section: str) -> dict[str, Any]:
     items = payload.get(section, {})
     if isinstance(items, dict):
@@ -264,7 +453,6 @@ def _relations(assets: OntologyAssets) -> dict[str, Any]:
             "range_class": relation.get("range_class") or relation.get("range"),
         }
         relations[relation_id] = normalized
-        relations.setdefault(relation_id.removeprefix("REL_"), normalized)
     for entry in assets.entries:
         if entry.mention_type != "relation_predicate":
             continue
@@ -276,7 +464,6 @@ def _relations(assets: OntologyAssets) -> dict[str, Any]:
             "role": entry.metadata.get("role"),
         }
         relations.setdefault(ontology_id, normalized)
-        relations.setdefault(entry.canonical_id, normalized)
     return relations
 
 
@@ -323,10 +510,73 @@ def _semantic_object_entries(payload: dict[str, Any]) -> dict[str, dict[str, Any
             if not isinstance(item, dict) or "id" not in item:
                 continue
             normalized = {**item, "kind": str(item.get("kind") or kind[:-1])}
+            entries_by_mention[str(item["id"])] = normalized
             mention_id = item.get("mention_id")
             if isinstance(mention_id, str) and mention_id:
                 entries_by_mention[mention_id] = normalized
     return entries_by_mention
+
+
+def _contextualize_service_tunnel_traversal(
+    mapped_mentions: list[MappedMention],
+    semantic_objects: dict[str, dict[str, Any]],
+) -> list[MappedMention]:
+    semantic = _semantic_by_id(semantic_objects, "service_traverses_tunnel")
+    if semantic is None:
+        return mapped_mentions
+    contextualized: list[MappedMention] = []
+    for index, mapped in enumerate(mapped_mentions):
+        if not _is_ambiguous_service_tunnel_through(mapped):
+            contextualized.append(mapped)
+            continue
+        left_class = _nearest_class_before(mapped_mentions, index)
+        right_class = _nearest_class_after(mapped_mentions, index)
+        if left_class != "Service" or right_class != "Tunnel":
+            contextualized.append(mapped)
+            continue
+        contextualized.append(
+            MappedMention(
+                **{
+                    **mapped.__dict__,
+                    "ontology_kind": "semantic_object",
+                    "ontology_id": "service_traverses_tunnel",
+                    "map_source": "contextual_semantic_traversal",
+                    "domain_class": str(semantic.get("from_class") or "Service"),
+                    "range_class": str(semantic.get("to_class") or "Tunnel"),
+                    "target_class": None,
+                    "parent_class": None,
+                    "constrains_attribute": None,
+                    "role": None,
+                    "attribute_candidates": (),
+                    "semantic_object_kind": str(semantic.get("kind") or "traversal"),
+                    "definition_ref": "semantic_objects.service_traverses_tunnel",
+                }
+            )
+        )
+    return contextualized
+
+
+def _is_ambiguous_service_tunnel_through(mapped: MappedMention) -> bool:
+    return (
+        mapped.ontology_kind == "relation"
+        and mapped.ontology_id == "PATH_THROUGH"
+        and "REL_PATH_THROUGH" in mapped.candidate_refs
+        and mapped.surface in {"经过", "穿过", "途经"}
+    )
+
+
+def _nearest_class_before(mapped_mentions: list[MappedMention], index: int) -> str | None:
+    for mapped in reversed(mapped_mentions[:index]):
+        if mapped.ontology_kind == "class":
+            return mapped.ontology_id
+    return None
+
+
+def _nearest_class_after(mapped_mentions: list[MappedMention], index: int) -> str | None:
+    for mapped in mapped_mentions[index + 1 :]:
+        if mapped.ontology_kind == "class":
+            return mapped.ontology_id
+    return None
 
 
 def _semantic_by_id(entries: dict[str, dict[str, Any]], ontology_id: str) -> dict[str, Any] | None:

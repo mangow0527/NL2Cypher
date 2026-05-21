@@ -14,79 +14,34 @@ QUESTION = "查询金牌服务经过的隧道及其源网元，返回隧道的IE
 
 
 def _ontology_mapping(extra_mappings: list[dict[str, object]] | None = None) -> dict[str, object]:
-    mapped_mentions: list[dict[str, object]] = [
-        {
-            "mapping_id": "OM1",
-            "mention_id": "m_service_1",
-            "mention_type": "OBJECT",
-            "surface": "服务",
-            "span": [4, 6],
-            "ontology_kind": "class",
-            "ontology_id": "Service",
-            "object_candidate_id": "SM1",
-            "selected_roles": ["filter_subject", "path_subject"],
-        },
-        {
-            "mapping_id": "OM2",
-            "mention_id": "m_tunnel_1",
-            "mention_type": "OBJECT",
-            "surface": "隧道",
-            "span": [9, 11],
-            "ontology_kind": "class",
-            "ontology_id": "Tunnel",
-            "object_candidate_id": "SM2",
-            "selected_roles": ["path_subject"],
-        },
-        {
-            "mapping_id": "OM3",
-            "mention_id": "m_source_ne_1",
-            "mention_type": "RELATION",
-            "surface": "源网元",
-            "span": [13, 16],
-            "ontology_kind": "relation_role",
-            "ontology_id": "TUNNEL_SRC",
-            "role": "source",
-            "target_class": "NetworkElement",
-            "object_candidate_id": "SM3",
-            "selected_roles": ["path_subject"],
-        },
-        {
-            "mapping_id": "OM4",
-            "mention_id": "m_gold_1",
-            "mention_type": "VALUE",
-            "surface": "金牌",
-            "span": [2, 4],
-            "ontology_kind": "enum_value",
-            "ontology_id": "ServiceQuality.Gold",
-        },
-        {
-            "mapping_id": "OM5",
-            "mention_id": "m_tunnel_2",
-            "mention_type": "OBJECT",
-            "surface": "隧道",
-            "span": [19, 21],
-            "ontology_kind": "class",
-            "ontology_id": "Tunnel",
-            "object_candidate_id": "SM4",
-            "selected_roles": ["projection_subject"],
-        },
-        {
-            "mapping_id": "OM6",
-            "mention_id": "m_source_ne_2",
-            "mention_type": "RELATION",
-            "surface": "源网元",
-            "span": [29, 32],
-            "ontology_kind": "relation_role",
-            "ontology_id": "TUNNEL_SRC",
-            "role": "source",
-            "target_class": "NetworkElement",
-            "object_candidate_id": "SM5",
-            "selected_roles": ["projection_subject"],
-        },
+    objects: list[dict[str, object]] = [
+        {"object_id": "OM1", "class_id": "Service", "object_candidate_id": "SM1", "selected_roles": ["filter_subject", "path_subject"], "evidence_refs": ["E1"], "order": 1},
+        {"object_id": "OM2", "class_id": "Tunnel", "object_candidate_id": "SM2", "selected_roles": ["path_subject"], "evidence_refs": ["E2"], "order": 2},
+        {"object_id": "OM3", "class_id": "NetworkElement", "object_candidate_id": "SM3", "selected_roles": ["path_subject"], "role_hint": {"relation_hint_id": "ORH1", "relation_id": "TUNNEL_SRC", "role": "source", "source_class": "Tunnel"}, "evidence_refs": ["E3"], "order": 3},
+        {"object_id": "OM5", "class_id": "Tunnel", "object_candidate_id": "SM4", "selected_roles": ["projection_subject"], "evidence_refs": ["E5"], "order": 5},
+        {"object_id": "OM6", "class_id": "NetworkElement", "object_candidate_id": "SM5", "selected_roles": ["projection_subject"], "role_hint": {"relation_hint_id": "ORH2", "relation_id": "TUNNEL_SRC", "role": "source", "source_class": "Tunnel"}, "evidence_refs": ["E6"], "order": 6},
+    ]
+    evidence: list[dict[str, object]] = [
+        {"evidence_id": "E1", "mention_id": "m_service_1", "mention_type": "OBJECT", "surface": "服务", "span": [4, 6], "ontology_id": "Service"},
+        {"evidence_id": "E2", "mention_id": "m_tunnel_1", "mention_type": "OBJECT", "surface": "隧道", "span": [9, 11], "ontology_id": "Tunnel"},
+        {"evidence_id": "E3", "mention_id": "m_source_ne_1", "mention_type": "RELATION", "surface": "源网元", "span": [13, 16], "ontology_id": "TUNNEL_SRC"},
+        {"evidence_id": "E4", "mention_id": "m_gold_1", "mention_type": "VALUE", "surface": "金牌", "span": [2, 4], "ontology_id": "ServiceQuality.Gold"},
+        {"evidence_id": "E5", "mention_id": "m_tunnel_2", "mention_type": "OBJECT", "surface": "隧道", "span": [19, 21], "ontology_id": "Tunnel"},
+        {"evidence_id": "E6", "mention_id": "m_source_ne_2", "mention_type": "RELATION", "surface": "源网元", "span": [29, 32], "ontology_id": "TUNNEL_SRC"},
     ]
     if extra_mappings:
-        mapped_mentions.extend(extra_mappings)
-    return {"mapped_mentions": mapped_mentions}
+        for index, item in enumerate(extra_mappings, start=7):
+            evidence_id = f"E{index}"
+            evidence.append({"evidence_id": evidence_id, "mention_id": item.get("mention_id", ""), "mention_type": item.get("mention_type", ""), "surface": item.get("surface", ""), "span": item.get("span", [0, 0]), "ontology_id": item.get("ontology_id", "")})
+            if item.get("ontology_kind") == "class":
+                objects.append({"object_id": item.get("mapping_id", f"OM{index}"), "class_id": item.get("ontology_id"), "object_candidate_id": item.get("object_candidate_id"), "selected_roles": item.get("selected_roles", []), "evidence_refs": [evidence_id], "order": index})
+    return {
+        "ontology_objects": objects,
+        "ontology_relation_hints": [],
+        "ontology_attributes": [],
+        "ontology_values": [{"value_ref_id": "OV1", "value_id": "ServiceQuality.Gold", "evidence_refs": ["E4"], "order": 4}],
+        "evidence": evidence,
+    }
 
 
 def _selected_paths() -> list[dict[str, object]]:
@@ -127,14 +82,15 @@ def test_generates_candidate_pairs_and_merges_same_class_projection_mappings() -
         explicit_distinction_signals=[],
     )
 
-    pairs = {(item["left_mapping_id"], item["right_mapping_id"]) for item in result["candidate_pairs"]}
+    pairs = {(item["left_object_id"], item["right_object_id"]) for item in result["candidate_pairs"]}
 
     assert ("OM2", "OM5") in pairs
     assert ("OM3", "OM6") in pairs
     assert all("OM4" not in pair for pair in pairs)
     assert result["merged_nodes"] == [
-        {"node_id": "n1", "class_id": "Tunnel", "mapping_ids": ["OM2", "OM5"]},
-        {"node_id": "n2", "class_id": "NetworkElement", "mapping_ids": ["OM3", "OM6"]},
+        {"node_id": "s1", "class_id": "Service", "object_ids": ["OM1"]},
+        {"node_id": "t1", "class_id": "Tunnel", "object_ids": ["OM2", "OM5"]},
+        {"node_id": "n1", "class_id": "NetworkElement", "object_ids": ["OM3", "OM6"]},
     ]
     tunnel = next(item for item in result["resolved_pairs"] if item["candidate_pair_id"] == "CR1")
     assert tunnel["decision"] == "same_instance"
@@ -152,7 +108,7 @@ def test_explicit_distinction_signal_splits_instances() -> None:
     )
 
     tunnel = next(
-        item for item in result["resolved_pairs"] if {item["left_mapping_id"], item["right_mapping_id"]} == {"OM2", "OM5"}
+        item for item in result["resolved_pairs"] if {item["left_object_id"], item["right_object_id"]} == {"OM2", "OM5"}
     )
     assert tunnel["decision"] == "distinct_instances"
     assert "explicit_distinction" in tunnel["evidence"]
@@ -169,11 +125,11 @@ def test_role_relation_same_role_and_range_corefer() -> None:
     )
 
     role_pair = next(
-        item for item in result["resolved_pairs"] if {item["left_mapping_id"], item["right_mapping_id"]} == {"OM3", "OM6"}
+        item for item in result["resolved_pairs"] if {item["left_object_id"], item["right_object_id"]} == {"OM3", "OM6"}
     )
     assert role_pair["decision"] == "same_instance"
     assert "same_role" in role_pair["evidence"]
-    assert role_pair["merged_to"] == "n2"
+    assert role_pair["merged_to"] == "n1"
 
 
 def test_gray_zone_uses_llm_accept_when_two_valid_signals_are_present() -> None:
@@ -193,7 +149,7 @@ def test_gray_zone_uses_llm_accept_when_two_valid_signals_are_present() -> None:
     )
 
     tunnel = next(
-        item for item in result["resolved_pairs"] if {item["left_mapping_id"], item["right_mapping_id"]} == {"OM2", "OM5"}
+        item for item in result["resolved_pairs"] if {item["left_object_id"], item["right_object_id"]} == {"OM2", "OM5"}
     )
     assert tunnel["decision"] == "same_instance"
     assert tunnel["selected_by"] == "llm"
@@ -235,33 +191,22 @@ def test_value_mappings_do_not_participate_in_coreference_pairs() -> None:
         explicit_distinction_signals=[],
     )
 
-    assert all("OM4" not in (pair["left_mapping_id"], pair["right_mapping_id"]) for pair in result["candidate_pairs"])
+    assert all("OM4" not in (pair["left_object_id"], pair["right_object_id"]) for pair in result["candidate_pairs"])
 
 
 def test_coreference_requires_object_candidate_id() -> None:
     mapping = {
-        "mapped_mentions": [
-            {
-                "mapping_id": "OM_WITHOUT_ID_1",
-                "mention_id": "m_without_id_1",
-                "mention_type": "OBJECT",
-                "surface": "服务",
-                "span": [0, 2],
-                "ontology_kind": "class",
-                "ontology_id": "Service",
-                "selected_roles": ["path_subject"],
-            },
-            {
-                "mapping_id": "OM_WITHOUT_ID_2",
-                "mention_id": "m_without_id_2",
-                "mention_type": "OBJECT",
-                "surface": "服务",
-                "span": [5, 7],
-                "ontology_kind": "class",
-                "ontology_id": "Service",
-                "selected_roles": ["projection_subject"],
-            },
-        ]
+        "ontology_objects": [
+            {"object_id": "OM_WITHOUT_ID_1", "class_id": "Service", "selected_roles": ["path_subject"], "evidence_refs": ["E1"], "order": 1},
+            {"object_id": "OM_WITHOUT_ID_2", "class_id": "Service", "selected_roles": ["projection_subject"], "evidence_refs": ["E2"], "order": 2},
+        ],
+        "ontology_relation_hints": [],
+        "ontology_attributes": [],
+        "ontology_values": [],
+        "evidence": [
+            {"evidence_id": "E1", "mention_id": "m_without_id_1", "mention_type": "OBJECT", "surface": "服务", "span": [0, 2], "ontology_id": "Service"},
+            {"evidence_id": "E2", "mention_id": "m_without_id_2", "mention_type": "OBJECT", "surface": "服务", "span": [5, 7], "ontology_id": "Service"},
+        ],
     }
 
     result = OntologyCoreferenceService().resolve(

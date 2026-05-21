@@ -5,8 +5,9 @@ from dataclasses import dataclass
 import re
 from typing import Any
 
+from services.cypher_generator_agent.app.intent_layer.models import InitialShapeField
+
 from .assets import OntologyAssets
-from .models import IntentTrace, ShapeField
 from .prompts import PromptOutputValidationError, _parse_ontology_path_selection_text
 
 
@@ -18,8 +19,8 @@ class OntologyPathSelectionValidationError(ValueError):
 class PathEvidence:
     evidence_id: str
     type: str
-    mapping_id: str | None = None
-    surface: str | None = None
+    source_id: str | None = None
+    evidence_refs: tuple[str, ...] = ()
     semantic_object_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -27,8 +28,8 @@ class PathEvidence:
             {
                 "evidence_id": self.evidence_id,
                 "type": self.type,
-                "mapping_id": self.mapping_id,
-                "surface": self.surface,
+                "source_id": self.source_id,
+                "evidence_refs": list(self.evidence_refs),
                 "semantic_object_id": self.semantic_object_id,
             }
         )
@@ -39,10 +40,11 @@ class PathRequest:
     request_id: str
     from_class: str
     to_class: str
-    source_mapping_id: str
-    source_surface: str
+    source_id: str
     source_kind: str
+    evidence_refs: tuple[str, ...] = ()
     relation_hint: str | None = None
+    relation_hint_id: str | None = None
     role: str | None = None
     semantic_object_id: str | None = None
 
@@ -53,10 +55,11 @@ class PathRequest:
                 "from_class": self.from_class,
                 "to_class": self.to_class,
                 "relation_hint": self.relation_hint,
+                "relation_hint_id": self.relation_hint_id,
                 "role": self.role,
-                "source_mapping_id": self.source_mapping_id,
-                "source_surface": self.source_surface,
+                "source_id": self.source_id,
                 "source_kind": self.source_kind,
+                "evidence_refs": list(self.evidence_refs),
                 "semantic_object_id": self.semantic_object_id,
             }
         )
@@ -110,8 +113,9 @@ class OntologyPathSelectionTrace:
     candidate_paths: tuple[CandidatePath, ...]
     llm_raw_output: str
     selected_paths: tuple[SelectedPath, ...]
-    shape_updates: dict[str, ShapeField]
+    shape_updates: dict[str, InitialShapeField]
     clarification: dict[str, Any] | None = None
+    llm_prompt: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         payload = {
@@ -123,6 +127,8 @@ class OntologyPathSelectionTrace:
         }
         if self.llm_raw_output:
             payload["llm_raw_output"] = self.llm_raw_output
+        if self.llm_prompt:
+            payload["llm_prompt"] = self.llm_prompt
         return payload
 
     def to_stage_dict(self) -> dict[str, Any]:
@@ -134,8 +140,8 @@ class OntologyPathSelectionService:
         self.assets = assets
         self.llm_selector = llm_selector
 
-    def fill(self, *, ontology_mapping: dict[str, Any], intent_trace: IntentTrace, question: str) -> OntologyPathSelectionTrace:
-        path_requests = build_path_requests(ontology_mapping, intent_trace, assets=self.assets)
+    def fill(self, *, ontology_mapping: dict[str, Any], question: str) -> OntologyPathSelectionTrace:
+        path_requests = build_path_requests(ontology_mapping, assets=self.assets)
         candidate_paths = build_candidate_paths(path_requests, self.assets)
         candidates_by_request = _candidates_by_request(candidate_paths)
         auto_selected = _auto_single_candidate_paths(path_requests, candidates_by_request)
@@ -146,6 +152,7 @@ class OntologyPathSelectionService:
             clarification_options,
         )
         raw_output = ""
+        llm_prompt = ""
         llm_selected: tuple[SelectedPath, ...] = ()
 
         if clarification is None:
@@ -170,6 +177,7 @@ class OntologyPathSelectionService:
                         ),
                     },
                 )
+                llm_prompt = str(getattr(selection, "rendered_prompt", ""))
                 raw_output = str(getattr(selection, "raw_response", ""))
                 parsed = _parse_path_selection_response(raw_output)
                 llm_selected, clarification = validate_path_selection(parsed, llm_requests, llm_candidate_paths)
@@ -180,61 +188,40 @@ class OntologyPathSelectionService:
             candidate_paths=candidate_paths,
             llm_raw_output=raw_output,
             selected_paths=selected_paths,
-            shape_updates=_shape_updates(selected_paths, clarification),
+            shape_updates=_shape_updates(path_requests, selected_paths, clarification),
             clarification=clarification,
+            llm_prompt=llm_prompt,
         )
 
 
 def build_path_requests(
     ontology_mapping: dict[str, Any],
-    intent_trace: IntentTrace | None = None,
     *,
     assets: OntologyAssets | None = None,
 ) -> tuple[PathRequest, ...]:
-    del intent_trace
     if assets is None:
         assets = OntologyAssets.from_default_resources()
-    relation_index = _relation_index(assets) if assets is not None else {}
     semantic_traversals = _semantic_traversals(assets) if assets is not None else {}
     requests: list[PathRequest] = []
-    mapped_mentions = ontology_mapping.get("mapped_mentions", [])
-    if not isinstance(mapped_mentions, list):
+    ontology_objects = _ontology_objects(ontology_mapping)
+    relation_hints = _ontology_relation_hints(ontology_mapping)
+    ontology_attributes = _ontology_attributes(ontology_mapping)
+    if not ontology_objects and not relation_hints:
         return ()
-    for item in mapped_mentions:
-        if not isinstance(item, dict):
+    path_subject_pair_requests = _path_subject_pair_requests(ontology_objects, relation_hints, ontology_attributes)
+    covered_relation_hint_ids = {
+        request.relation_hint_id
+        for request in path_subject_pair_requests
+        if request.relation_hint_id
+    }
+    requests.extend(path_subject_pair_requests)
+    for hint in relation_hints:
+        if str(hint.get("relation_hint_id") or "") in covered_relation_hint_ids:
             continue
-        if not _is_path_role_mapping(item):
+        if not _has_path_role(hint):
             continue
-        ontology_kind = str(item.get("ontology_kind") or "")
-        if ontology_kind == "relation":
-            relation_id = _normalize_relation_id(str(item.get("ontology_id") or ""))
-            relation = relation_index.get(relation_id, {})
-            from_class = str(item.get("domain_class") or relation.get("domain") or "")
-            to_class = str(item.get("range_class") or relation.get("range") or "")
-            if not from_class or not to_class:
-                continue
-            requests.append(_request(item, from_class, to_class, "relation", relation_hint=relation_id))
-        elif ontology_kind == "relation_role":
-            relation_id = _normalize_relation_id(str(item.get("ontology_id") or ""))
-            relation = relation_index.get(relation_id, {})
-            target_class = str(item.get("target_class") or relation.get("range") or "")
-            from_class = str(item.get("domain_class") or relation.get("domain") or "")
-            if not from_class:
-                from_class = _domain_for_role_relation(relation_index, relation_id, target_class, str(item.get("role") or ""))
-            if not from_class or not target_class:
-                continue
-            requests.append(
-                _request(
-                    item,
-                    from_class,
-                    target_class,
-                    "relation_role",
-                    relation_hint=relation_id,
-                    role=str(item.get("role") or "") or None,
-                )
-            )
-        elif ontology_kind == "semantic_object":
-            semantic_object_id = str(item.get("ontology_id") or item.get("semantic_object_id") or "")
+        semantic_object_id = str(hint.get("semantic_object_id") or "")
+        if semantic_object_id:
             traversal = semantic_traversals.get(semantic_object_id)
             if traversal is None:
                 continue
@@ -243,15 +230,27 @@ def build_path_requests(
             if not from_class or not to_class:
                 continue
             requests.append(
-                _request(
-                    item,
-                    from_class,
-                    to_class,
-                    "semantic_object",
-                    semantic_object_id=semantic_object_id,
-                )
+                _request_from_hint(hint, from_class, to_class, "semantic_object", semantic_object_id=semantic_object_id)
             )
-    return tuple(_renumber_requests(requests))
+            continue
+        relation_id = _normalize_relation_id(str(hint.get("relation_id") or ""))
+        from_class = str(hint.get("from_class") or "")
+        to_class = str(hint.get("to_class") or "")
+        if not from_class or not to_class:
+            continue
+        source_kind = "relation_role" if hint.get("role") else "relation"
+        requests.append(
+            _request_from_hint(
+                hint,
+                from_class,
+                to_class,
+                source_kind,
+                relation_hint=relation_id or None,
+                role=str(hint.get("role") or "") or None,
+            )
+        )
+    requests.extend(_terminal_attribute_requests(ontology_attributes, requests))
+    return tuple(_renumber_requests(_deduplicate_requests(requests)))
 
 
 def build_candidate_paths(path_requests: tuple[PathRequest, ...], assets: OntologyAssets) -> tuple[CandidatePath, ...]:
@@ -422,15 +421,211 @@ def validate_path_selection(
     return tuple(selected), None
 
 
-def _is_path_role_mapping(item: dict[str, Any]) -> bool:
+def _ontology_objects(ontology_mapping: dict[str, Any]) -> list[dict[str, Any]]:
+    return [dict(item) for item in ontology_mapping.get("ontology_objects", []) if isinstance(item, dict)]
+
+
+def _ontology_relation_hints(ontology_mapping: dict[str, Any]) -> list[dict[str, Any]]:
+    return [dict(item) for item in ontology_mapping.get("ontology_relation_hints", []) if isinstance(item, dict)]
+
+
+def _ontology_attributes(ontology_mapping: dict[str, Any]) -> list[dict[str, Any]]:
+    return [dict(item) for item in ontology_mapping.get("ontology_attributes", []) if isinstance(item, dict)]
+
+
+def _evidence_refs(item: dict[str, Any] | None) -> tuple[str, ...]:
+    if not isinstance(item, dict):
+        return ()
+    value = item.get("evidence_refs")
+    if isinstance(value, (list, tuple)):
+        return tuple(str(ref) for ref in value if ref)
+    return ()
+
+
+def _order(item: dict[str, Any]) -> int:
+    try:
+        return int(item.get("order", 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _request_order(request: PathRequest) -> int:
+    for ref in request.evidence_refs:
+        if ref.startswith("E") and ref[1:].isdigit():
+            return int(ref[1:])
+    return 0
+
+
+def _has_path_role(item: dict[str, Any]) -> bool:
     selected_roles = item.get("selected_roles")
     if not isinstance(selected_roles, (list, tuple)) or not selected_roles:
         return True
     return "path_subject" in {str(role) for role in selected_roles}
 
 
-def _request(
+def _path_subject_pair_requests(
+    ontology_objects: list[dict[str, Any]],
+    relation_hints: list[dict[str, Any]],
+    ontology_attributes: list[dict[str, Any]],
+) -> list[PathRequest]:
+    class_mentions = [
+        item
+        for item in ontology_objects
+        if isinstance(item, dict)
+        and _has_selected_role(item, "path_subject")
+        and item.get("class_id")
+        and not isinstance(item.get("role_hint"), dict)
+    ]
+    class_mentions.sort(key=_order)
+    if len(class_mentions) == 1 and not _has_selected_path_relation(relation_hints):
+        attribute_target = _first_unique_attribute_target_after(class_mentions[0], ontology_attributes)
+        if attribute_target is not None:
+            class_mentions.append(attribute_target)
+    requests: list[PathRequest] = []
+    for left, right in zip(class_mentions, class_mentions[1:]):
+        from_class = str(left.get("class_id") or "")
+        to_class = str(right.get("class_id") or "")
+        if not from_class or not to_class or from_class == to_class:
+            continue
+        bridge_relation = _bridge_relation_between(left, right, relation_hints)
+        requests.append(
+            PathRequest(
+                request_id="PR0",
+                from_class=from_class,
+                to_class=to_class,
+                source_id=str(bridge_relation.get("relation_hint_id") or "") if bridge_relation else "",
+                source_kind="path_subject_pair",
+                evidence_refs=_evidence_refs(bridge_relation) if bridge_relation else (*_evidence_refs(left), *_evidence_refs(right)),
+                relation_hint=_normalize_relation_id(str(bridge_relation.get("relation_id") or "")) if bridge_relation else None,
+                relation_hint_id=str(bridge_relation.get("relation_hint_id") or "") if bridge_relation else None,
+                role=str(bridge_relation.get("role") or "") or None if bridge_relation else None,
+            )
+        )
+    return requests
+
+
+def _first_unique_attribute_target_after(
+    class_mapping: dict[str, Any],
+    ontology_attributes: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    class_order = _order(class_mapping)
+    for item in sorted((value for value in ontology_attributes if isinstance(value, dict)), key=_order):
+        if _order(item) <= class_order:
+            continue
+        parent_class = _unique_attribute_parent(item)
+        if parent_class:
+            return {
+                "object_id": f"{item.get('attribute_ref_id', 'attribute')}_parent",
+                "class_id": parent_class,
+                "evidence_refs": list(_evidence_refs(item)),
+                "order": item.get("order"),
+            }
+    return None
+
+
+def _has_selected_path_relation(relation_hints: list[dict[str, Any]]) -> bool:
+    return any(
+        isinstance(item, dict)
+        and _has_selected_role(item, "path_subject")
+        for item in relation_hints
+    )
+
+
+def _bridge_relation_between(
+    left: dict[str, Any],
+    right: dict[str, Any],
+    relation_hints: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    left_order = _order(left)
+    right_order = _order(right)
+    from_class = str(left.get("class_id") or "")
+    to_class = str(right.get("class_id") or "")
+    for item in relation_hints:
+        if not isinstance(item, dict):
+            continue
+        item_order = _order(item)
+        if item_order < left_order or item_order > right_order:
+            continue
+        if item.get("from_class") == from_class and item.get("to_class") == to_class:
+            return item
+    return None
+
+
+def _terminal_attribute_requests(
+    ontology_attributes: list[dict[str, Any]],
+    requests: list[PathRequest],
+) -> list[PathRequest]:
+    if not requests:
+        return []
+    classes_in_paths = {request.from_class for request in requests} | {request.to_class for request in requests}
+    added: list[PathRequest] = []
+    for item in sorted((value for value in ontology_attributes if isinstance(value, dict)), key=_order):
+        parent_class = _unique_attribute_parent(item)
+        if not parent_class or parent_class in classes_in_paths:
+            continue
+        previous_request = _nearest_request_before(item, requests)
+        if previous_request is None or previous_request.to_class == parent_class:
+            continue
+        added.append(
+            PathRequest(
+                request_id="PR0",
+                from_class=previous_request.to_class,
+                to_class=parent_class,
+                source_id=str(item.get("attribute_ref_id") or ""),
+                source_kind="attribute_parent_link",
+                evidence_refs=_evidence_refs(item),
+            )
+        )
+        classes_in_paths.add(parent_class)
+    return added
+
+
+def _nearest_request_before(
     item: dict[str, Any],
+    requests: list[PathRequest],
+) -> PathRequest | None:
+    item_order = _order(item)
+    preceding: list[tuple[int, PathRequest]] = []
+    for request in requests:
+        request_order = _order({"order": _request_order(request)})
+        if request_order <= item_order:
+            preceding.append((request_order, request))
+    if not preceding:
+        return requests[-1]
+    return max(preceding, key=lambda value: value[0])[1]
+
+
+def _unique_attribute_parent(item: dict[str, Any]) -> str:
+    candidate_refs = item.get("attribute_candidates")
+    parent_class = item.get("parent_class")
+    if isinstance(parent_class, str) and parent_class and (
+        not isinstance(candidate_refs, list) or len(candidate_refs) <= 1
+    ):
+        return parent_class
+    return ""
+
+
+def _deduplicate_requests(requests: list[PathRequest]) -> list[PathRequest]:
+    deduplicated: list[PathRequest] = []
+    seen: set[tuple[str, str, str | None, str | None, str | None]] = set()
+    for request in requests:
+        key = (request.from_class, request.to_class, request.relation_hint, request.role, request.semantic_object_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduplicated.append(request)
+    return deduplicated
+
+
+def _has_selected_role(item: dict[str, Any], role: str) -> bool:
+    selected_roles = item.get("selected_roles")
+    if not isinstance(selected_roles, (list, tuple)):
+        return False
+    return role in {str(value) for value in selected_roles}
+
+
+def _request_from_hint(
+    hint: dict[str, Any],
     from_class: str,
     to_class: str,
     source_kind: str,
@@ -443,10 +638,11 @@ def _request(
         request_id="PR0",
         from_class=from_class,
         to_class=to_class,
-        source_mapping_id=str(item.get("mapping_id") or ""),
-        source_surface=str(item.get("surface") or ""),
+        source_id=str(hint.get("relation_hint_id") or hint.get("semantic_object_id") or ""),
         source_kind=source_kind,
+        evidence_refs=_evidence_refs(hint),
         relation_hint=relation_hint,
+        relation_hint_id=str(hint.get("relation_hint_id") or "") or None,
         role=role,
         semantic_object_id=semantic_object_id,
     )
@@ -458,10 +654,11 @@ def _renumber_requests(requests: list[PathRequest]) -> tuple[PathRequest, ...]:
             request_id=f"PR{index}",
             from_class=request.from_class,
             to_class=request.to_class,
-            source_mapping_id=request.source_mapping_id,
-            source_surface=request.source_surface,
+            source_id=request.source_id,
             source_kind=request.source_kind,
+            evidence_refs=request.evidence_refs,
             relation_hint=request.relation_hint,
+            relation_hint_id=request.relation_hint_id,
             role=request.role,
             semantic_object_id=request.semantic_object_id,
         )
@@ -487,8 +684,8 @@ def _candidate(
             PathEvidence(
                 evidence_id=f"PE{evidence_counter}",
                 type=evidence_type,
-                mapping_id=request.source_mapping_id or None,
-                surface=request.source_surface or None,
+                source_id=request.source_id or None,
+                evidence_refs=request.evidence_refs,
                 semantic_object_id=request.semantic_object_id,
             ),
         ),
@@ -510,7 +707,7 @@ def _relation_index(assets: OntologyAssets | None) -> dict[str, dict[str, Any]]:
     for entry in assets.entries:
         if entry.mention_type != "relation_predicate":
             continue
-        relation_id = _normalize_relation_id(entry.canonical_id)
+        relation_id = entry.canonical_id.removeprefix("REL_")
         relations.setdefault(
             relation_id,
             {
@@ -690,12 +887,39 @@ def _merge_selected_paths(
 
 
 def _shape_updates(
+    path_requests: tuple[PathRequest, ...],
     selected_paths: tuple[SelectedPath, ...],
     clarification: dict[str, Any] | None = None,
-) -> dict[str, ShapeField]:
-    if clarification is not None or not selected_paths:
+) -> dict[str, InitialShapeField]:
+    if clarification is not None:
         return {
-            "relation_resolution_expected": ShapeField(
+            "relation_resolution_expected": InitialShapeField(
+                value=True,
+                source="ontology_path_selection",
+                decision="clarify",
+                confidence=1.0,
+                pending_until="user_clarification",
+            )
+        }
+    if not path_requests:
+        return {
+            "hop_count": InitialShapeField(value=0, source="ontology_path_selection", decision="accept", confidence=1.0),
+            "relation_chain_type": InitialShapeField(
+                value="zero_hop",
+                source="ontology_path_selection",
+                decision="accept",
+                confidence=1.0,
+            ),
+            "relation_resolution_expected": InitialShapeField(
+                value=False,
+                source="ontology_path_selection",
+                decision="accept",
+                confidence=1.0,
+            ),
+        }
+    if not selected_paths:
+        return {
+            "relation_resolution_expected": InitialShapeField(
                 value=True,
                 source="ontology_path_selection",
                 decision="clarify",
@@ -705,8 +929,8 @@ def _shape_updates(
         }
     hop_count = sum(len(item.relation_chain) for item in selected_paths)
     return {
-        "hop_count": ShapeField(value=hop_count, source="ontology_path_selection", decision="accept", confidence=1.0),
-        "relation_chain_type": ShapeField(
+        "hop_count": InitialShapeField(value=hop_count, source="ontology_path_selection", decision="accept", confidence=1.0),
+        "relation_chain_type": InitialShapeField(
             value="fixed_chain",
             source="ontology_path_selection",
             decision="accept",
@@ -722,34 +946,42 @@ def _path_selection_cards(
     assets: OntologyAssets,
 ) -> str:
     labels = _object_label_index(ontology_mapping)
+    evidence_index = _evidence_index(ontology_mapping)
     candidates_by_request = _candidates_by_request(candidate_paths)
     cards: list[str] = []
     for request in path_requests:
         from_label = _object_label(request.from_class, labels)
         to_label = _object_label(request.to_class, labels)
         lines = [f"任务 {request.request_id}：选择\"{from_label}\"和\"{to_label}\"之间的连接路径"]
-        clues = _request_clues(request)
+        clues = _request_clues(request, evidence_index)
         lines.append(f"原文线索：{clues}")
         lines.append("候选路径：")
         for candidate in candidates_by_request.get(request.request_id, ()):
-            lines.append(f"- {candidate.path_id}：{_candidate_description(candidate, labels, assets)}")
+            lines.append(f"- {candidate.path_id}：{_candidate_description(candidate, labels, evidence_index, assets)}")
         cards.append("\n".join(lines))
     return "\n\n".join(cards)
 
 
-def _request_clues(request: PathRequest) -> str:
+def _request_clues(request: PathRequest, evidence_index: dict[str, dict[str, Any]]) -> str:
     clues: list[str] = []
-    if request.source_surface:
-        clues.append(f"\"{request.source_surface}\"")
+    for evidence_ref in request.evidence_refs:
+        surface = evidence_index.get(evidence_ref, {}).get("surface")
+        if surface:
+            clues.append(f"\"{surface}\"")
     if request.role:
         clues.append(f"{_role_label(request.role)}角色")
     return "、".join(clues) if clues else "无额外线索"
 
 
-def _candidate_description(candidate: CandidatePath, labels: dict[str, str], assets: OntologyAssets) -> str:
+def _candidate_description(
+    candidate: CandidatePath,
+    labels: dict[str, str],
+    evidence_index: dict[str, dict[str, Any]],
+    assets: OntologyAssets,
+) -> str:
     from_label = _object_label(candidate.from_class, labels)
     target_label = _candidate_target_label(candidate, labels, assets)
-    evidence = _candidate_clues(candidate, assets)
+    evidence = _candidate_clues(candidate, evidence_index, assets)
     return f"{from_label} 连接到 {target_label}。线索：{evidence}。"
 
 
@@ -779,11 +1011,13 @@ def _role_object_label(role: str, to_label: str) -> str:
     return f"{prefix}{to_label}"
 
 
-def _candidate_clues(candidate: CandidatePath, assets: OntologyAssets) -> str:
+def _candidate_clues(candidate: CandidatePath, evidence_index: dict[str, dict[str, Any]], assets: OntologyAssets) -> str:
     clues: list[str] = []
     for evidence in candidate.evidence:
-        if evidence.surface:
-            clues.append(f"原文\"{evidence.surface}\"")
+        for evidence_ref in evidence.evidence_refs:
+            surface = evidence_index.get(evidence_ref, {}).get("surface")
+            if surface:
+                clues.append(f"原文\"{surface}\"")
     for relation_id in candidate.relation_chain:
         relation = _relation_index(assets).get(_normalize_relation_id(relation_id), {})
         role = relation.get("role")
@@ -794,26 +1028,35 @@ def _candidate_clues(candidate: CandidatePath, assets: OntologyAssets) -> str:
 
 def _object_label_index(ontology_mapping: dict[str, Any]) -> dict[str, str]:
     labels: dict[str, str] = {}
-    mapped_mentions = ontology_mapping.get("mapped_mentions", [])
-    if not isinstance(mapped_mentions, list):
-        return labels
-    for item in mapped_mentions:
+    evidence_index = _evidence_index(ontology_mapping)
+    for item in _ontology_objects(ontology_mapping):
         if not isinstance(item, dict):
             continue
-        surface = str(item.get("surface") or "")
+        surface = _first_surface(item, evidence_index)
         if not surface:
             continue
-        class_id = _class_id_for_prompt(item)
+        class_id = str(item.get("class_id") or "")
         if class_id and class_id not in labels:
             labels[class_id] = surface
     return labels
 
 
-def _class_id_for_prompt(item: dict[str, Any]) -> str:
-    if item.get("ontology_kind") == "class" and item.get("ontology_id"):
-        return str(item["ontology_id"])
-    if item.get("ontology_kind") == "relation_role" and item.get("target_class"):
-        return str(item["target_class"])
+def _evidence_index(ontology_mapping: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    evidence = ontology_mapping.get("evidence", [])
+    if not isinstance(evidence, list):
+        return {}
+    return {
+        str(item.get("evidence_id")): dict(item)
+        for item in evidence
+        if isinstance(item, dict) and item.get("evidence_id")
+    }
+
+
+def _first_surface(item: dict[str, Any], evidence_index: dict[str, dict[str, Any]]) -> str:
+    for evidence_ref in _evidence_refs(item):
+        surface = evidence_index.get(evidence_ref, {}).get("surface")
+        if isinstance(surface, str) and surface:
+            return surface
     return ""
 
 
@@ -835,15 +1078,15 @@ def _evidence_type_for_request(request: PathRequest) -> str:
         return "ontology_relation_role_mapping"
     if request.source_kind == "relation":
         return "ontology_relation_mapping"
+    if request.source_kind == "path_subject_pair":
+        return "path_subject_pair"
     return "ontology_mapping"
 
 
 def _normalize_relation_id(relation_id: str) -> str:
     if not relation_id:
         return ""
-    if relation_id.startswith("REL_"):
-        return relation_id
-    return f"REL_{relation_id}"
+    return relation_id
 
 
 def _parse_path_selection_response(raw_response: str) -> dict[str, Any]:

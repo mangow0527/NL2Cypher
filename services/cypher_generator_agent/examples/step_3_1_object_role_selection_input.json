@@ -29,7 +29,7 @@
     "initial_shape": {
       "answer_type": {"value": "attribute_table", "source": "taxonomy.secondary.default_answer_type", "decision": "accept", "confidence": 1.0},
       "projection_expected": {"value": true, "source": "taxonomy.secondary.shape_profile", "decision": "accept", "confidence": 1.0},
-      "relation_resolution_expected": {"value": true, "source": "taxonomy.secondary.shape_profile", "decision": "pending", "confidence": 0.8, "pending_until": "step_2_3"},
+      "relation_resolution_expected": {"value": true, "source": "taxonomy.secondary.shape_profile", "decision": "pending", "confidence": 0.8, "pending_until": "step_3_3"},
       "path_answer_required": {"value": false, "source": "taxonomy.secondary.shape_profile", "decision": "accept", "confidence": 1.0}
     },
     "trace": {

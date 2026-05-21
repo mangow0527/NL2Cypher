@@ -10,6 +10,8 @@ from .evaluation import (
     load_intent_pressure_items,
     summarize_intent_pressure,
 )
+from .layer import IntentLayer
+from .models import Intent, IntentOutput, InitialShapeField
 from .recognition import (
     EmbeddingIntentRecognizer,
     EmbeddingRecognitionDiagnostic,
@@ -45,6 +47,8 @@ __all__ = [
     "FallbackEmbeddingStore",
     "HybridIntentRecognizer",
     "InMemoryEmbeddingStore",
+    "InitialShapeField",
+    "Intent",
     "IntentDecision",
     "IntentEmbeddingCandidate",
     "IntentEmbeddingSample",
@@ -54,6 +58,8 @@ __all__ = [
     "IntentPressureItem",
     "IntentPressureResult",
     "IntentPressureSummary",
+    "IntentLayer",
+    "IntentOutput",
     "IntentRecognitionResult",
     "IntentRule",
     "IntentSource",

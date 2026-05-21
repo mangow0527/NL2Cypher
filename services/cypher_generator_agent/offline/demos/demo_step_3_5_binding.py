@@ -9,27 +9,30 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from services.cypher_generator_agent.app.ontology_layer.binding import OntologyBindingService
-from services.cypher_generator_agent.app.ontology_layer.models import ContextSignal, IntentIdentity, IntentTrace, ShapeField
+from services.cypher_generator_agent.app.intent_layer.models import Intent, IntentOutput, InitialShapeField
+from services.cypher_generator_agent.app.ontology_layer.models import ContextSignal
 
 
 def main() -> int:
-    path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("services/cypher_generator_agent/examples/step_2_5_binding_input.json")
+    path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("services/cypher_generator_agent/examples/step_3_5_binding_input.json")
     payload = json.loads(path.read_text(encoding="utf-8"))
     intent_payload = payload["intent"]
-    intent_trace = IntentTrace(
-        intent=IntentIdentity(
+    intent_output = IntentOutput(
+        intent=Intent(
             primary=intent_payload["primary"],
             secondary=intent_payload["secondary"],
             source="example",
             decision="accept",
             confidence=1.0,
         ),
-        shape={
-            key: ShapeField(value, "example", "accept" if value is not None else "pending", 1.0)
+        planning_prompt_text=str(intent_payload.get("planning_prompt_text", "")),
+        initial_shape={
+            key: InitialShapeField(value, "example", "accept" if value is not None else "pending", 1.0)
             for key, value in intent_payload.get("shape", {}).items()
         },
         candidates=(),
         rule_signals_used=(),
+        diagnostics={},
     )
     trace = OntologyBindingService().bind(
         ontology_mapping=payload["ontology_mapping"],
@@ -37,7 +40,7 @@ def main() -> int:
         candidate_family=payload.get("candidate_family", {}),
         context_signals=tuple(_signal(item) for item in payload.get("context_signals", [])),
         shape_signals=tuple(_signal(item) for item in payload.get("shape_signals", [])),
-        intent_trace=intent_trace,
+        intent_output=intent_output,
         question=payload["question"],
     )
     print(json.dumps({"bindings": trace.to_dict()}, ensure_ascii=False, indent=2))

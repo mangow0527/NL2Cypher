@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import yaml
 from pydantic import ValidationError
 
 from services.repair_agent.app.models import RepairAnalysisRecord
@@ -43,6 +44,7 @@ class RuntimeResultsService:
         repair_service_base_url: str,
         knowledge_agent_base_url: str,
         qa_generator_base_url: str,
+        cga_trace_profile: str = "all",
         health_client: ServiceHealthClient | None = None,
     ) -> None:
         self._goldens_dir = Path(testing_data_dir) / "goldens"
@@ -51,6 +53,7 @@ class RuntimeResultsService:
         self._generation_failures_dir = Path(testing_data_dir) / "generation_failures"
         self._tickets_dir = Path(testing_data_dir) / "issue_tickets"
         self._analyses_dir = Path(repair_data_dir) / "analyses"
+        self._cga_trace_profile = cga_trace_profile
         self._health_client = health_client or ServiceHealthClient()
         self._service_cards = [
             {
@@ -127,7 +130,11 @@ class RuntimeResultsService:
         tasks = []
         for task_id in self._recent_task_ids():
             task = self._build_task_summary_lightweight(task_id)
-            if task is not None and self._task_matches_filters(task, difficulty=difficulty, q=q):
+            if (
+                task is not None
+                and self._task_matches_profile(task)
+                and self._task_matches_filters(task, difficulty=difficulty, q=q)
+            ):
                 tasks.append(task)
         tasks.sort(key=lambda item: item["updated_at"], reverse=True)
         page = max(page, 1)
@@ -167,6 +174,8 @@ class RuntimeResultsService:
             task = self._build_task_summary_lightweight(task_id)
             if task is None:
                 continue
+            if not self._task_matches_profile(task):
+                continue
             difficulty = task.get("difficulty")
             if difficulty not in buckets:
                 continue
@@ -188,7 +197,7 @@ class RuntimeResultsService:
 
     def get_task_detail(self, id: str) -> dict[str, Any] | None:
         submission = self._read_submission(id)
-        generation_failure = self._read_generation_failure_for_submission(id, submission)
+        submission, generation_failure = self._select_profile_records(id, submission)
         if submission is None and generation_failure is None:
             return None
         golden = self._read_json(self._goldens_dir / f"{id}.json")
@@ -221,7 +230,7 @@ class RuntimeResultsService:
 
     def _build_task_summary(self, id: str) -> dict[str, Any] | None:
         submission = self._read_submission(id)
-        generation_failure = self._read_generation_failure_for_submission(id, submission)
+        submission, generation_failure = self._select_profile_records(id, submission)
         if submission is None and generation_failure is None:
             return None
         golden = self._read_json(self._goldens_dir / f"{id}.json")
@@ -248,13 +257,14 @@ class RuntimeResultsService:
 
     def _build_task_summary_lightweight(self, id: str) -> dict[str, Any] | None:
         submission = self._read_submission(id)
-        generation_failure = self._read_generation_failure_for_submission(id, submission)
+        submission, generation_failure = self._select_profile_records(id, submission)
         if submission is None and generation_failure is None:
             return None
         golden = self._read_json(self._goldens_dir / f"{id}.json")
         if not self._is_contract_task(golden=golden, submission=submission, generation_failure=generation_failure):
             return None
         record = submission or generation_failure or {}
+        trace_profile = self._record_trace_profile(record)
         state = str((submission or {}).get("state") or "")
         evaluation = (submission or {}).get("evaluation") or {}
         verdict = evaluation.get("verdict")
@@ -263,6 +273,7 @@ class RuntimeResultsService:
         return {
             "id": id,
             "source": "testing_agent",
+            "cga_trace_profile": trace_profile,
             "question": record.get("question", ""),
             "difficulty": (golden or {}).get("difficulty"),
             "attempt_no": int((submission or {}).get("attempt_no") or 0),
@@ -375,6 +386,38 @@ class RuntimeResultsService:
             return None
         return self._read_generation_failure(id, submission.get("generation_run_id"))
 
+    def _select_profile_records(
+        self,
+        id: str,
+        submission: dict[str, Any] | None,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        profile = str(self._cga_trace_profile or "all").strip().lower()
+        if profile in {"", "all"}:
+            return submission, self._read_generation_failure_for_submission(id, submission)
+
+        submission_matches = submission is not None and self._record_trace_profile(submission) == profile
+        latest_failure = self._read_generation_failure(id)
+        failure_matches = latest_failure is not None and self._record_trace_profile(latest_failure) == profile
+        if submission_matches and failure_matches:
+            if submission.get("generation_run_id") == latest_failure.get("generation_run_id"):
+                return submission, latest_failure
+            if self._latest_timestamp(submission) >= self._latest_timestamp(latest_failure):
+                return submission, None
+            return None, latest_failure
+        if failure_matches:
+            same_run_submission = (
+                submission
+                if submission_matches and submission.get("generation_run_id") == latest_failure.get("generation_run_id")
+                else None
+            )
+            return same_run_submission, latest_failure
+        if submission_matches:
+            failure = self._read_generation_failure_for_submission(id, submission)
+            if failure is not None and self._record_trace_profile(failure) != profile:
+                failure = None
+            return submission, failure
+        return None, None
+
     def _build_summary(
         self,
         id: str,
@@ -435,7 +478,9 @@ class RuntimeResultsService:
         )
         prompt_snapshot = source.get("input_prompt_snapshot") or ""
         snapshot = self._decode_generation_snapshot(prompt_snapshot)
-        trace_schema_version = snapshot.get("schema_version") if self._is_cga_trace_v2(snapshot) else None
+        trace_schema_version = (
+            snapshot.get("schema_version") or "cga_trace_v2" if self._is_cga_trace_v2(snapshot) else None
+        )
         failure_reason = source.get("failure_reason") or (generation_failure or {}).get("failure_reason")
         return {
             "question": source.get("question", ""),
@@ -449,6 +494,7 @@ class RuntimeResultsService:
             "failure_reason": failure_reason,
             "clarification": source.get("clarification") or (generation_failure or {}).get("clarification"),
             "generation_status": generation_status,
+            "trace_profile": "ontology" if self._is_ontology_cga_trace(snapshot) else "legacy",
             "trace_schema_version": trace_schema_version,
             "trace_layers": self._generation_trace_layers(
                 snapshot=snapshot,
@@ -478,7 +524,26 @@ class RuntimeResultsService:
         return parsed if isinstance(parsed, dict) else {}
 
     def _is_cga_trace_v2(self, snapshot: dict[str, Any]) -> bool:
-        return snapshot.get("schema_version") == "cga_trace_v2"
+        return snapshot.get("schema_version") == "cga_trace_v2" or self._is_ontology_cga_trace(snapshot)
+
+    def _is_ontology_cga_trace(self, snapshot: dict[str, Any]) -> bool:
+        return snapshot.get("trace_profile") == "ontology" or all(key in snapshot for key in ("preprocessing", "lexer", "intent"))
+
+    def _task_matches_profile(self, task: dict[str, Any]) -> bool:
+        profile = str(self._cga_trace_profile or "all").strip().lower()
+        if profile in {"", "all"}:
+            return True
+        return task.get("cga_trace_profile") == profile
+
+    def _record_matches_profile(self, record: dict[str, Any]) -> bool:
+        profile = str(self._cga_trace_profile or "all").strip().lower()
+        if profile in {"", "all"}:
+            return True
+        return self._record_trace_profile(record) == profile
+
+    def _record_trace_profile(self, record: dict[str, Any]) -> str:
+        snapshot = self._decode_generation_snapshot(record.get("input_prompt_snapshot") or "")
+        return "ontology" if self._is_ontology_cga_trace(snapshot) else "legacy"
 
     def _trace_object(self, value: Any) -> dict[str, Any]:
         return value if isinstance(value, dict) else {}
@@ -554,6 +619,14 @@ class RuntimeResultsService:
     ) -> list[dict[str, Any]]:
         if not self._is_cga_trace_v2(snapshot):
             return []
+        if self._is_ontology_cga_trace(snapshot):
+            return self._ontology_generation_trace_layers(
+                snapshot=snapshot,
+                source=source,
+                generation_status=generation_status,
+                failure_reason=failure_reason,
+                gate_passed=gate_passed,
+            )
 
         service_context = self._trace_object(snapshot.get("service_context"))
         intent_recognition = self._trace_object(snapshot.get("intent_recognition"))
@@ -741,6 +814,466 @@ class RuntimeResultsService:
             },
         ]
 
+    def _ontology_generation_trace_layers(
+        self,
+        *,
+        snapshot: dict[str, Any],
+        source: dict[str, Any],
+        generation_status: str,
+        failure_reason: Any,
+        gate_passed: bool,
+    ) -> list[dict[str, Any]]:
+        preprocessing = self._trace_object(snapshot.get("preprocessing"))
+        lexer = self._trace_object(snapshot.get("lexer"))
+        intent_output = self._trace_object(snapshot.get("intent"))
+        intent = self._trace_object(intent_output.get("intent"))
+        intent_details = self._intent_taxonomy_details(
+            str(intent.get("primary") or intent.get("primary_intent") or ""),
+            str(intent.get("secondary") or intent.get("secondary_intent") or ""),
+        )
+        object_role_selection = self._trace_object(snapshot.get("object_role_selection"))
+        ontology_mapping = self._trace_object(snapshot.get("ontology_mapping"))
+        ontology_path_selection = self._trace_object(snapshot.get("ontology_path_selection"))
+        coreference = self._trace_object(snapshot.get("coreference"))
+        binding = self._trace_object(snapshot.get("binding"))
+        shape_finalization = self._trace_object(snapshot.get("shape_finalization"))
+        validator = self._trace_object(snapshot.get("validator"))
+        compiler = self._trace_object(snapshot.get("compiler"))
+        mapping_categories = self._ontology_mapping_categories(ontology_mapping)
+        logical_plan = self._trace_object(shape_finalization.get("logical_plan") or shape_finalization.get("logical_plan_draft"))
+        core_question = preprocessing.get("core_question") or lexer.get("question")
+
+        return [
+            {
+                "key": "preprocessing",
+                "title_zh": "自然语言问题预处理",
+                "fields": [
+                    self._trace_field("原始问题", preprocessing.get("original_question") or source.get("question")),
+                    self._trace_field("输出给下一阶段的 core_question", core_question),
+                    self._trace_field("是否通过", "通过" if preprocessing.get("accepted") is True else "未通过"),
+                ],
+                "sections": [],
+            },
+            {
+                "key": "lexical",
+                "title_zh": "词法层",
+                "fields": [
+                    self._trace_field("输入 core_question", core_question),
+                    self._trace_field("mentions 摘要", self._mention_summary(lexer.get("mentions"))),
+                    self._trace_field("上下文信号摘要", self._signal_summary(lexer.get("context_signals"))),
+                    self._trace_field("答案形态信号摘要", self._signal_summary(lexer.get("shape_signals"))),
+                ],
+                "sections": [
+                    self._trace_section("词法层输出", lexer),
+                ],
+            },
+            {
+                "key": "intent_shape",
+                "title_zh": "意图识别与答案形态",
+                "fields": [
+                    self._trace_field("一层意图字段名称", intent.get("primary") or intent.get("primary_intent")),
+                    self._trace_field("一层意图中文解释", self._intent_explanation(intent_details.get("primary"))),
+                    self._trace_field("二层意图字段名称", intent.get("secondary") or intent.get("secondary_intent")),
+                    self._trace_field("二层意图中文解释", self._intent_explanation(intent_details.get("secondary"))),
+                    self._trace_field("最终意图来源阶段", intent.get("source")),
+                    self._trace_field("判定结果", self._intent_decision_label(str(intent.get("decision") or ""))),
+                    self._trace_field("置信度", intent.get("confidence")),
+                    self._trace_field("答案形态摘要", self._shape_summary(intent_output.get("initial_shape"))),
+                ],
+                "sections": [],
+            },
+            {
+                "key": "ontology",
+                "title_zh": "本体层",
+                "sections": [
+                    self._trace_step(
+                        "3.1 对象提取与角色标注",
+                        fields=[
+                            self._trace_field("对象候选", self._items_summary(object_role_selection.get("object_candidates"))),
+                            self._trace_field("角色标注", self._object_role_summary(object_role_selection)),
+                        ],
+                        blocks=[
+                            self._trace_section("输出", object_role_selection),
+                            self._trace_section("LLM 原始输入提示词", object_role_selection.get("llm_prompt") or "未触发"),
+                            self._trace_section("LLM 原始输出", object_role_selection.get("llm_raw_output") or "未触发"),
+                        ],
+                    ),
+                    self._trace_step(
+                        "3.2 Mention 映射到本体",
+                        fields=[
+                            self._trace_field("对象映射", self._ontology_item_summary(ontology_mapping.get("ontology_objects"))),
+                            self._trace_field("关系线索", self._ontology_item_summary(ontology_mapping.get("ontology_relation_hints"))),
+                            self._trace_field("属性映射", self._ontology_item_summary(ontology_mapping.get("ontology_attributes"))),
+                            self._trace_field("取值映射", self._ontology_item_summary(ontology_mapping.get("ontology_values"))),
+                        ],
+                        blocks=[
+                            self._trace_section("分类说明", mapping_categories),
+                            self._trace_section("输出", ontology_mapping),
+                        ],
+                    ),
+                    self._trace_step(
+                        "3.3 本体路径选择",
+                        fields=[
+                            self._trace_field("路径请求", self._items_summary(ontology_path_selection.get("path_requests"), keys=("request_id", "source_id", "target_id"))),
+                            self._trace_field("候选路径", self._items_summary(ontology_path_selection.get("candidate_paths"), keys=("path_id", "path_label", "relation_chain_type"))),
+                            self._trace_field("选中路径", self._selected_path_summary(ontology_path_selection.get("selected_paths"))),
+                        ],
+                        blocks=[
+                            self._trace_section("输出", ontology_path_selection),
+                            self._trace_section("LLM 原始输入提示词", ontology_path_selection.get("llm_prompt") or "未触发"),
+                            self._trace_section("LLM 原始输出", ontology_path_selection.get("llm_raw_output") or "未触发"),
+                        ],
+                    ),
+                    self._trace_step(
+                        "3.4 指代消解选择",
+                        fields=[
+                            self._trace_field("指代消解决策", self._coreference_summary(coreference.get("resolved_pairs"))),
+                            self._trace_field("未消解项", self._items_summary(coreference.get("unresolved_items"))),
+                            self._trace_field("合并节点", self._items_summary(coreference.get("merged_nodes"), keys=("node_id", "canonical_id", "surface"))),
+                        ],
+                        blocks=[
+                            self._trace_section(
+                                "输出",
+                                {
+                                    "resolved_pairs": coreference.get("resolved_pairs") or [],
+                                    "unresolved_items": coreference.get("unresolved_items") or [],
+                                    "merged_nodes": coreference.get("merged_nodes") or [],
+                                },
+                            ),
+                            self._trace_section("LLM 调用明细", self._coreference_llm_attempts(coreference) or "未触发"),
+                        ],
+                    ),
+                    self._trace_step(
+                        "3.5 字段绑定",
+                        fields=[
+                            self._trace_field("过滤绑定", self._binding_summary(binding.get("filters"))),
+                            self._trace_field("投影绑定", self._binding_summary(binding.get("projections"))),
+                            self._trace_field("未绑定项", self._items_summary(binding.get("unresolved_items"))),
+                        ],
+                        blocks=[
+                            self._trace_section("输出", binding),
+                        ],
+                    ),
+                    self._trace_step(
+                        "3.6 最终回填结构",
+                        fields=[
+                            self._trace_field("根操作", logical_plan.get("root_operation")),
+                            self._trace_field("投影字段", self._projection_summary(logical_plan)),
+                        ],
+                        blocks=[
+                            self._trace_section("Step 3 输出结构", shape_finalization),
+                        ],
+                    ),
+                ],
+            },
+            {
+                "key": "validation",
+                "title_zh": "校验层",
+                "fields": [
+                    self._trace_field(
+                        "校验结果",
+                        self._accepted_label(validator.get("accepted"), accepted="校验通过", rejected="校验未通过"),
+                    ),
+                    self._trace_field("校验项摘要", self._validation_checks_summary(validator.get("checks"))),
+                    self._trace_field("生成门禁", "生成门禁通过" if gate_passed else "生成门禁未通过"),
+                    self._trace_field("生成状态", snapshot.get("generation_status") or generation_status),
+                    self._trace_field("失败原因", self._generation_failure_label(str(failure_reason or ""))),
+                ],
+                "sections": [
+                    self._trace_section("校验明细", validator),
+                ],
+            },
+            {
+                "key": "compilation",
+                "title_zh": "编译层",
+                "fields": [
+                    self._trace_field("编译器类型", compiler.get("renderer_family")),
+                    self._trace_field("映射版本", compiler.get("mapping_version")),
+                    self._trace_field("物理 Schema 版本", compiler.get("physical_schema_version")),
+                    self._trace_field("节点物理绑定", self._binding_summary(compiler.get("physical_bindings"))),
+                    self._trace_field("属性物理绑定", self._binding_summary(compiler.get("attribute_bindings"))),
+                    self._trace_field("编译结果", "已输出 Cypher" if compiler.get("cypher") else "未输出 Cypher"),
+                    self._trace_field("Cypher 摘要", self._cypher_summary(compiler.get("cypher"))),
+                ],
+                "sections": [
+                    self._trace_section("编译输出 Cypher", compiler.get("cypher") or "未生成"),
+                    self._trace_section("编译层完整输出", compiler),
+                ],
+            },
+        ]
+
+    def _trace_section(self, title_zh: str, value: Any) -> dict[str, Any]:
+        return {"title_zh": title_zh, "value": value if value is not None else "未记录"}
+
+    def _trace_step(
+        self,
+        title_zh: str,
+        *,
+        fields: list[dict[str, Any]] | None = None,
+        blocks: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "title_zh": title_zh,
+            "fields": fields or [],
+            "blocks": blocks or [],
+        }
+
+    def _trace_count_dict(self, value: Any) -> str:
+        return f"{len(value)} 项" if isinstance(value, dict) else "0 项"
+
+    def _trace_list(self, value: Any) -> list[Any]:
+        return value if isinstance(value, list) else []
+
+    def _compact_text(self, value: Any) -> str:
+        if value is None or value == "":
+            return ""
+        return str(value)
+
+    def _summary_join(self, values: list[str], *, empty: str = "未记录", limit: int = 6) -> str:
+        clean_values = [value for value in values if value]
+        if not clean_values:
+            return empty
+        shown = clean_values[:limit]
+        suffix = f" 等 {len(clean_values)} 项" if len(clean_values) > limit else ""
+        return " / ".join(shown) + suffix
+
+    def _item_value(self, item: Any, keys: tuple[str, ...]) -> str:
+        if not isinstance(item, dict):
+            return self._compact_text(item)
+        for key in keys:
+            value = item.get(key)
+            if value is not None and value != "":
+                return self._compact_text(value)
+        return ""
+
+    def _items_summary(
+        self,
+        value: Any,
+        *,
+        keys: tuple[str, ...] = (
+            "surface",
+            "label_zh",
+            "label",
+            "name",
+            "node_id",
+            "candidate_id",
+            "canonical_id",
+            "id",
+            "value",
+        ),
+        empty: str = "未记录",
+        limit: int = 6,
+    ) -> str:
+        return self._summary_join([self._item_value(item, keys) for item in self._trace_list(value)], empty=empty, limit=limit)
+
+    def _mention_summary(self, mentions: Any) -> str:
+        values: list[str] = []
+        for mention in self._trace_list(mentions):
+            if not isinstance(mention, dict):
+                continue
+            label = self._item_value(mention, ("surface", "canonical_id", "mention_id", "id"))
+            mention_type = self._item_value(mention, ("mention_type", "type"))
+            values.append(f"{label}({mention_type})" if label and mention_type else label)
+        return self._summary_join(values)
+
+    def _signal_summary(self, signals: Any) -> str:
+        values: list[str] = []
+        for signal in self._trace_list(signals):
+            if not isinstance(signal, dict):
+                continue
+            text = self._item_value(signal, ("text", "surface", "label_zh", "label", "signal_id", "id"))
+            signal_type = self._item_value(signal, ("type", "signal_type"))
+            values.append(f"{text}({signal_type})" if text and signal_type else text)
+        return self._summary_join(values)
+
+    def _shape_summary(self, shape: Any) -> str:
+        if not isinstance(shape, dict):
+            return "未记录"
+        values: list[str] = []
+        for key, payload in shape.items():
+            if isinstance(payload, dict):
+                value = payload.get("value") or payload.get("label_zh") or payload.get("field") or payload.get("answer_type")
+            else:
+                value = payload
+            text = self._compact_text(value)
+            if text:
+                values.append(f"{key}={text}")
+        return self._summary_join(values)
+
+    def _object_role_summary(self, object_role_selection: dict[str, Any]) -> str:
+        role_selection = self._trace_object(object_role_selection.get("object_role_selection"))
+        values: list[str] = []
+        for item in self._trace_list(role_selection.get("selected_objects")):
+            if not isinstance(item, dict):
+                continue
+            label = self._item_value(item, ("surface", "candidate_id", "canonical_id", "object_id", "id"))
+            roles = item.get("roles")
+            if isinstance(roles, list):
+                role_text = ", ".join(str(role) for role in roles if role)
+            else:
+                role_text = self._compact_text(item.get("role"))
+            values.append(f"{label}: {role_text}" if label and role_text else label)
+        return self._summary_join(values)
+
+    def _ontology_item_summary(self, value: Any) -> str:
+        return self._items_summary(
+            value,
+            keys=(
+                "ontology_id",
+                "class_id",
+                "relation_id",
+                "attribute_id",
+                "value_id",
+                "canonical_id",
+                "field",
+                "attribute",
+                "relation",
+                "surface",
+                "mapping_id",
+                "id",
+            ),
+        )
+
+    def _selected_path_summary(self, value: Any) -> str:
+        values: list[str] = []
+        for item in self._trace_list(value):
+            if not isinstance(item, dict):
+                continue
+            request_id = self._item_value(item, ("request_id", "source_request_id"))
+            path_id = self._item_value(item, ("path_id", "selected_path_id", "candidate_path_id"))
+            if request_id and path_id:
+                values.append(f"{request_id} -> {path_id}")
+            else:
+                values.append(path_id or request_id)
+        return self._summary_join(values)
+
+    def _coreference_summary(self, value: Any) -> str:
+        values: list[str] = []
+        for item in self._trace_list(value):
+            if not isinstance(item, dict):
+                continue
+            pair_id = self._item_value(item, ("candidate_pair_id", "pair_id", "id"))
+            decision = self._item_value(item, ("decision", "label", "status"))
+            values.append(f"{pair_id}: {decision}" if pair_id and decision else pair_id or decision)
+        return self._summary_join(values)
+
+    def _binding_summary(self, value: Any) -> str:
+        if isinstance(value, dict):
+            values = [f"{key}={self._compact_text(item)}" for key, item in value.items() if self._compact_text(item)]
+            return self._summary_join(values)
+        values: list[str] = []
+        for item in self._trace_list(value):
+            if not isinstance(item, dict):
+                text = self._compact_text(item)
+                if text:
+                    values.append(text)
+                continue
+            result = self._trace_object(item.get("result"))
+            attribute = self._item_value(result, ("attribute", "field", "value", "expression", "name"))
+            alias = self._item_value(result, ("alias",))
+            if attribute:
+                values.append(f"{attribute} AS {alias}" if alias else attribute)
+                continue
+            values.append(self._item_value(item, ("attribute", "ontology_id", "field", "name", "path", "expression", "target", "physical_name", "id")))
+        if values:
+            return self._summary_join(values)
+        return self._items_summary(
+            value,
+            keys=("attribute", "ontology_id", "field", "name", "path", "expression", "target", "physical_name", "id"),
+        )
+
+    def _projection_summary(self, logical_plan: dict[str, Any]) -> str:
+        projections = logical_plan.get("projection") or logical_plan.get("projections")
+        return self._binding_summary(projections)
+
+    def _validation_checks_summary(self, value: Any) -> str:
+        values: list[str] = []
+        for item in self._trace_list(value):
+            if not isinstance(item, dict):
+                continue
+            name = self._item_value(item, ("name", "check", "id"))
+            accepted = item.get("accepted")
+            if accepted is True:
+                status = "通过"
+            elif accepted is False:
+                status = "未通过"
+            else:
+                status = self._item_value(item, ("status", "decision"))
+            values.append(f"{name}: {status}" if name and status else name or status)
+        return self._summary_join(values)
+
+    def _cypher_summary(self, value: Any) -> str:
+        cypher = self._compact_text(value).strip()
+        if not cypher:
+            return "未生成"
+        return " ".join(line.strip() for line in cypher.splitlines() if line.strip())
+
+    def _ontology_mapping_categories(self, ontology_mapping: dict[str, Any]) -> list[dict[str, Any]]:
+        definitions = {
+            "ontology_objects": "对象类或语义对象，表示后续查询围绕哪些业务实体展开。",
+            "ontology_relation_hints": "关系线索，表示 mention 指向的本体关系或路径连接提示。",
+            "ontology_attributes": "属性字段，表示要投影、过滤、排序或聚合的本体字段。",
+            "ontology_values": "属性值或枚举值，表示用户问题里的限定值。",
+            "evidence": "映射证据，记录 mention 到本体项的来源和中间判断。",
+        }
+        return [
+            {
+                "category": key,
+                "description_zh": description,
+                "items": ontology_mapping.get(key) if isinstance(ontology_mapping.get(key), list) else [],
+            }
+            for key, description in definitions.items()
+        ]
+
+    def _intent_taxonomy_details(self, primary: str, secondary: str) -> dict[str, Any]:
+        taxonomy_path = (
+            Path(__file__).resolve().parents[3]
+            / "services"
+            / "cypher_generator_agent"
+            / "resources"
+            / "runtime"
+            / "intent"
+            / "taxonomy.yaml"
+        )
+        try:
+            taxonomy = yaml.safe_load(taxonomy_path.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError):
+            taxonomy = {}
+        primary_payload: dict[str, Any] = {}
+        secondary_payload: dict[str, Any] = {}
+        intent_items = taxonomy.get("intents")
+        if not isinstance(intent_items, list):
+            intent_items = []
+        for item in intent_items:
+            if not isinstance(item, dict) or item.get("primary_intent") != primary:
+                continue
+            primary_payload = {
+                "field": primary,
+                "name_zh": item.get("name_zh"),
+                "description_zh": item.get("description"),
+            }
+            for secondary_item in item.get("secondary_intents", []) or []:
+                if isinstance(secondary_item, dict) and secondary_item.get("secondary_intent") == secondary:
+                    secondary_payload = {
+                        "field": secondary,
+                        "name_zh": secondary_item.get("name_zh"),
+                        "description_zh": secondary_item.get("description"),
+                    }
+                    break
+            break
+        return {
+            "primary_name_zh": primary_payload.get("name_zh") or "未记录",
+            "secondary_name_zh": secondary_payload.get("name_zh") or "未记录",
+            "primary": primary_payload or {"field": primary or "未记录", "description_zh": "未记录"},
+            "secondary": secondary_payload or {"field": secondary or "未记录", "description_zh": "未记录"},
+        }
+
+    def _intent_explanation(self, value: Any) -> str:
+        payload = value if isinstance(value, dict) else {}
+        name = str(payload.get("name_zh") or "未记录")
+        description = str(payload.get("description_zh") or "未记录")
+        return f"{name}\n说明：{description}"
+
     def _generation_llm_prompts(self, snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
         if self._is_cga_trace_v2(snapshot):
             return self._generation_llm_prompts_v2(snapshot)
@@ -778,6 +1311,9 @@ class RuntimeResultsService:
         }
 
     def _generation_llm_prompts_v2(self, snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        if self._is_ontology_cga_trace(snapshot):
+            return self._ontology_generation_llm_prompts(snapshot)
+
         intent_recognition = self._trace_object(snapshot.get("intent_recognition"))
         intent_diagnostics = self._trace_object(intent_recognition.get("diagnostics"))
         semantic_view_matching = self._trace_object(snapshot.get("semantic_view_matching"))
@@ -810,6 +1346,95 @@ class RuntimeResultsService:
                 generation.get("cypher_fallback_llm"),
             ),
         }
+
+    def _ontology_generation_llm_prompts(self, snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        intent_output = self._trace_object(snapshot.get("intent"))
+        intent_diagnostics = self._trace_object(intent_output.get("diagnostics"))
+        llm_stages = intent_diagnostics.get("llm_stages")
+        if not isinstance(llm_stages, list):
+            llm_stages = []
+        object_role_selection = self._trace_object(snapshot.get("object_role_selection"))
+        ontology_path_selection = self._trace_object(snapshot.get("ontology_path_selection"))
+        coreference = self._trace_object(snapshot.get("coreference"))
+        return {
+            "intent_primary_classification": self._llm_prompt_item_from_attempts(
+                "intent_primary_classification",
+                "一层意图 LLM 判定",
+                "一层意图 LLM 原始输出",
+                self._intent_stage_attempt(llm_stages, 0, "intent.primary"),
+            ),
+            "intent_secondary_classification": self._llm_prompt_item_from_attempts(
+                "intent_secondary_classification",
+                "二层意图 LLM 判定",
+                "二层意图 LLM 原始输出",
+                self._intent_stage_attempt(llm_stages, 1, "intent.secondary"),
+            ),
+            "object_role_selection": self._llm_prompt_item_from_attempts(
+                "object_role_selection",
+                "3.1 对象提取与角色标注 LLM 输入提示词",
+                "3.1 对象提取与角色标注 LLM 原始输出",
+                self._single_llm_attempt(
+                    "object_role_selection",
+                    object_role_selection.get("llm_prompt"),
+                    object_role_selection.get("llm_raw_output"),
+                ),
+            ),
+            "ontology_path_selection": self._llm_prompt_item_from_attempts(
+                "ontology_path_selection",
+                "3.3 本体路径选择 LLM 输入提示词",
+                "3.3 本体路径选择 LLM 原始输出",
+                self._single_llm_attempt(
+                    "ontology_path_selection",
+                    ontology_path_selection.get("llm_prompt"),
+                    ontology_path_selection.get("llm_raw_output"),
+                ),
+            ),
+            "coreference_selection": self._llm_prompt_item_from_attempts(
+                "coreference_selection",
+                "3.4 指代消解选择 LLM 输入提示词",
+                "3.4 指代消解选择 LLM 原始输出",
+                self._coreference_llm_attempts(coreference),
+            ),
+        }
+
+    def _intent_stage_attempt(self, stages: list[Any], index: int, stage_name: str) -> dict[str, Any] | None:
+        if index >= len(stages) or not isinstance(stages[index], dict):
+            return None
+        stage = stages[index]
+        return {
+            "call_id": f"{stage_name}-{index + 1}",
+            "stage": stage_name,
+            "prompt": stage.get("rendered_prompt"),
+            "raw_output": stage.get("raw_response"),
+            "parsed_output": {
+                "decision": stage.get("decision"),
+                "candidate_id": stage.get("candidate_id"),
+            },
+        }
+
+    def _single_llm_attempt(self, stage: str, prompt: Any, raw_output: Any) -> dict[str, Any] | None:
+        if not prompt and not raw_output:
+            return None
+        return {"call_id": stage, "stage": stage, "prompt": prompt, "raw_output": raw_output}
+
+    def _coreference_llm_attempts(self, coreference: dict[str, Any]) -> list[dict[str, Any]]:
+        traces = coreference.get("llm_decision_traces")
+        if not isinstance(traces, list):
+            return []
+        attempts: list[dict[str, Any]] = []
+        for index, trace in enumerate(traces, start=1):
+            if not isinstance(trace, dict):
+                continue
+            attempts.append(
+                {
+                    "call_id": trace.get("candidate_pair_id") or f"coreference-{index}",
+                    "stage": "coreference_selection",
+                    "prompt": trace.get("llm_prompt"),
+                    "raw_output": trace.get("llm_raw_output"),
+                    "parsed_output": trace.get("validated_output"),
+                }
+            )
+        return attempts
 
     def _llm_attempts_with_stage(self, raw_attempts: Any, stages: set[str]) -> list[dict[str, Any]]:
         attempts = self._llm_attempts(raw_attempts)
@@ -944,6 +1569,14 @@ class RuntimeResultsService:
         failure_reason: Any,
         gate_passed: bool,
     ) -> dict[str, Any]:
+        if self._is_ontology_cga_trace(snapshot):
+            return self._ontology_generation_chain_summary_v2(
+                snapshot=snapshot,
+                generation_status=generation_status,
+                failure_reason=failure_reason,
+                gate_passed=gate_passed,
+            )
+
         intent_recognition = self._trace_object(snapshot.get("intent_recognition"))
         intent = self._trace_object(intent_recognition.get("result"))
         semantic_view_matching = self._trace_object(snapshot.get("semantic_view_matching"))
@@ -1001,6 +1634,69 @@ class RuntimeResultsService:
                 "label_zh": self._accepted_label(preflight_accepted, accepted="预检通过", rejected="预检未通过"),
                 "reason": preflight.get("reason"),
                 "reason_label_zh": self._generation_failure_label(str(preflight.get("reason") or "")),
+            },
+        }
+
+    def _ontology_generation_chain_summary_v2(
+        self,
+        *,
+        snapshot: dict[str, Any],
+        generation_status: str,
+        failure_reason: Any,
+        gate_passed: bool,
+    ) -> dict[str, Any]:
+        intent_output = self._trace_object(snapshot.get("intent"))
+        intent = self._trace_object(intent_output.get("intent"))
+        validator = self._trace_object(snapshot.get("validator"))
+        compiler = self._trace_object(snapshot.get("compiler"))
+        reason = failure_reason
+        if not reason and validator.get("accepted") is False:
+            failed = [
+                item
+                for item in validator.get("checks", [])
+                if isinstance(item, dict) and item.get("accepted") is False
+            ]
+            reason = failed[0].get("reason") if failed else "validation_failed"
+        return {
+            "generation_status": {
+                "value": generation_status or None,
+                "label_zh": self._generation_status_label(generation_status),
+            },
+            "generation_mode": {
+                "value": "ontology_pipeline",
+                "label_zh": "本体分层生成链路",
+            },
+            "gate": {
+                "accepted": gate_passed,
+                "label_zh": "生成门禁通过" if gate_passed else "生成门禁未通过",
+            },
+            "failure_reason": {
+                "value": reason,
+                "label_zh": self._generation_failure_label(str(reason or "")),
+            },
+            "intent": {
+                "primary_intent": intent.get("primary"),
+                "secondary_intent": intent.get("secondary"),
+                "source": intent.get("source"),
+                "decision": intent.get("decision"),
+                "decision_label_zh": self._intent_decision_label(str(intent.get("decision") or "")),
+                "confidence": intent.get("confidence"),
+            },
+            "validation": {
+                "accepted": validator.get("accepted"),
+                "label_zh": self._accepted_label(validator.get("accepted"), accepted="Step 4 校验通过", rejected="Step 4 校验未通过"),
+                "diagnostics": validator.get("checks") or [],
+            },
+            "knowledge": {
+                "source": "ontology_assets",
+                "source_label_zh": "本体资产",
+                "selection_trace": [],
+            },
+            "preflight": {
+                "accepted": bool(compiler.get("cypher")),
+                "label_zh": "物理编排已输出" if compiler.get("cypher") else "物理编排未输出",
+                "reason": reason,
+                "reason_label_zh": self._generation_failure_label(str(reason or "")),
             },
         }
 

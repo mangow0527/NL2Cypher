@@ -1,0 +1,16 @@
+version: 1
+description: Structured literal patterns. Type inference is completed in Step 3.5 after attribute binding.
+
+patterns:
+  - canonical_id: LITERAL_RUNTIME
+    value_type: numeric_with_optional_unit
+    regex: "\\d+(?:\\.\\d+)?\\s*(?:ms|毫秒|s|秒|Mbps|Gbps|%)?"
+
+  - canonical_id: LITERAL_DATE
+    value_type: date
+    regex: "\\d{4}[-/年]\\d{1,2}(?:[-/月]\\d{1,2}日?)?"
+
+  - canonical_id: TIME_RECENT_N_DAYS
+    mention_type: TIME_EXPRESSION
+    value_type: relative_time
+    regex: "最近\\s*\\d+\\s*天"

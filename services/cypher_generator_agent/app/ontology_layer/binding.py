@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import re
 from typing import Any
 
-from .models import ContextSignal, IntentTrace, ShapeField
+from services.cypher_generator_agent.app.intent_layer.models import IntentOutput, InitialShapeField
+
+from .models import ContextSignal
 
 
 class BindingValidationError(ValueError):
@@ -27,9 +30,12 @@ class BindingCandidate:
     evidence_ids: tuple[str, ...]
     evidence: tuple[str, ...]
     value: Any = None
+    operator: str = "equals"
+    value_kind: str | None = None
+    value_literal: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "id": self.candidate_id,
             "kind": self.kind,
             "mapping_id": self.mapping_id,
@@ -43,7 +49,13 @@ class BindingCandidate:
             "evidence_ids": list(self.evidence_ids),
             "evidence": list(self.evidence),
             "value": self.value,
+            "operator": self.operator,
         }
+        if self.value_kind is not None:
+            payload["value_kind"] = self.value_kind
+        if self.value_literal is not None:
+            payload["value_literal"] = dict(self.value_literal)
+        return payload
 
 
 @dataclass(frozen=True)
@@ -76,14 +88,16 @@ class BindingItem:
 class BindingTrace:
     filters: tuple[BindingItem, ...]
     projections: tuple[BindingItem, ...]
-    shape_updates: dict[str, ShapeField]
+    shape_updates: dict[str, InitialShapeField]
     unresolved_items: tuple[dict[str, Any], ...]
+    metric_conditions: tuple[BindingItem, ...] = ()
     llm_raw_output: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "filters": [item.to_dict() for item in self.filters],
             "projections": [item.to_dict() for item in self.projections],
+            "metric_conditions": [item.to_dict() for item in self.metric_conditions],
             "shape_updates": {key: value.to_dict() for key, value in self.shape_updates.items()},
             "unresolved_items": [dict(item) for item in self.unresolved_items],
             "llm_raw_output": self.llm_raw_output,
@@ -102,8 +116,9 @@ class OntologyBindingService:
         candidate_family: dict[str, Any] | None,
         context_signals: tuple[ContextSignal, ...] | list[ContextSignal],
         shape_signals: tuple[ContextSignal, ...] | list[ContextSignal],
-        intent_trace: IntentTrace,
+        intent_output: IntentOutput,
         question: str,
+        unmatched_fragments: tuple[dict[str, Any], ...] | list[dict[str, Any]] = (),
     ) -> BindingTrace:
         nodes = _node_index(merged_nodes)
         family = candidate_family or {}
@@ -111,12 +126,37 @@ class OntologyBindingService:
         shape = tuple(shape_signals)
         filters: list[BindingItem] = []
         projections: list[BindingItem] = []
+        metric_conditions: list[BindingItem] = []
         unresolved: list[dict[str, Any]] = []
         llm_raw_output: str | None = None
         filter_index = 0
         projection_index = 0
+        binding_mappings = _binding_mappings(ontology_mapping)
+        predicate_mappings, predicate_attribute_mentions = _predicate_mappings(
+            question=question,
+            binding_mappings=binding_mappings,
+            ontology_mapping=ontology_mapping,
+            nodes=nodes,
+        )
 
-        for mapping in ontology_mapping.get("mapped_mentions", []):
+        for mapping in predicate_mappings:
+            filter_index += 1
+            candidates = _value_candidates(mapping, nodes, filter_index)
+            if not candidates:
+                unresolved.append(_unresolved(mapping, "missing_binding_candidate", "no owner node for composed predicate"))
+                continue
+            selected = _select_by_rules(candidates, context, shape)
+            item = _binding_item(
+                mapping,
+                "filter",
+                candidates,
+                selected,
+                "predicate_assembly",
+                "attribute operator literal predicate",
+            )
+            filters.append(item)
+
+        for mapping in binding_mappings:
             if not isinstance(mapping, dict):
                 continue
             kind = str(mapping.get("ontology_kind", ""))
@@ -128,23 +168,30 @@ class OntologyBindingService:
                     unresolved.append(_unresolved(mapping, "missing_binding_candidate", "no owner node for constrained attribute"))
                     continue
                 selected = _select_by_rules(candidates, context, shape)
-                filters.append(_binding_item(mapping, "filter", candidates, selected, "rule", "VALUE constrains_attribute"))
+                item_kind = "metric_condition" if mapping.get("condition_scope") == "metric_condition" else "filter"
+                item = _binding_item(mapping, item_kind, candidates, selected, "auto_single_candidate", "unique filter candidate")
+                if item_kind == "metric_condition":
+                    metric_conditions.append(item)
+                else:
+                    filters.append(item)
             elif mention_type == "ATTRIBUTE" or kind == "attribute":
+                if str(mapping.get("mention_id") or "") in predicate_attribute_mentions:
+                    continue
                 candidates, projection_index = _attribute_candidates(
                     mapping,
                     nodes,
                     family,
                     context,
                     shape,
-                    intent_trace,
+                    intent_output,
                     projection_index,
                 )
                 if not candidates:
                     unresolved.append(_unresolved(mapping, "missing_binding_candidate", "no owner node for attribute candidate"))
                     continue
                 selected = _select_by_rules(candidates, context, shape)
-                selected_by = "rule"
-                reason = "binding score"
+                selected_by = "auto_single_candidate" if selected is not None else "llm"
+                reason = "unique projection candidate" if selected is not None else "llm candidate selection"
                 if selected is None and self.llm_selector is not None and _has_local_signal(context, shape):
                     llm_selected, raw_or_reason = _select_with_llm(
                         self.llm_selector,
@@ -154,7 +201,7 @@ class OntologyBindingService:
                         context,
                         shape,
                     )
-                    llm_raw_output = raw_or_reason if raw_or_reason and raw_or_reason.lstrip().startswith("{") else llm_raw_output
+                    llm_raw_output = raw_or_reason or llm_raw_output
                     if llm_selected is None:
                         unresolved.append(_unresolved(mapping, "invalid_llm_binding", raw_or_reason or "invalid llm binding"))
                         continue
@@ -166,18 +213,49 @@ class OntologyBindingService:
                     continue
                 projections.append(_binding_item(mapping, "projection", candidates, selected, selected_by, reason))
 
+        for mapping in _runtime_literal_mappings(
+            question=question,
+            unmatched_fragments=tuple(unmatched_fragments),
+            ontology_mapping=ontology_mapping,
+            nodes=nodes,
+            intent_output=intent_output,
+        ):
+            filter_index += 1
+            candidates = _value_candidates(mapping, nodes, filter_index)
+            if not candidates:
+                unresolved.append(_unresolved(mapping, "missing_binding_candidate", "no owner node for runtime literal"))
+                continue
+            selected = _select_by_rules(candidates, context, shape)
+            item_kind = "metric_condition" if mapping.get("condition_scope") == "metric_condition" else "filter"
+            item = _binding_item(mapping, item_kind, candidates, selected, "auto_single_candidate", "unique runtime literal candidate")
+            if item_kind == "metric_condition":
+                metric_conditions.append(item)
+            else:
+                filters.append(item)
+
+        filter_level = "multi_predicate" if len(filters) > 1 else ("record_filter" if filters else "none")
         shape_updates = {
-            "filter_level": ShapeField(
-                value="record_filter" if filters else "none",
+            "filter_level": InitialShapeField(
+                value=filter_level,
                 source="binding",
                 decision="accept" if not any(item.get("blocking") for item in unresolved) else "clarify",
                 confidence=1.0 if filters else 0.8,
-                derived_from=tuple(item.result["value"] for item in filters if "value" in item.result),
+                derived_from=tuple(str(item.result["value"]) for item in filters if "value" in item.result),
             )
         }
+        quantifier_effects = _quantifier_effects_from_shape(shape)
+        if quantifier_effects:
+            shape_updates["quantifier_effects"] = InitialShapeField(
+                value=quantifier_effects,
+                source="binding.quantifier",
+                decision="accept",
+                confidence=1.0,
+                derived_from=tuple(item["mention_id"] for item in quantifier_effects),
+            )
         return BindingTrace(
             filters=tuple(filters),
             projections=tuple(projections),
+            metric_conditions=tuple(metric_conditions),
             shape_updates=shape_updates,
             unresolved_items=tuple(unresolved),
             llm_raw_output=llm_raw_output,
@@ -197,6 +275,358 @@ def _node_index(merged_nodes: Any) -> dict[str, str]:
     return nodes
 
 
+def _binding_mappings(ontology_mapping: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+    evidence_index = _evidence_index(ontology_mapping)
+    mappings: list[dict[str, Any]] = []
+    for item in ontology_mapping.get("ontology_values", []):
+        if not isinstance(item, dict):
+            continue
+        evidence = _first_evidence(item, evidence_index)
+        value_ref_id = item.get("value_ref_id") or item.get("value_id") or item.get("ontology_id")
+        ontology_id = item.get("ontology_id") or item.get("value_ontology_id") or item.get("value_id")
+        mappings.append(
+            {
+                "mapping_id": value_ref_id,
+                "mention_id": evidence.get("mention_id", ""),
+                "mention_type": "VALUE",
+                "surface": evidence.get("surface") or evidence.get("text") or "",
+                "span": evidence.get("span", [0, 0]),
+                "ontology_kind": "enum_value",
+                "ontology_id": ontology_id,
+                "constrains_attribute": item.get("constrains_attribute"),
+                "evidence_refs": item.get("evidence_refs", []),
+            }
+        )
+    for item in ontology_mapping.get("ontology_attributes", []):
+        if not isinstance(item, dict):
+            continue
+        evidence = _first_evidence(item, evidence_index)
+        attribute_ref_id = item.get("attribute_ref_id") or item.get("attribute_id") or item.get("ontology_id")
+        ontology_id = item.get("ontology_id") or item.get("attribute_ontology_id") or item.get("attribute_id")
+        attribute_candidates = item.get("attribute_candidates", [])
+        if not attribute_candidates and isinstance(ontology_id, str) and ontology_id:
+            attribute_candidates = [ontology_id]
+        mappings.append(
+            {
+                "mapping_id": attribute_ref_id,
+                "mention_id": evidence.get("mention_id", ""),
+                "mention_type": "ATTRIBUTE",
+                "surface": evidence.get("surface") or evidence.get("text") or "",
+                "span": evidence.get("span", [0, 0]),
+                "ontology_kind": "attribute",
+                "ontology_id": ontology_id,
+                "parent_class": item.get("parent_class"),
+                "attribute_candidates": attribute_candidates,
+                "evidence_refs": item.get("evidence_refs", []),
+            }
+        )
+    return tuple(mappings)
+
+
+def _predicate_mappings(
+    *,
+    question: str,
+    binding_mappings: tuple[dict[str, Any], ...],
+    ontology_mapping: dict[str, Any],
+    nodes: dict[str, str],
+) -> tuple[tuple[dict[str, Any], ...], set[str]]:
+    evidence = [dict(item) for item in ontology_mapping.get("evidence", []) if isinstance(item, dict)]
+    operators = [item for item in evidence if item.get("mention_type") == "COMPARISON_OPERATOR"]
+    literals = [item for item in evidence if item.get("mention_type") in {"LITERAL_VALUE", "TIME_EXPRESSION"}]
+    attributes = [item for item in binding_mappings if item.get("mention_type") == "ATTRIBUTE"]
+    mappings: list[dict[str, Any]] = []
+    used_attribute_mentions: set[str] = set()
+    for attribute_mapping in attributes:
+        attr_start, attr_end = _span(attribute_mapping)
+        operator = _nearest_structured_evidence(
+            question,
+            operators,
+            start_at=attr_end,
+            max_gap=4,
+        )
+        if operator is None:
+            continue
+        op_start, op_end = _span(operator)
+        literal = _nearest_structured_evidence(
+            question,
+            literals,
+            start_at=op_end,
+            max_gap=4,
+        )
+        if literal is None:
+            continue
+        attribute = _select_predicate_attribute(attribute_mapping, nodes)
+        if attribute is None:
+            continue
+        raw_literal = str(literal.get("surface") or (literal.get("metadata") or {}).get("raw") or "")
+        value_literal = _literal_for_attribute(raw_literal, attribute)
+        if value_literal is None:
+            continue
+        mappings.append(
+            {
+                "mapping_id": f"PC{len(mappings) + 1}",
+                "mention_id": str(attribute_mapping.get("mention_id") or ""),
+                "mention_type": "VALUE",
+                "surface": question[attr_start : _span(literal)[1]],
+                "span": [attr_start, _span(literal)[1]],
+                "ontology_kind": "literal_value",
+                "literal_value": value_literal["parsed"],
+                "raw_value": raw_literal,
+                "parsed_value": value_literal["parsed"],
+                "value_kind": "literal",
+                "value_literal": value_literal,
+                "operator": _operator_from_evidence(operator),
+                "constrains_attribute": attribute,
+                "evidence_refs": tuple(
+                    ref
+                    for ref in (
+                        *attribute_mapping.get("evidence_refs", ()),
+                        operator.get("evidence_id"),
+                        literal.get("evidence_id"),
+                    )
+                    if ref
+                ),
+                "composed_by": "predicate_assembly",
+            }
+        )
+        used_attribute_mentions.add(str(attribute_mapping.get("mention_id") or ""))
+    return tuple(mappings), used_attribute_mentions
+
+
+def _nearest_structured_evidence(
+    question: str,
+    evidence: list[dict[str, Any]],
+    *,
+    start_at: int,
+    max_gap: int,
+) -> dict[str, Any] | None:
+    candidates: list[dict[str, Any]] = []
+    for item in evidence:
+        span_start, _ = _span(item)
+        if span_start < start_at:
+            continue
+        if span_start - start_at > max_gap:
+            continue
+        if not _only_predicate_glue(question[start_at:span_start]):
+            continue
+        candidates.append(item)
+    return min(candidates, key=lambda item: _span(item)[0], default=None)
+
+
+def _only_predicate_glue(text: str) -> bool:
+    return not text or bool(re.fullmatch(r"[\s的为是:：,，]*", text))
+
+
+def _select_predicate_attribute(mapping: dict[str, Any], nodes: dict[str, str]) -> str | None:
+    refs = _attribute_refs(mapping, {})
+    available = [ref for ref in refs if "." in ref and ref.split(".", 1)[0] in nodes]
+    if len(available) == 1:
+        return available[0]
+    parent_class = mapping.get("parent_class")
+    if isinstance(parent_class, str):
+        candidate = next((ref for ref in available if ref.startswith(f"{parent_class}.")), None)
+        if candidate is not None:
+            return candidate
+    ontology_id = mapping.get("ontology_id")
+    if isinstance(ontology_id, str) and ontology_id in available:
+        return ontology_id
+    return None
+
+
+def _operator_from_evidence(evidence: dict[str, Any]) -> str:
+    metadata = evidence.get("metadata")
+    if isinstance(metadata, dict) and metadata.get("cypher_op"):
+        return str(metadata["cypher_op"])
+    return {
+        "OP_EQ": "=",
+        "OP_NE": "<>",
+        "OP_GT": ">",
+        "OP_GTE": ">=",
+        "OP_LT": "<",
+        "OP_LTE": "<=",
+        "OP_BETWEEN": "BETWEEN",
+    }.get(str(evidence.get("ontology_id") or ""), "=")
+
+
+def _literal_for_attribute(raw_literal: str, attribute: str) -> dict[str, Any] | None:
+    raw = raw_literal.strip()
+    if not raw:
+        return None
+    numeric = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([A-Za-z%]+|毫秒|秒)?", raw)
+    if numeric is not None:
+        parsed_number: int | float = float(numeric.group(1))
+        if parsed_number.is_integer():
+            parsed_number = int(parsed_number)
+        unit = numeric.group(2)
+        attr_name = attribute.rsplit(".", 1)[-1]
+        literal_type = "number"
+        normalized_unit = unit
+        if unit in {"ms", "毫秒"} or (unit is None and attr_name == "latency"):
+            literal_type = "duration_ms"
+            normalized_unit = "ms"
+        elif unit in {"Mbps", "Gbps"} or (unit is None and attr_name == "bandwidth"):
+            literal_type = "bandwidth_mbps"
+            normalized_unit = unit or "Mbps"
+            if unit == "Gbps":
+                parsed_number = parsed_number * 1000
+                if isinstance(parsed_number, float) and parsed_number.is_integer():
+                    parsed_number = int(parsed_number)
+                normalized_unit = "Mbps"
+        elif unit == "%":
+            literal_type = "percentage"
+        return {
+            "raw": raw,
+            "parsed": parsed_number,
+            "type": literal_type,
+            **({"unit": normalized_unit} if normalized_unit else {}),
+        }
+    return {"raw": raw, "parsed": raw.strip("\"'“”‘’"), "type": "string"}
+
+
+def _runtime_literal_mappings(
+    *,
+    question: str,
+    unmatched_fragments: tuple[dict[str, Any], ...],
+    ontology_mapping: dict[str, Any],
+    nodes: dict[str, str],
+    intent_output: IntentOutput,
+) -> tuple[dict[str, Any], ...]:
+    mappings: list[dict[str, Any]] = []
+    for literal_index, fragment in enumerate(_runtime_literal_fragments(question, unmatched_fragments), start=1):
+        literal = str(fragment["surface"])
+        span = fragment["span"]
+        owner = _nearest_role_condition_owner(question, int(span[0]), ontology_mapping, nodes)
+        if owner is None:
+            continue
+        owner_class, evidence_refs = owner
+        attribute = _runtime_literal_attribute(owner_class, literal)
+        if attribute is None:
+            continue
+        mappings.append(
+            {
+                "mapping_id": f"RL{literal_index}",
+                "mention_id": f"runtime_literal_{literal_index}",
+                "mention_type": "VALUE",
+                "surface": literal,
+                "span": [int(span[0]), int(span[1])],
+                "ontology_kind": "literal_value",
+                "literal_value": literal,
+                "raw_value": literal,
+                "constrains_attribute": attribute,
+                "evidence_refs": evidence_refs,
+                "condition_scope": "metric_condition" if _is_metric_condition_scope(intent_output) else "filter",
+            }
+        )
+    return tuple(mappings)
+
+
+def _runtime_literal_fragments(question: str, unmatched_fragments: tuple[dict[str, Any], ...]) -> tuple[dict[str, Any], ...]:
+    fragments: list[dict[str, Any]] = []
+    for fragment in unmatched_fragments:
+        if not isinstance(fragment, dict):
+            continue
+        surface = str(fragment.get("surface") or "")
+        span = fragment.get("span")
+        if not isinstance(span, (list, tuple)) or len(span) != 2:
+            continue
+        if _is_runtime_literal_value(surface):
+            fragments.append({"surface": surface, "span": [int(span[0]), int(span[1])]})
+    if fragments:
+        return tuple(fragments)
+    return tuple(
+        {"surface": match.group(0), "span": [match.start(), match.end()]}
+        for match in re.finditer(r"\b[A-Za-z][A-Za-z0-9]+_[A-Za-z0-9_]+\b", question)
+    )
+
+
+def _nearest_role_condition_owner(
+    question: str,
+    literal_start: int,
+    ontology_mapping: dict[str, Any],
+    nodes: dict[str, str],
+) -> tuple[str, list[str]] | None:
+    best: tuple[int, str, list[str]] | None = None
+    evidence_by_id = _evidence_index(ontology_mapping)
+    for hint in ontology_mapping.get("ontology_relation_hints", []):
+        if not isinstance(hint, dict) or not hint.get("role"):
+            continue
+        owner_class = str(hint.get("to_class") or hint.get("target_class") or "")
+        if not owner_class or owner_class not in nodes:
+            continue
+        refs = [str(ref) for ref in hint.get("evidence_refs", []) if ref]
+        evidence = next((evidence_by_id.get(ref) for ref in refs if evidence_by_id.get(ref)), None)
+        if evidence is None:
+            continue
+        span = evidence.get("span")
+        if not isinstance(span, (list, tuple)) or len(span) != 2:
+            continue
+        evidence_end = int(span[1])
+        if evidence_end > literal_start:
+            continue
+        between = question[evidence_end:literal_start]
+        if not re.search(r"(?:为|是|等于|=|:|：)\s*$", between):
+            continue
+        distance = literal_start - evidence_end
+        if best is None or distance < best[0]:
+            best = (distance, owner_class, refs)
+    if best is None:
+        return None
+    return best[1], best[2]
+
+
+def _runtime_literal_attribute(owner_class: str, literal: str) -> str | None:
+    value = literal.strip().strip("\"'“”‘’")
+    if value.startswith(f"{owner_class}_"):
+        return f"{owner_class}.id"
+    if re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", value):
+        return f"{owner_class}.ip_address"
+    if re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", value):
+        return f"{owner_class}.id"
+    return None
+
+
+def _is_runtime_literal_value(value: str) -> bool:
+    text = value.strip()
+    if not text:
+        return False
+    if any(char in text for char in "\"'“”‘’"):
+        return True
+    if re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", text):
+        return True
+    if re.fullmatch(r"[A-Za-z][A-Za-z0-9]+_[A-Za-z0-9_]+", text):
+        return True
+    if re.fullmatch(r"\d{4}[-/年]\d{1,2}(?:[-/月]\d{1,2}日?)?", text):
+        return True
+    if re.fullmatch(r"\d+(?:\.\d+)?(?:%|[A-Za-z]+|[个条次台])?", text):
+        return True
+    return False
+
+
+def _is_metric_condition_scope(intent_output: IntentOutput) -> bool:
+    return (
+        intent_output.intent.primary == "breakdown_query"
+        and intent_output.intent.secondary == "multi_metric_breakdown_query"
+    )
+
+
+def _evidence_index(ontology_mapping: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        str(item.get("evidence_id")): dict(item)
+        for item in ontology_mapping.get("evidence", [])
+        if isinstance(item, dict) and item.get("evidence_id")
+    }
+
+
+def _first_evidence(item: dict[str, Any], evidence_index: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    refs = item.get("evidence_refs")
+    if isinstance(refs, (list, tuple)):
+        for ref in refs:
+            evidence = evidence_index.get(str(ref))
+            if evidence is not None:
+                return evidence
+    return {}
+
+
 def _value_candidates(mapping: dict[str, Any], nodes: dict[str, str], index: int) -> tuple[BindingCandidate, ...]:
     attribute = mapping.get("constrains_attribute") or mapping.get("constrains_field")
     if not isinstance(attribute, str) or "." not in attribute:
@@ -206,7 +636,10 @@ def _value_candidates(mapping: dict[str, Any], nodes: dict[str, str], index: int
     if owner_node is None:
         return ()
     span_start, span_end = _span(mapping)
-    value = mapping.get("ontology_id") or mapping.get("literal_value") or mapping.get("raw_value")
+    value = mapping.get("parsed_value") if "parsed_value" in mapping else mapping.get("ontology_id") or mapping.get("literal_value") or mapping.get("raw_value")
+    value_kind = str(mapping.get("value_kind") or ("literal" if mapping.get("ontology_kind") == "literal_value" else "enum"))
+    value_literal = mapping.get("value_literal")
+    evidence_refs = tuple(str(ref) for ref in mapping.get("evidence_refs", []) if ref)
     return (
         BindingCandidate(
             candidate_id=f"bc_filter_{index}",
@@ -220,9 +653,12 @@ def _value_candidates(mapping: dict[str, Any], nodes: dict[str, str], index: int
             owner_node=owner_node,
             owner_class=owner_class,
             score=150,
-            evidence_ids=(),
+            evidence_ids=evidence_refs,
             evidence=("constrains_attribute", "owner_node_exists"),
             value=value,
+            operator=str(mapping.get("operator") or "equals"),
+            value_kind=value_kind,
+            value_literal=dict(value_literal) if isinstance(value_literal, dict) else None,
         ),
     )
 
@@ -233,10 +669,12 @@ def _attribute_candidates(
     candidate_family: dict[str, Any],
     context_signals: tuple[ContextSignal, ...],
     shape_signals: tuple[ContextSignal, ...],
-    intent_trace: IntentTrace,
+    intent_output: IntentOutput,
     start_index: int,
 ) -> tuple[tuple[BindingCandidate, ...], int]:
+    projection_owner_context = _projection_owner_context(mapping, nodes, context_signals)
     refs = _attribute_refs(mapping, candidate_family)
+    refs = _refs_with_projection_owner_type(refs, nodes, projection_owner_context)
     single = len(refs) == 1
     candidates: list[BindingCandidate] = []
     for attribute in refs:
@@ -254,7 +692,8 @@ def _attribute_candidates(
             single,
             context_signals,
             shape_signals,
-            intent_trace,
+            intent_output,
+            projection_owner_context,
         )
         span_start, span_end = _span(mapping)
         candidates.append(
@@ -290,6 +729,85 @@ def _attribute_refs(mapping: dict[str, Any], candidate_family: dict[str, Any]) -
     return (str(ontology_id),) if ontology_id else ()
 
 
+def _refs_with_projection_owner_type(
+    refs: tuple[str, ...],
+    nodes: dict[str, str],
+    projection_owner_context: dict[str, str],
+) -> tuple[str, ...]:
+    if not any(ref.endswith(".elem_type") for ref in refs):
+        return refs
+    result = list(refs)
+    for owner_class in projection_owner_context:
+        if owner_class not in nodes:
+            continue
+        candidate = f"{owner_class}.elem_type"
+        if candidate not in result:
+            result.append(candidate)
+    return tuple(result)
+
+
+def _projection_owner_context(
+    mapping: dict[str, Any],
+    nodes: dict[str, str],
+    context_signals: tuple[ContextSignal, ...],
+) -> dict[str, str]:
+    surface = str(mapping.get("surface") or "")
+    span_start, span_end = _span(mapping)
+    owners: dict[str, str] = {}
+    for signal in context_signals:
+        if signal.signal_type != "PROXIMAL_MODIFIER":
+            continue
+        if signal.span_start > span_start or signal.span_end < span_end:
+            continue
+        if surface and surface not in signal.text:
+            continue
+        if "的" not in signal.text:
+            continue
+        subject, projection_tail = signal.text.split("的", 1)
+        if surface and surface in projection_tail:
+            before_surface = projection_tail.split(surface, 1)[0]
+            if _has_intermediate_owner(before_surface):
+                continue
+        for class_id in nodes:
+            if class_id not in signal.supports:
+                continue
+            if _subject_mentions_class(subject, class_id):
+                owners[class_id] = signal.signal_id
+    return owners
+
+
+def _has_intermediate_owner(text: str) -> bool:
+    return any(
+        token in text
+        for token in (
+            "源网元",
+            "目的网元",
+            "网元",
+            "设备",
+            "端口",
+            "接口",
+            "隧道",
+            "链路",
+            "光纤",
+            "协议",
+        )
+    )
+
+
+def _subject_mentions_class(subject: str, class_id: str) -> bool:
+    normalized = subject.strip().strip("所有全部各个每个这些那些")
+    aliases = {
+        "Service": ("服务", "业务"),
+        "Tunnel": ("隧道",),
+        "NetworkElement": ("源网元", "目的网元", "网元", "设备"),
+        "Port": ("端口", "接口"),
+        "Protocol": ("协议",),
+        "Fiber": ("光纤",),
+        "Link": ("链路",),
+    }.get(class_id, (class_id,))
+    return any(normalized.endswith(alias) for alias in aliases)
+
+
 def _score_attribute_candidate(
     mapping: dict[str, Any],
     attribute: str,
@@ -297,10 +815,11 @@ def _score_attribute_candidate(
     single: bool,
     context_signals: tuple[ContextSignal, ...],
     shape_signals: tuple[ContextSignal, ...],
-    intent_trace: IntentTrace,
+    intent_output: IntentOutput,
+    projection_owner_context: dict[str, str],
 ) -> tuple[int, list[str], list[str]]:
     score = 0
-    evidence_ids: list[str] = []
+    evidence_ids: list[str] = [str(ref) for ref in mapping.get("evidence_refs", []) if ref]
     evidence: list[str] = []
     if single:
         score += 100
@@ -319,9 +838,13 @@ def _score_attribute_candidate(
             evidence_ids.append(signal.signal_id)
             evidence.append(signal.signal_type)
             break
-    if _shape_mentions_attribute(intent_trace, attribute):
+    if _shape_mentions_attribute(intent_output, attribute):
         score += 30
         evidence.append("intent_shape_field")
+    if attribute.endswith(".elem_type") and owner_class in projection_owner_context:
+        score += 120
+        evidence_ids.append(projection_owner_context[owner_class])
+        evidence.append("projection_owner_context")
     return score, evidence_ids, evidence
 
 
@@ -330,18 +853,14 @@ def _select_by_rules(
     context_signals: tuple[ContextSignal, ...],
     shape_signals: tuple[ContextSignal, ...],
 ) -> BindingCandidate | None:
+    del context_signals, shape_signals
+    projection_owner_candidates = [
+        item for item in candidates if "projection_owner_context" in item.evidence and item.owner_node
+    ]
+    if len(projection_owner_candidates) == 1:
+        return projection_owner_candidates[0]
     if len(candidates) == 1 and candidates[0].owner_node:
         return candidates[0]
-    ordered = sorted(candidates, key=lambda item: item.score, reverse=True)
-    if ordered and ordered[0].score >= 80 and (len(ordered) == 1 or ordered[0].score - ordered[1].score >= 20):
-        return ordered[0]
-    supported = [
-        candidate
-        for candidate in candidates
-        if any(_signal_supports(signal, candidate.attribute, candidate.owner_class, candidate.candidate_id) for signal in (*context_signals, *shape_signals))
-    ]
-    if len(supported) == 1 and supported[0].score >= 80:
-        return supported[0]
     return None
 
 
@@ -368,9 +887,12 @@ def _select_with_llm(
     raw = str(getattr(result, "raw_response", ""))
     parsed = getattr(result, "parsed", None)
     if not isinstance(parsed, dict):
-        parsed = _parse_first_json_object(raw)
+        try:
+            parsed = _parse_first_json_object(raw)
+        except BindingValidationError:
+            parsed = _parse_binding_selection_text(raw)
     try:
-        selected_id, signal_id = _validate_llm_output(parsed, raw, mapping, narrowed, (*context_signals, *shape_signals))
+        selected_id = _validate_llm_output(parsed, raw, narrowed)
     except BindingValidationError as exc:
         return None, str(exc)
     selected = next(item for item in narrowed if item.candidate_id == selected_id)
@@ -380,28 +902,17 @@ def _select_with_llm(
 def _validate_llm_output(
     parsed: dict[str, Any],
     raw: str,
-    mapping: dict[str, Any],
     candidates: tuple[BindingCandidate, ...],
-    signals: tuple[ContextSignal, ...],
-) -> tuple[str, str]:
+) -> str:
     if parsed.get("decision") != "accept":
         raise BindingValidationError(str(parsed.get("reason") or "llm requested clarification"))
     candidate_id = str(parsed.get("candidate_id"))
-    signal_id = str(parsed.get("signal_id"))
     candidate = next((item for item in candidates if item.candidate_id == candidate_id), None)
     if candidate is None:
         raise BindingValidationError(f"unknown candidate_id: {candidate_id}")
-    signal = next((item for item in signals if item.signal_id == signal_id), None)
-    if signal is None:
-        raise BindingValidationError(f"unknown signal_id: {signal_id}")
-    if not _signal_supports(signal, candidate.attribute, candidate.owner_class, candidate.candidate_id):
-        raise BindingValidationError(f"signal {signal_id} does not support candidate {candidate_id}")
-    span_start, span_end = _span(mapping)
-    if parsed.get("span_start") != span_start or parsed.get("span_end") != span_end:
-        raise BindingValidationError("span_start/span_end do not match bound mention")
     if not raw:
         raise BindingValidationError("missing llm_raw_output")
-    return candidate_id, signal_id
+    return candidate_id
 
 
 def _binding_item(
@@ -412,23 +923,28 @@ def _binding_item(
     selected_by: str,
     reason: str,
 ) -> BindingItem:
-    if kind == "filter":
+    if kind in {"filter", "metric_condition"}:
         result = {
             "node": selected.owner_node,
             "attribute": selected.attribute,
-            "operator": "equals",
+            "operator": selected.operator,
             "value": selected.value,
         }
+        if selected.value_kind is not None:
+            result["value_kind"] = selected.value_kind
+        if selected.value_literal is not None:
+            result["value_literal"] = dict(selected.value_literal)
     else:
+        attribute = _projection_attribute(selected)
         result = {
             "node": selected.owner_node,
-            "attribute": selected.attribute,
-            "alias": _projection_alias(selected.attribute),
+            "attribute": attribute,
+            "alias": _projection_alias(attribute),
         }
     return BindingItem(
         item=f"{mapping.get('surface', '')}@{selected.span_start}-{selected.span_end}",
         kind=kind,
-        candidates=(selected,) if kind == "projection" and selected_by == "rule" else candidates,
+        candidates=(selected,) if kind == "projection" and selected_by == "auto_single_candidate" else candidates,
         selected=selected.candidate_id,
         decision="accept",
         result=result,
@@ -438,8 +954,22 @@ def _binding_item(
     )
 
 
+def _projection_attribute(selected: BindingCandidate) -> str:
+    owner, attr = selected.attribute.split(".", 1)
+    if attr == "id" and _is_internal_id_surface(selected.surface):
+        return f"{owner}.__internal_id"
+    return selected.attribute
+
+
+def _is_internal_id_surface(surface: str) -> bool:
+    text = surface.replace(" ", "")
+    return "内部ID" in text or "内部id" in text
+
+
 def _projection_alias(attribute: str) -> str:
     owner, attr = attribute.split(".", 1)
+    if attr == "__internal_id":
+        return "id"
     prefix = {"Service": "service", "Tunnel": "tunnel", "NetworkElement": "source_ne", "Port": "port", "Protocol": "protocol"}.get(
         owner, owner.lower()
     )
@@ -454,8 +984,8 @@ def _in_projection_region(mapping: dict[str, Any], shape_signals: tuple[ContextS
     return False
 
 
-def _shape_mentions_attribute(intent_trace: IntentTrace, attribute: str) -> bool:
-    for value in intent_trace.shape.values():
+def _shape_mentions_attribute(intent_output: IntentOutput, attribute: str) -> bool:
+    for value in intent_output.initial_shape.values():
         payload = value.value
         if payload == attribute:
             return True
@@ -466,6 +996,30 @@ def _shape_mentions_attribute(intent_trace: IntentTrace, attribute: str) -> bool
 
 def _has_local_signal(context_signals: tuple[ContextSignal, ...], shape_signals: tuple[ContextSignal, ...]) -> bool:
     return bool(context_signals or shape_signals)
+
+
+def _quantifier_effects_from_shape(shape_signals: tuple[ContextSignal, ...]) -> list[dict[str, Any]]:
+    effects: list[dict[str, Any]] = []
+    for signal in shape_signals:
+        supports = tuple(str(value) for value in signal.supports)
+        if "quantifier" not in supports:
+            continue
+        canonical_id = next((value for value in supports if value.startswith("QUANT_")), "")
+        if not canonical_id:
+            continue
+        semantic = next(
+            (value for value in ("no_implicit_filter", "not_exists", "existential_scope") if value in supports),
+            "",
+        )
+        effects.append(
+            {
+                "mention_id": signal.signal_id,
+                "canonical_id": canonical_id,
+                "semantic": semantic,
+                "affects_intent": "affects_intent" in supports,
+            }
+        )
+    return effects
 
 
 def _signal_supports(signal: ContextSignal, attribute: str, owner_class: str, candidate_id: str) -> bool:
@@ -533,6 +1087,21 @@ def _parse_first_json_object(raw_response: str) -> dict[str, Any]:
     raise BindingValidationError("response JSON object is incomplete")
 
 
+def _parse_binding_selection_text(raw_response: str) -> dict[str, Any]:
+    for line in raw_response.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("需要澄清"):
+            reason = line.split("：", 1)[1].strip() if "：" in line else line.removeprefix("需要澄清").strip(" :：")
+            return {"decision": "clarify", "candidate_id": None, "reason": reason or "绑定候选不足以判断。"}
+        match = re.search(r"选择\s*([A-Za-z0-9_]+)\s*(?:[。.]|[：:])?\s*理由\s*[：:]\s*(.*)", line)
+        if match:
+            return {"decision": "accept", "candidate_id": match.group(1), "reason": match.group(2).strip()}
+        raise BindingValidationError(f"unrecognized binding selection line: {line}")
+    raise BindingValidationError("binding selection output is empty")
+
+
 def _span(mapping: dict[str, Any]) -> tuple[int, int]:
     span = mapping.get("span")
     if isinstance(span, (list, tuple)) and len(span) == 2:
@@ -543,10 +1112,12 @@ def _span(mapping: dict[str, Any]) -> tuple[int, int]:
 def _unresolved(mapping: dict[str, Any], reason_code: str, reason: str) -> dict[str, Any]:
     return {
         "id": f"u_{mapping.get('mapping_id', mapping.get('mention_id', 'binding'))}",
-        "source_stage": "step_2_5",
+        "source_stage": "step_3_5",
         "reason_code": reason_code,
+        "suggested_error_type": "ClarificationNeeded",
         "blocking": True,
         "surface": mapping.get("surface"),
         "span": list(_span(mapping)),
+        "message": reason,
         "reason": reason,
     }

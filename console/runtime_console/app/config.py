@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     repair_service_base_url: str = "http://127.0.0.1:8002"
     knowledge_agent_base_url: str = "http://127.0.0.1:8010"
     qa_generator_base_url: str = "http://127.0.0.1:8020"
+    cga_trace_profile: str = "all"
 
     model_config = SettingsConfigDict(
         env_prefix="RUNTIME_RESULTS_SERVICE_",

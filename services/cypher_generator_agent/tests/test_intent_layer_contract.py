@@ -1,15 +1,20 @@
-from services.cypher_generator_agent.app.ontology_layer.intent_classification.ontology import OntologyIntentClassifier
-from services.cypher_generator_agent.app.ontology_layer.intent_classification.recognition import (
+import re
+
+from services.cypher_generator_agent.app.intent_layer.layer import IntentLayer
+from services.cypher_generator_agent.app.intent_layer.recognition import (
     IntentRecognitionResult,
     IntentRule,
     RuleBasedIntentRecognizer,
 )
 from services.cypher_generator_agent.app.ontology_layer.models import ContextSignal
+from services.cypher_generator_agent.app.intent_layer.models import Intent, IntentOutput, InitialShapeField
 from services.cypher_generator_agent.app.infrastructure import resource_paths
 from services.cypher_generator_agent.app.runtime_pipeline import OntologyGenerationPipeline
 from services.cypher_generator_agent.app.ontology_layer.assets import OntologyAssets
 from services.cypher_generator_agent.app.ontology_layer.object_role_selection import OntologyObjectRoleSelectionService
-from services.cypher_generator_agent.app.ontology_layer.models import IntentIdentity, IntentTrace, ShapeField
+from services.cypher_generator_agent.app.ontology_layer.binding import OntologyBindingService
+from services.cypher_generator_agent.app.ontology_layer.coreference import OntologyCoreferenceService
+from services.cypher_generator_agent.app.ontology_layer.logical_planning import OntologyLogicalPlanningService
 
 import yaml
 
@@ -23,6 +28,31 @@ def _shape_signal(signal_id: str, *supports: str) -> ContextSignal:
         span_end=0,
         supports=tuple(supports),
     )
+
+
+class _SameInstanceCoreferenceSelector:
+    def select(self, prompt_name: str, variables: dict[str, object]):
+        class Selection:
+            raw_response = "选择 C1。理由：fixture"
+
+        assert prompt_name == "coreference_selection"
+        return Selection()
+
+
+class _TunnelNameBindingSelector:
+    def select(self, prompt_name: str, variables: dict[str, object]):
+        candidate_lines = str(variables.get("binding_candidate_list_with_ids") or "")
+        match = re.search(r"(bc_[A-Za-z0-9_]+):[^\n]*attribute=Tunnel\.name", candidate_lines)
+        if match is None:
+            match = re.search(r"(bc_[A-Za-z0-9_]+):", candidate_lines)
+        if match is None:
+            raise AssertionError("binding fixture did not receive candidates")
+
+        class Selection:
+            raw_response = f"选择 {match.group(1)}。理由：fixture"
+
+        assert prompt_name == "binding_selection"
+        return Selection()
 
 
 def test_rule_shape_gate_uses_shape_signals_for_accept_and_reject() -> None:
@@ -86,9 +116,9 @@ def test_classifier_consumes_core_question_and_shape_signals_without_mention_dri
 
     recognizer = Recognizer()
     shape_signals = (_shape_signal("S1", "answer_projection_region"),)
-    classifier = OntologyIntentClassifier(recognizer=recognizer)
+    classifier = IntentLayer(recognizer=recognizer)
 
-    trace = classifier.classify(
+    trace = classifier.run(
         core_question="查询服务经过的隧道，返回名称",
         shape_signals=shape_signals,
     )
@@ -97,13 +127,46 @@ def test_classifier_consumes_core_question_and_shape_signals_without_mention_dri
     assert recognizer.seen_shape_signals == shape_signals
     assert trace.intent.primary == "record_retrieval_query"
     assert trace.intent.secondary == "related_record_query"
-    assert "requires_path" not in trace.shape
-    assert trace.shape["answer_type"].value == "attribute_table"
-    assert trace.shape["projection_expected"].value is True
-    assert trace.shape["relation_resolution_expected"].value is True
-    assert trace.shape["relation_resolution_expected"].pending_until == "step_2_3"
-    assert trace.shape["path_answer_required"].value is False
-    assert "查询相关记录" in trace.diagnostics["planning_prompt_text"]
+    assert "requires_path" not in trace.initial_shape
+    assert trace.initial_shape["answer_type"].value == "attribute_table"
+    assert trace.initial_shape["projection_expected"].value is True
+    assert trace.initial_shape["relation_resolution_expected"].value is True
+    assert trace.initial_shape["relation_resolution_expected"].pending_until == "step_3_3"
+    assert trace.initial_shape["path_answer_required"].value is False
+    assert "查询相关记录" in trace.planning_prompt_text
+
+
+def test_classifier_consumes_quantifier_shape_signal_without_changing_all_scope_intent() -> None:
+    class Recognizer:
+        def recognize(self, question: str, *, shape_signals=()):
+            return IntentRecognitionResult(
+                primary_intent="record_retrieval_query",
+                secondary_intent="attribute_projection_query",
+                confidence=0.91,
+                source="rule",
+                decision="accept",
+            )
+
+    quantifier_signal = _shape_signal("S2", "quantifier", "QUANT_ALL", "no_implicit_filter", "explicit_only_no_implicit")
+    classifier = IntentLayer(recognizer=Recognizer())
+
+    trace = classifier.run(
+        core_question="查询所有金牌服务的ID",
+        shape_signals=(quantifier_signal,),
+    )
+
+    assert trace.intent.primary == "record_retrieval_query"
+    assert trace.intent.secondary == "attribute_projection_query"
+    assert trace.initial_shape["filter_level_hint"].value == "explicit_only_no_implicit"
+    assert trace.initial_shape["filter_level_hint"].derived_from == ("S2",)
+    assert trace.initial_shape["quantifier_effects"].value == [
+        {
+            "mention_id": "S2",
+            "canonical_id": "QUANT_ALL",
+            "semantic": "no_implicit_filter",
+            "affects_intent": False,
+        }
+    ]
 
 
 def test_classifier_unknown_intent_outputs_machine_readable_clarify_fields() -> None:
@@ -117,9 +180,9 @@ def test_classifier_unknown_intent_outputs_machine_readable_clarify_fields() -> 
                 decision="fallback_llm",
             )
 
-    classifier = OntologyIntentClassifier(recognizer=UncertainRecognizer())
+    classifier = IntentLayer(recognizer=UncertainRecognizer())
 
-    trace = classifier.classify(core_question="帮我看看这个业务是不是正常")
+    trace = classifier.run(core_question="帮我看看这个业务是不是正常")
     payload = trace.to_dict()
 
     assert payload["intent"]["primary"] == "unknown"
@@ -159,38 +222,39 @@ def test_pipeline_passes_only_core_question_and_shape_signals_to_intent_classifi
             self.core_question = None
             self.shape_signal_supports = ()
 
-        def classify(self, *, core_question: str, shape_signals: tuple[ContextSignal, ...]) -> IntentTrace:
+        def run(self, *, core_question: str, shape_signals: tuple[ContextSignal, ...]) -> IntentOutput:
             self.core_question = core_question
             self.shape_signal_supports = tuple(signal.supports for signal in shape_signals)
-            return IntentTrace(
-                intent=IntentIdentity(
+            return IntentOutput(
+                intent=Intent(
                     primary="record_retrieval_query",
                     secondary="related_record_query",
                     source="rule",
                     decision="accept",
                     confidence=0.9,
                 ),
-                shape={
-                    "answer_type": ShapeField(
+                planning_prompt_text="用户想查询相关记录，并返回某些字段。这个问题里既有过滤条件，也有对象之间的关系。",
+                initial_shape={
+                    "answer_type": InitialShapeField(
                         value="attribute_table",
                         source="taxonomy.secondary.default_answer_type",
                         decision="accept",
                         confidence=1.0,
                     ),
-                    "projection_expected": ShapeField(
+                    "projection_expected": InitialShapeField(
                         value=True,
                         source="taxonomy.secondary.shape_profile",
                         decision="accept",
                         confidence=1.0,
                     ),
-                    "relation_resolution_expected": ShapeField(
+                    "relation_resolution_expected": InitialShapeField(
                         value=True,
                         source="taxonomy.secondary.shape_profile",
                         decision="pending",
                         confidence=0.8,
-                        pending_until="step_2_3",
+                        pending_until="step_3_3",
                     ),
-                    "path_answer_required": ShapeField(
+                    "path_answer_required": InitialShapeField(
                         value=False,
                         source="taxonomy.primary.shape_profile",
                         decision="accept",
@@ -199,9 +263,7 @@ def test_pipeline_passes_only_core_question_and_shape_signals_to_intent_classifi
                 },
                 candidates=(),
                 rule_signals_used=(),
-                diagnostics={
-                    "planning_prompt_text": "用户想查询相关记录，并返回某些字段。这个问题里既有过滤条件，也有对象之间的关系。"
-                },
+                diagnostics={},
             )
 
     classifier = SpyClassifier()
@@ -217,10 +279,16 @@ def test_pipeline_passes_only_core_question_and_shape_signals_to_intent_classifi
             assert prompt_name == "object_role_selection"
             return Selection()
 
+    assets = OntologyAssets.from_default_resources()
     pipeline = OntologyGenerationPipeline(
-        assets=OntologyAssets.from_default_resources(),
-        intent_classifier=classifier,  # type: ignore[arg-type]
+        assets=assets,
+        intent_layer=classifier,  # type: ignore[arg-type]
         object_role_selection_service=OntologyObjectRoleSelectionService(llm_selector=ObjectRoleSelector()),
+        logical_planning_service=OntologyLogicalPlanningService(
+            assets=assets,
+            coreference_service=OntologyCoreferenceService(llm_selector=_SameInstanceCoreferenceSelector()),
+            binding_service=OntologyBindingService(llm_selector=_TunnelNameBindingSelector()),
+        ),
     )
 
     result = pipeline.generate("查询金牌服务使用的隧道名称", trace_id="trace-intent-input")
@@ -272,9 +340,9 @@ def test_llm_fallback_selects_primary_then_secondary_intent() -> None:
             return Selection()
 
     selector = LayeredSelector()
-    classifier = OntologyIntentClassifier(recognizer=UncertainRecognizer(), llm_selector=selector)
+    classifier = IntentLayer(recognizer=UncertainRecognizer(), llm_selector=selector)
 
-    trace = classifier.classify(
+    trace = classifier.run(
         core_question="查询服务经过的隧道，返回名称",
         shape_signals=(_shape_signal("S1", "answer_projection_region"),),
     )

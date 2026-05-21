@@ -11,13 +11,11 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(REPO_ROOT))
 
 from services.cypher_generator_agent.app.ontology_layer.object_role_selection import OntologyObjectRoleSelectionService
+from services.cypher_generator_agent.app.intent_layer.models import Intent, IntentOutput, InitialShapeField
 from services.cypher_generator_agent.app.ontology_layer.models import (
     ContextSignal,
-    IntentIdentity,
-    IntentTrace,
     LexerTrace,
     Mention,
-    ShapeField,
 )
 
 
@@ -32,18 +30,18 @@ class FixtureSelector:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Replay Step 2.1 object role selection from a JSON fixture.")
+    parser = argparse.ArgumentParser(description="Replay Step 3.1 object role selection from a JSON fixture.")
     parser.add_argument(
         "fixture",
         nargs="?",
-        default="services/cypher_generator_agent/examples/step_2_1_object_role_selection_input.json",
+        default="services/cypher_generator_agent/examples/step_3_1_object_role_selection_input.json",
     )
     args = parser.parse_args()
     payload = json.loads(Path(args.fixture).read_text(encoding="utf-8"))
     service = OntologyObjectRoleSelectionService(llm_selector=FixtureSelector(str(payload["llm_raw_output"])))
     trace = service.select(
         lexer_trace=_lexer_trace(payload["lexer_output"]),
-        intent_trace=_intent_trace(payload["step_2_0"]),
+        intent_output=_intent_output(payload["step_2_0"]),
     )
     print(json.dumps(trace.to_dict(), ensure_ascii=False, indent=2))
 
@@ -95,28 +93,26 @@ def _signal(payload: dict[str, Any]) -> ContextSignal:
     )
 
 
-def _intent_trace(payload: dict[str, Any]) -> IntentTrace:
+def _intent_output(payload: dict[str, Any]) -> IntentOutput:
     intent = payload["intent"]
-    return IntentTrace(
-        intent=IntentIdentity(
+    return IntentOutput(
+        intent=Intent(
             primary=str(intent["primary"]),
             secondary=str(intent["secondary"]),
             source=str(intent.get("source", "fixture")),
             decision=str(intent.get("decision", "accept")),
             confidence=float(intent.get("confidence", 1.0)),
         ),
-        shape={key: _shape_field(value) for key, value in payload.get("initial_shape", {}).items()},
+        planning_prompt_text=str(payload["planning_prompt_text"]),
+        initial_shape={key: _shape_field(value) for key, value in payload.get("initial_shape", {}).items()},
         candidates=tuple(dict(item) for item in payload.get("trace", {}).get("candidates", [])),
         rule_signals_used=tuple(str(item) for item in payload.get("trace", {}).get("rule_signals_used", [])),
-        diagnostics={
-            "fixture": True,
-            "planning_prompt_text": str(payload["planning_prompt_text"]),
-        },
+        diagnostics={"fixture": True},
     )
 
 
-def _shape_field(payload: dict[str, Any]) -> ShapeField:
-    return ShapeField(
+def _shape_field(payload: dict[str, Any]) -> InitialShapeField:
+    return InitialShapeField(
         value=payload.get("value"),
         source=str(payload.get("source", "fixture")),
         decision=str(payload.get("decision", "accept")),

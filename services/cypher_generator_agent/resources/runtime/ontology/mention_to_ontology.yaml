@@ -1,5 +1,5 @@
 version: 1
-description: Step 2.2 mention canonical id to ontology reference mapping.
+description: Step 3.2 mention canonical id to ontology reference mapping.
 mappings:
   - mention_id: NetworkElement
     ontology_kind: class

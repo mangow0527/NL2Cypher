@@ -415,6 +415,16 @@ tbody tr.is-selected {
   font-size: 15px;
 }
 
+.trace-substep {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.trace-substep > h3:first-child {
+  margin-top: 0;
+}
+
 .field-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -436,6 +446,10 @@ tbody tr.is-selected {
 .overview-card small {
   grid-column: 1 / -1;
   color: var(--muted);
+}
+
+.overview-card p {
+  white-space: pre-line;
 }
 
 .cypher-overview-card {

@@ -12,12 +12,12 @@ from services.cypher_generator_agent.app.ontology_layer.coreference import Ontol
 
 def main() -> int:
     if len(sys.argv) > 2:
-        print("usage: python tools/demo_step_2_4_coreference.py [input_json]", file=sys.stderr)
+        print("usage: python tools/demo_step_3_4_coreference.py [input_json]", file=sys.stderr)
         return 2
     input_path = (
         Path(sys.argv[1])
         if len(sys.argv) == 2
-        else Path("services/cypher_generator_agent/examples/step_2_4_coreference_input.json")
+        else Path("services/cypher_generator_agent/examples/step_3_4_coreference_input.json")
     )
     payload = json.loads(input_path.read_text(encoding="utf-8"))
     result = OntologyCoreferenceService().resolve(

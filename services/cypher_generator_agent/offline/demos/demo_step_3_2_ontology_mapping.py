@@ -19,7 +19,7 @@ from services.cypher_generator_agent.app.ontology_layer.ontology_mapping import 
 
 def main() -> None:
     input_path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(
-        "services/cypher_generator_agent/examples/step_2_2_ontology_mapping_input.json"
+        "services/cypher_generator_agent/examples/step_3_2_ontology_mapping_input.json"
     )
     payload = json.loads(input_path.read_text(encoding="utf-8"))
     lexer_trace = _lexer_trace(payload["lexer_output"])

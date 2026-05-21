@@ -14,7 +14,7 @@ constraints:
     type: projection_attribute_exists
 
 relation_cardinality:
-  - relation: REL_SERVICE_USES_TUNNEL
+  - relation: SERVICE_USES_TUNNEL
     from_side:
       value: n
       source: human_rule
@@ -23,16 +23,7 @@ relation_cardinality:
       value: n
       source: human_rule
       confidence: needs_review
-  - relation: REL_TUNNEL_SRC
-    from_side:
-      value: "1"
-      source: human_rule
-      confidence: needs_review
-    to_side:
-      value: n
-      source: schema
-      confidence: confirmed
-  - relation: REL_TUNNEL_DST
+  - relation: TUNNEL_SRC
     from_side:
       value: "1"
       source: human_rule
@@ -41,7 +32,16 @@ relation_cardinality:
       value: n
       source: schema
       confidence: confirmed
-  - relation: REL_PATH_THROUGH
+  - relation: TUNNEL_DST
+    from_side:
+      value: "1"
+      source: human_rule
+      confidence: needs_review
+    to_side:
+      value: n
+      source: schema
+      confidence: confirmed
+  - relation: PATH_THROUGH
     from_side:
       value: n
       source: human_rule
@@ -50,7 +50,7 @@ relation_cardinality:
       value: n
       source: human_rule
       confidence: needs_review
-  - relation: REL_HAS_PORT
+  - relation: HAS_PORT
     from_side:
       value: n
       source: schema

@@ -13,13 +13,18 @@ concepts:
         value: ServiceQuality.Gold
 
 traversals:
+  - id: service_traverses_tunnel
+    label: 服务经过的隧道
+    from_class: Service
+    to_class: Tunnel
+    relation_chain: [SERVICE_USES_TUNNEL]
   - id: service_source_ne
     label: 服务源网元
     from_class: Service
     to_class: NetworkElement
-    relation_chain: [REL_SERVICE_USES_TUNNEL, REL_TUNNEL_SRC]
+    relation_chain: [SERVICE_USES_TUNNEL, TUNNEL_SRC]
   - id: service_tunnel_protocol
     label: 服务隧道协议
     from_class: Service
     to_class: Protocol
-    relation_chain: [REL_SERVICE_USES_TUNNEL, REL_TUNNEL_PROTO]
+    relation_chain: [SERVICE_USES_TUNNEL, TUNNEL_PROTO]

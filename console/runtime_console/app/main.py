@@ -26,6 +26,7 @@ def create_app() -> FastAPI:
         repair_service_base_url=runtime_settings.repair_service_base_url,
         knowledge_agent_base_url=runtime_settings.knowledge_agent_base_url,
         qa_generator_base_url=runtime_settings.qa_generator_base_url,
+        cga_trace_profile=runtime_settings.cga_trace_profile,
     )
 
     @app.get("/", include_in_schema=False)

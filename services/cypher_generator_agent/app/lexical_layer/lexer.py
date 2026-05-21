@@ -6,8 +6,11 @@ import os
 import re
 from typing import Any
 
+import yaml
+
 from .mention_vector_recall import MentionVectorRetriever, RagMentionVectorRetriever
 from .overlap_resolver import DictionaryPriorities, OverlapResolver
+from services.cypher_generator_agent.app.infrastructure import resource_paths
 from services.cypher_generator_agent.app.ontology_layer.assets import OntologyAssets
 from services.cypher_generator_agent.app.ontology_layer.models import ContextSignal, DictionaryEntry, LexerTrace, Mention
 
@@ -73,6 +76,50 @@ SHAPE_SIGNAL_SPECS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     ),
 )
 
+@dataclass(frozen=True)
+class _ScopeFilterSignalRule:
+    signal_type: str
+    supports: tuple[str, ...]
+    surface_forms: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _LexicalSignalRules:
+    scope_filter_signals: tuple[_ScopeFilterSignalRule, ...]
+
+
+@dataclass(frozen=True)
+class _StructuredOperatorRule:
+    canonical_id: str
+    surface_forms: tuple[str, ...]
+    cypher_op: str
+    applies_to: tuple[str, ...]
+    arity: int
+
+
+@dataclass(frozen=True)
+class _StructuredQuantifierRule:
+    canonical_id: str
+    surface_forms: tuple[str, ...]
+    semantic: str
+    shape_effect: str
+    affects_intent: bool
+
+
+@dataclass(frozen=True)
+class _StructuredLiteralPattern:
+    canonical_id: str
+    mention_type: str
+    value_type: str
+    regex: str
+
+
+@dataclass(frozen=True)
+class _StructuredExtractionResources:
+    operators: tuple[_StructuredOperatorRule, ...]
+    quantifiers: tuple[_StructuredQuantifierRule, ...]
+    literal_patterns: tuple[_StructuredLiteralPattern, ...]
+
 
 @dataclass(frozen=True)
 class _RawMatch:
@@ -124,6 +171,8 @@ class OntologyLexer:
         self.assets = assets
         self._automaton = _SurfaceAutomaton.from_entries(assets.entries)
         self._overlap_resolver = OverlapResolver(DictionaryPriorities.from_default_resources())
+        self._signal_rules = _load_lexical_signal_rules()
+        self._structured_resources = _load_structured_extraction_resources()
         self._vector_retriever = vector_retriever
         self._vector_top_k = vector_top_k
         self._vector_accept_threshold = vector_accept_threshold
@@ -137,8 +186,15 @@ class OntologyLexer:
         )
 
     def run(self, question: str) -> LexerTrace:
-        raw_matches = self._scan(question)
-        unmatched_fragments = _unmatched_fragments_from_matches(question, raw_matches)
+        ac_matches = self._scan(question)
+        structured_matches = self._structured_extract(question)
+        raw_matches = tuple((*ac_matches, *structured_matches))
+        scope_filter_signal_spans = _scope_filter_signal_spans(question, self._signal_rules.scope_filter_signals)
+        unmatched_fragments = _unmatched_fragments_from_matches(
+            question,
+            raw_matches,
+            ignored_spans=scope_filter_signal_spans,
+        )
         vector_recalls, vector_matches = self._vector_recall(unmatched_fragments)
         final_matches = tuple((*raw_matches, *vector_matches))
         final_resolution = self._overlap_resolver.resolve(final_matches)
@@ -149,14 +205,15 @@ class OntologyLexer:
         return LexerTrace(
             question=question,
             matcher="ac",
-            ac_matches=tuple(match.to_dict() for match in raw_matches),
+            ac_matches=tuple(match.to_dict() for match in ac_matches),
+            structured_matches=tuple(match.to_dict() for match in structured_matches),
             selected_hits=final_resolution.selected_to_dicts(),
             discarded_hits=final_resolution.discarded_to_dicts(),
             resolution_summary=final_resolution.summary(total_raw_hits=len(final_matches)),
             unmatched_fragments=unmatched_fragments,
             vector_recalls=tuple(vector_recalls),
             mentions=mentions,
-            unmatched_spans=_unmatched_spans(len(question), mentions),
+            unmatched_spans=_unmatched_spans(len(question), mentions, ignored_spans=scope_filter_signal_spans),
             context_signals=context_signals,
             shape_signals=shape_signals,
         )
@@ -164,6 +221,9 @@ class OntologyLexer:
     def _scan(self, question: str) -> tuple[_RawMatch, ...]:
         matches: list[_RawMatch] = []
         for start, surface, entry in self._automaton.scan(question):
+            span_end = start + len(surface)
+            if _is_partial_ascii_token_match(question, start, span_end, surface):
+                continue
             metadata = dict(entry.metadata)
             if "via_synonym_group" in entry.metadata:
                 metadata["via_synonym_group"] = entry.metadata["via_synonym_group"]
@@ -174,7 +234,7 @@ class OntologyLexer:
                     mention_type=entry.mention_type,
                     surface=surface,
                     span_start=start,
-                    span_end=start + len(surface),
+                    span_end=span_end,
                     match_source="ac_exact",
                     metadata=metadata,
                     score=1.0,
@@ -184,6 +244,76 @@ class OntologyLexer:
             tuple(sorted(matches, key=lambda item: (item.span_start, item.span_end, item.canonical_id))),
             prefix="ac",
         )
+
+    def _structured_extract(self, question: str) -> tuple[_RawMatch, ...]:
+        matches: list[_RawMatch] = []
+        for rule in self._structured_resources.operators:
+            for surface in rule.surface_forms:
+                for match in re.finditer(re.escape(surface), question):
+                    start, end = match.span()
+                    if _is_partial_ascii_token_match(question, start, end, surface):
+                        continue
+                    matches.append(
+                        _RawMatch(
+                            hit_id="",
+                            canonical_id=rule.canonical_id,
+                            mention_type="COMPARISON_OPERATOR",
+                            surface=surface,
+                            span_start=start,
+                            span_end=end,
+                            match_source="operator_extract",
+                            metadata={
+                                "cypher_op": rule.cypher_op,
+                                "applies_to": list(rule.applies_to),
+                                "arity": rule.arity,
+                            },
+                            score=1.0,
+                        )
+                    )
+        for rule in self._structured_resources.quantifiers:
+            for surface in rule.surface_forms:
+                for match in re.finditer(re.escape(surface), question):
+                    start, end = match.span()
+                    matches.append(
+                        _RawMatch(
+                            hit_id="",
+                            canonical_id=rule.canonical_id,
+                            mention_type="QUANTIFIER",
+                            surface=surface,
+                            span_start=start,
+                            span_end=end,
+                            match_source="quantifier_extract",
+                            metadata={
+                                "semantic": rule.semantic,
+                                "shape_effect": rule.shape_effect,
+                                "affects_intent": rule.affects_intent,
+                            },
+                            score=1.0,
+                        )
+                    )
+        for pattern in self._structured_resources.literal_patterns:
+            for match in re.finditer(pattern.regex, question, re.IGNORECASE):
+                raw = match.group(0)
+                if not raw.strip() or _is_partial_literal_token_match(question, match.start(), match.end()):
+                    continue
+                matches.append(
+                    _RawMatch(
+                        hit_id="",
+                        canonical_id=pattern.canonical_id,
+                        mention_type=pattern.mention_type,
+                        surface=raw,
+                        span_start=match.start(),
+                        span_end=match.end(),
+                        match_source="time_extract" if pattern.mention_type == "TIME_EXPRESSION" else "literal_extract",
+                        metadata={
+                            "raw": raw,
+                            "value_type_hint": pattern.value_type,
+                        },
+                        score=1.0,
+                    )
+                )
+        ordered = tuple(sorted(matches, key=lambda item: (item.span_start, item.span_end, item.canonical_id)))
+        return _assign_hit_ids(ordered, prefix="structured")
 
     def _vector_recall(
         self,
@@ -282,6 +412,7 @@ class OntologyLexer:
         context: list[ContextSignal] = []
         shape: list[ContextSignal] = []
         next_id = 1
+        attribute_owner_pairs: list[tuple[Mention, Mention]] = []
         for mention in mentions:
             if mention.canonical_id == "OP_RETURN_FIELD":
                 shape.append(
@@ -311,34 +442,65 @@ class OntologyLexer:
                         )
                     )
                     next_id += 1
-            if mention.mention_type == "ATTRIBUTE":
-                if not any("answer_projection_region" in signal.supports for signal in shape):
-                    shape.append(
-                        ContextSignal(
-                            signal_id=f"S{next_id}",
-                            signal_type="SHAPE_SIGNAL",
-                            text=mention.surface,
-                            span_start=mention.span_start,
-                            span_end=mention.span_end,
-                            supports=("answer_projection_region",),
-                            strength=0.85,
-                        )
+            if mention.mention_type == "QUANTIFIER":
+                target = _nearest_right_object(mention, mentions)
+                span_end = target.span_end if target is not None else mention.span_end
+                supports = _quantifier_supports(mention)
+                context.append(
+                    ContextSignal(
+                        signal_id=f"S{next_id}",
+                        signal_type="QUANTIFIER_BINDING",
+                        text=question[mention.span_start : span_end],
+                        span_start=mention.span_start,
+                        span_end=span_end,
+                        supports=supports,
+                        strength=1.0,
                     )
-                    next_id += 1
+                )
+                next_id += 1
+                shape.append(
+                    ContextSignal(
+                        signal_id=f"S{next_id}",
+                        signal_type="SHAPE_SIGNAL",
+                        text=mention.surface,
+                        span_start=mention.span_start,
+                        span_end=mention.span_end,
+                        supports=supports,
+                        strength=1.0,
+                    )
+                )
+                next_id += 1
+            if mention.mention_type == "ATTRIBUTE":
+                shape.append(
+                    ContextSignal(
+                        signal_id=f"S{next_id}",
+                        signal_type="SHAPE_SIGNAL",
+                        text=mention.surface,
+                        span_start=mention.span_start,
+                        span_end=mention.span_end,
+                        supports=("answer_projection_region",),
+                        strength=0.85,
+                    )
+                )
+                next_id += 1
                 target = _nearest_left_owner(mention, mentions)
                 if target is not None:
-                    context.append(
-                        ContextSignal(
-                            signal_id=f"S{next_id}",
-                            signal_type="PROXIMAL_MODIFIER",
-                            text=question[target.span_start : mention.span_end],
-                            span_start=target.span_start,
-                            span_end=mention.span_end,
-                            supports=(mention.canonical_id, target.canonical_id),
-                            strength=0.9,
-                        )
-                    )
-                    next_id += 1
+                    attribute_owner_pairs.append((mention, target))
+        next_id = _append_predicate_group_signals(question, mentions, context, next_id)
+        for owner, attributes in _attribute_groups_by_owner(attribute_owner_pairs):
+            context.append(
+                ContextSignal(
+                    signal_id=f"S{next_id}",
+                    signal_type="PROXIMAL_MODIFIER",
+                    text=question[owner.span_start : max(item.span_end for item in attributes)],
+                    span_start=owner.span_start,
+                    span_end=max(item.span_end for item in attributes),
+                    supports=tuple(item.canonical_id for item in attributes) + (owner.canonical_id,),
+                    strength=0.9,
+                )
+            )
+            next_id += 1
+        next_id = _append_scope_filter_signals(question, context, next_id, self._signal_rules.scope_filter_signals)
         if any(item.canonical_id == "OP_RETURN_FIELD" for item in mentions):
             context.append(
                 ContextSignal(
@@ -360,22 +522,44 @@ def _assign_hit_ids(matches: tuple[_RawMatch, ...], *, prefix: str) -> tuple[_Ra
     return tuple(replace(match, hit_id=f"{prefix}-{index}") for index, match in enumerate(matches, start=1))
 
 
-def _unmatched_spans(question_length: int, mentions: tuple[Mention, ...]) -> tuple[tuple[int, int], ...]:
+def _unmatched_spans(
+    question_length: int,
+    mentions: tuple[Mention, ...],
+    *,
+    ignored_spans: tuple[tuple[int, int], ...] = (),
+) -> tuple[tuple[int, int], ...]:
+    return _unmatched_spans_from_ranges(
+        question_length,
+        tuple((mention.span_start, mention.span_end) for mention in mentions) + ignored_spans,
+    )
+
+
+def _unmatched_spans_from_ranges(
+    question_length: int,
+    ranges: tuple[tuple[int, int], ...],
+) -> tuple[tuple[int, int], ...]:
     spans: list[tuple[int, int]] = []
     cursor = 0
-    for mention in mentions:
-        if mention.span_start > cursor:
-            spans.append((cursor, mention.span_start))
-        cursor = max(cursor, mention.span_end)
+    for start, end in sorted(ranges, key=lambda item: (item[0], item[1])):
+        if end <= cursor:
+            continue
+        if start > cursor:
+            spans.append((cursor, start))
+        cursor = max(cursor, end)
     if cursor < question_length:
         spans.append((cursor, question_length))
     return tuple(spans)
 
 
-def _unmatched_fragments_from_matches(question: str, matches: tuple[_RawMatch, ...]) -> tuple[dict[str, Any], ...]:
+def _unmatched_fragments_from_matches(
+    question: str,
+    matches: tuple[_RawMatch, ...],
+    *,
+    ignored_spans: tuple[tuple[int, int], ...] = (),
+) -> tuple[dict[str, Any], ...]:
     fragments: list[dict[str, Any]] = []
-    coverage_mentions = tuple(match.to_mention() for match in matches)
-    for start, end in _unmatched_spans(len(question), coverage_mentions):
+    coverage_spans = tuple((match.span_start, match.span_end) for match in matches) + ignored_spans
+    for start, end in _unmatched_spans_from_ranges(len(question), coverage_spans):
         fragment, fragment_start, fragment_end = _trim_fragment(question, start, end)
         if not fragment:
             continue
@@ -397,6 +581,46 @@ def _nearest_right_object(mention: Mention, mentions: tuple[Mention, ...]) -> Me
 def _nearest_left_owner(mention: Mention, mentions: tuple[Mention, ...]) -> Mention | None:
     left_mentions = [item for item in mentions if item.span_end <= mention.span_start and item.mention_type in {"OBJECT", "RELATION"}]
     return max(left_mentions, key=lambda item: item.span_end, default=None)
+
+
+def _attribute_groups_by_owner(
+    pairs: list[tuple[Mention, Mention]],
+) -> tuple[tuple[Mention, tuple[Mention, ...]], ...]:
+    groups: list[tuple[Mention, list[Mention]]] = []
+    for attribute, owner in pairs:
+        for existing_owner, attributes in groups:
+            if existing_owner == owner:
+                attributes.append(attribute)
+                break
+        else:
+            groups.append((owner, [attribute]))
+    return tuple((owner, tuple(attributes)) for owner, attributes in groups)
+
+
+def _append_scope_filter_signals(
+    question: str,
+    context: list[ContextSignal],
+    next_id: int,
+    rules: tuple[_ScopeFilterSignalRule, ...],
+) -> int:
+    seen_supports = {signal.supports for signal in context}
+    for text, start, end, rule in _scope_filter_signal_matches(question, rules):
+        if rule.supports in seen_supports:
+            continue
+        context.append(
+            ContextSignal(
+                signal_id=f"S{next_id}",
+                signal_type=rule.signal_type,
+                text=text,
+                span_start=start,
+                span_end=end,
+                supports=rule.supports,
+                strength=1.0,
+            )
+        )
+        seen_supports.add(rule.supports)
+        next_id += 1
+    return next_id
 
 
 def _append_question_shape_signals(question: str, shape: list[ContextSignal], next_id: int) -> int:
@@ -437,6 +661,199 @@ def _append_question_shape_signals(question: str, shape: list[ContextSignal], ne
             )
             next_id += 1
     return next_id
+
+
+def _append_predicate_group_signals(
+    question: str,
+    mentions: tuple[Mention, ...],
+    context: list[ContextSignal],
+    next_id: int,
+) -> int:
+    attributes = [item for item in mentions if item.mention_type == "ATTRIBUTE"]
+    operators = [item for item in mentions if item.mention_type == "COMPARISON_OPERATOR"]
+    literals = [item for item in mentions if item.mention_type in {"LITERAL_VALUE", "TIME_EXPRESSION"}]
+    for attribute in attributes:
+        operator = min(
+            (
+                item
+                for item in operators
+                if item.span_start >= attribute.span_end
+                and _only_predicate_glue(question[attribute.span_end : item.span_start])
+            ),
+            key=lambda item: item.span_start,
+            default=None,
+        )
+        if operator is None:
+            continue
+        literal = min(
+            (
+                item
+                for item in literals
+                if item.span_start >= operator.span_end
+                and _only_predicate_glue(question[operator.span_end : item.span_start])
+            ),
+            key=lambda item: item.span_start,
+            default=None,
+        )
+        if literal is None:
+            continue
+        context.append(
+            ContextSignal(
+                signal_id=f"S{next_id}",
+                signal_type="PREDICATE_GROUP",
+                text=question[attribute.span_start : literal.span_end],
+                span_start=attribute.span_start,
+                span_end=literal.span_end,
+                supports=tuple(
+                    dict.fromkeys(
+                        (
+                            *_attribute_supports(attribute),
+                            operator.canonical_id,
+                            literal.surface,
+                            literal.canonical_id,
+                        )
+                    )
+                ),
+                strength=1.0,
+            )
+        )
+        next_id += 1
+    return next_id
+
+
+def _only_predicate_glue(text: str) -> bool:
+    return not text or bool(re.fullmatch(r"[\s的为是:：,，]*", text))
+
+
+def _attribute_supports(mention: Mention) -> tuple[str, ...]:
+    refs = mention.metadata.get("candidate_refs")
+    values: list[str] = [mention.canonical_id]
+    if isinstance(refs, (list, tuple)):
+        values.extend(str(ref) for ref in refs)
+    return tuple(dict.fromkeys(values))
+
+
+def _quantifier_supports(mention: Mention) -> tuple[str, ...]:
+    semantic = str(mention.metadata.get("semantic") or "")
+    shape_effect = str(mention.metadata.get("shape_effect") or "")
+    supports = ["quantifier", mention.canonical_id]
+    if semantic:
+        supports.append(semantic)
+    if shape_effect:
+        supports.append(shape_effect)
+    if mention.metadata.get("affects_intent"):
+        supports.append("affects_intent")
+    return tuple(supports)
+
+
+def _scope_filter_signal_spans(
+    question: str,
+    rules: tuple[_ScopeFilterSignalRule, ...],
+) -> tuple[tuple[int, int], ...]:
+    return tuple((start, end) for _, start, end, _ in _scope_filter_signal_matches(question, rules))
+
+
+def _scope_filter_signal_matches(
+    question: str,
+    rules: tuple[_ScopeFilterSignalRule, ...],
+) -> tuple[tuple[str, int, int, _ScopeFilterSignalRule], ...]:
+    matches: list[tuple[str, int, int, _ScopeFilterSignalRule]] = []
+    for rule in rules:
+        for term in rule.surface_forms:
+            for match in re.finditer(re.escape(term), question):
+                matches.append((term, match.start(), match.end(), rule))
+    return tuple(sorted(matches, key=lambda item: (item[1], item[2], item[0])))
+
+
+def _load_lexical_signal_rules() -> _LexicalSignalRules:
+    path = resource_paths.lexer_signal_rules_path()
+    payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    scope_filter_signals: list[_ScopeFilterSignalRule] = []
+    for rule in (payload.get("scope_filter_signals") or {}).values():
+        if not isinstance(rule, dict):
+            continue
+        surface_forms = tuple(str(value) for value in rule.get("surface_forms", ()) if str(value))
+        supports = tuple(str(value) for value in rule.get("supports", ()) if str(value))
+        signal_type = str(rule.get("signal_type") or "")
+        if not surface_forms or not supports or not signal_type:
+            continue
+        scope_filter_signals.append(
+            _ScopeFilterSignalRule(
+                signal_type=signal_type,
+                supports=supports,
+                surface_forms=surface_forms,
+            )
+        )
+    return _LexicalSignalRules(scope_filter_signals=tuple(scope_filter_signals))
+
+
+def _load_structured_extraction_resources() -> _StructuredExtractionResources:
+    operators_payload = _load_yaml_mapping(resource_paths.lexer_operators_path())
+    quantifiers_payload = _load_yaml_mapping(resource_paths.lexer_quantifiers_path())
+    literal_payload = _load_yaml_mapping(resource_paths.lexer_literal_patterns_path())
+    operators: list[_StructuredOperatorRule] = []
+    for item in operators_payload.get("operators", []) or []:
+        if not isinstance(item, dict):
+            continue
+        surface_forms = tuple(str(value) for value in item.get("surface_forms", ()) if str(value))
+        canonical_id = str(item.get("canonical_id") or "")
+        cypher_op = str(item.get("cypher_op") or "")
+        if not canonical_id or not surface_forms or not cypher_op:
+            continue
+        operators.append(
+            _StructuredOperatorRule(
+                canonical_id=canonical_id,
+                surface_forms=surface_forms,
+                cypher_op=cypher_op,
+                applies_to=tuple(str(value) for value in item.get("applies_to", ()) if str(value)),
+                arity=int(item.get("arity") or 1),
+            )
+        )
+    quantifiers: list[_StructuredQuantifierRule] = []
+    for item in quantifiers_payload.get("quantifiers", []) or []:
+        if not isinstance(item, dict):
+            continue
+        surface_forms = tuple(str(value) for value in item.get("surface_forms", ()) if str(value))
+        canonical_id = str(item.get("canonical_id") or "")
+        if not canonical_id or not surface_forms:
+            continue
+        quantifiers.append(
+            _StructuredQuantifierRule(
+                canonical_id=canonical_id,
+                surface_forms=surface_forms,
+                semantic=str(item.get("semantic") or ""),
+                shape_effect=str(item.get("shape_effect") or ""),
+                affects_intent=bool(item.get("affects_intent", False)),
+            )
+        )
+    literal_patterns: list[_StructuredLiteralPattern] = []
+    for item in literal_payload.get("patterns", []) or []:
+        if not isinstance(item, dict):
+            continue
+        canonical_id = str(item.get("canonical_id") or "")
+        regex = str(item.get("regex") or "")
+        if not canonical_id or not regex:
+            continue
+        literal_patterns.append(
+            _StructuredLiteralPattern(
+                canonical_id=canonical_id,
+                mention_type=str(item.get("mention_type") or "LITERAL_VALUE"),
+                value_type=str(item.get("value_type") or ""),
+                regex=regex,
+            )
+        )
+    return _StructuredExtractionResources(
+        operators=tuple(operators),
+        quantifiers=tuple(quantifiers),
+        literal_patterns=tuple(literal_patterns),
+    )
+
+
+def _load_yaml_mapping(path: Any) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _first_term_match(question: str, terms: tuple[str, ...]) -> tuple[str, int, int] | None:
@@ -635,6 +1052,24 @@ def _is_runtime_literal_fragment(fragment: str) -> bool:
     if re.fullmatch(r"\d{4}[-/年]\d{1,2}(?:[-/月]\d{1,2}日?)?", comparable):
         return True
     if re.fullmatch(r"\d+(?:\.\d+)?(?:%|[A-Za-z]+|[个条次台])?", comparable):
+        return True
+    return False
+
+
+def _is_partial_ascii_token_match(question: str, start: int, end: int, surface: str) -> bool:
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", surface):
+        return False
+    if start > 0 and re.match(r"[A-Za-z0-9_]", question[start - 1]):
+        return True
+    if end < len(question) and re.match(r"[A-Za-z0-9_]", question[end]):
+        return True
+    return False
+
+
+def _is_partial_literal_token_match(question: str, start: int, end: int) -> bool:
+    if start > 0 and re.match(r"[A-Za-z0-9_]", question[start - 1]):
+        return True
+    if end < len(question) and re.match(r"[A-Za-z0-9_]", question[end]):
         return True
     return False
 

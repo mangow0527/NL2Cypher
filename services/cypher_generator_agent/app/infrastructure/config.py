@@ -21,7 +21,6 @@ class Settings(BaseSettings):
     rag_fallback_to_file: bool = False
     service_public_base_url: str = "http://127.0.0.1:8000"
     data_dir: str = "data/cypher_generator_agent"
-    delivery_outbox_dir: Optional[str] = None
     request_timeout_seconds: float = 120.0
     llm_enabled: bool = True
     llm_provider: str = "openai_chat"

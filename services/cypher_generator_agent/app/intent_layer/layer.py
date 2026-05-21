@@ -7,13 +7,7 @@ from typing import Any
 import yaml
 
 from services.cypher_generator_agent.app.infrastructure import resource_paths
-from services.cypher_generator_agent.app.ontology_layer.models import (
-    ContextSignal,
-    IntentIdentity,
-    IntentTrace,
-    LexerTrace,
-    ShapeField,
-)
+from services.cypher_generator_agent.app.intent_layer.models import Intent, IntentOutput, InitialShapeField
 
 from .recognition import IntentRecognitionResult, get_hybrid_intent_recognizer
 
@@ -24,23 +18,19 @@ class _LayeredLLMSelection:
     selections: tuple[object, ...]
 
 
-class OntologyIntentClassifier:
+class IntentLayer:
     def __init__(self, *, recognizer: object | None = None, llm_selector: object | None = None) -> None:
         self.recognizer = recognizer or get_hybrid_intent_recognizer()
         self.llm_selector = llm_selector
         self.taxonomy = yaml.safe_load(resource_paths.intent_taxonomy_path().read_text(encoding="utf-8")) or {}
         self.taxonomy_version = int(self.taxonomy.get("version", 0))
 
-    def classify(
+    def run(
         self,
-        lexer_trace: LexerTrace | None = None,
         *,
         core_question: str | None = None,
-        shape_signals: tuple[ContextSignal, ...] = (),
-    ) -> IntentTrace:
-        if lexer_trace is not None:
-            core_question = lexer_trace.question
-            shape_signals = lexer_trace.shape_signals
+        shape_signals: tuple[Any, ...] = (),
+    ) -> IntentOutput:
         if core_question is None:
             raise ValueError("core_question is required")
 
@@ -56,7 +46,7 @@ class OntologyIntentClassifier:
 
         intent_candidates = tuple(self._intent_candidates(recognition))
         if recognition.primary_intent is None or recognition.secondary_intent is None:
-            intent = IntentIdentity(
+            intent = Intent(
                 primary="unknown",
                 secondary="unknown",
                 source=recognition.source,
@@ -68,16 +58,19 @@ class OntologyIntentClassifier:
                 candidate_intents=getattr(recognition, "candidate_intents", ()) or intent_candidates,
                 evidence=getattr(recognition, "evidence", None),
             )
-            shape: dict[str, ShapeField] = {}
+            initial_shape: dict[str, InitialShapeField] = {}
+            planning_prompt_text = ""
         else:
-            intent = IntentIdentity(
+            intent = Intent(
                 primary=recognition.primary_intent,
                 secondary=recognition.secondary_intent,
                 source=recognition.source,
                 decision=recognition.decision,
                 confidence=recognition.confidence,
             )
-            shape = self._initial_shape(intent, shape_signals)
+            initial_shape = self._initial_shape(intent, shape_signals)
+            _, secondary_entry = self._intent_entries(recognition.primary_intent, recognition.secondary_intent)
+            planning_prompt_text = str(secondary_entry["planning_prompt_text"]).strip()
 
         diagnostics: dict[str, Any] = {
             "taxonomy_version": self.taxonomy_version,
@@ -88,8 +81,7 @@ class OntologyIntentClassifier:
             "recognizer_confidence": recognition.confidence,
         }
         if recognition.primary_intent is not None and recognition.secondary_intent is not None:
-            _, secondary_entry = self._intent_entries(recognition.primary_intent, recognition.secondary_intent)
-            diagnostics["planning_prompt_text"] = str(secondary_entry["planning_prompt_text"]).strip()
+            diagnostics["planning_prompt_text"] = planning_prompt_text
         if llm_selection is not None:
             diagnostics.update(
                 {
@@ -97,6 +89,7 @@ class OntologyIntentClassifier:
                     "llm_prompt_version": llm_selection.prompt_version,
                     "llm_prompt_hash": llm_selection.prompt_hash,
                     "llm_rendered_prompt_hash": llm_selection.rendered_prompt_hash,
+                    "llm_rendered_prompt": getattr(llm_selection, "rendered_prompt", ""),
                     "llm_raw_response": llm_selection.raw_response,
                     "llm_stage_count": len(llm_stage_selections),
                     "llm_stages": [
@@ -105,15 +98,18 @@ class OntologyIntentClassifier:
                             "decision": selection.parsed.get("decision"),
                             "candidate_id": selection.parsed.get("candidate_id"),
                             "rendered_prompt_hash": selection.rendered_prompt_hash,
+                            "rendered_prompt": getattr(selection, "rendered_prompt", ""),
+                            "raw_response": getattr(selection, "raw_response", ""),
                         }
                         for selection in llm_stage_selections
                     ],
                 }
             )
 
-        return IntentTrace(
+        return IntentOutput(
             intent=intent,
-            shape=shape,
+            planning_prompt_text=planning_prompt_text,
+            initial_shape=initial_shape,
             candidates=intent_candidates,
             rule_signals_used=_signal_texts(shape_signals),
             diagnostics=diagnostics,
@@ -121,9 +117,9 @@ class OntologyIntentClassifier:
 
     def _initial_shape(
         self,
-        intent: IntentIdentity,
-        shape_signals: tuple[ContextSignal, ...],
-    ) -> dict[str, ShapeField]:
+        intent: Intent,
+        shape_signals: tuple[Any, ...],
+    ) -> dict[str, InitialShapeField]:
         primary_entry, secondary_entry = self._intent_entries(intent.primary, intent.secondary)
         profile = {
             **dict(primary_entry.get("shape_profile") or {}),
@@ -135,8 +131,8 @@ class OntologyIntentClassifier:
         aggregation_functions = tuple(
             profile.get("aggregation_functions") or _aggregation_functions_from_signals(intent, shape_signals)
         )
-        shape: dict[str, ShapeField] = {
-            "answer_type": ShapeField(
+        shape: dict[str, InitialShapeField] = {
+            "answer_type": InitialShapeField(
                 value=answer_type,
                 source="taxonomy.secondary.default_answer_type"
                 if secondary_entry.get("default_answer_type")
@@ -144,7 +140,7 @@ class OntologyIntentClassifier:
                 decision="accept",
                 confidence=1.0,
             ),
-            "aggregation_functions": ShapeField(
+            "aggregation_functions": InitialShapeField(
                 value=aggregation_functions,
                 source="shape_signal" if _aggregation_functions_from_signals(intent, shape_signals) else "taxonomy.shape_profile",
                 decision="accept",
@@ -165,7 +161,7 @@ class OntologyIntentClassifier:
         ):
             signal_value = signal_overrides.get(field, False)
             value = bool(profile.get(field, False) or signal_value)
-            shape[field] = ShapeField(
+            shape[field] = InitialShapeField(
                 value=value,
                 source="shape_signal"
                 if signal_value and not profile.get(field, False)
@@ -177,7 +173,26 @@ class OntologyIntentClassifier:
                 decision="pending" if field == "relation_resolution_expected" and value else "accept",
                 confidence=0.8 if field == "relation_resolution_expected" and value else 1.0,
                 derived_from=_signal_ids_for_shape_field(shape_signals, field) if signal_value else (),
-                pending_until="step_2_3" if field == "relation_resolution_expected" and value else None,
+                pending_until="step_3_3" if field == "relation_resolution_expected" and value else None,
+            )
+        quantifier_effects = _quantifier_effects(shape_signals)
+        if quantifier_effects:
+            shape["quantifier_effects"] = InitialShapeField(
+                value=quantifier_effects,
+                source="shape_signal.quantifier",
+                decision="accept",
+                confidence=1.0,
+                derived_from=tuple(item["mention_id"] for item in quantifier_effects),
+            )
+        if any(item.get("semantic") == "no_implicit_filter" for item in quantifier_effects):
+            shape["filter_level_hint"] = InitialShapeField(
+                value="explicit_only_no_implicit",
+                source="shape_signal.quantifier",
+                decision="accept",
+                confidence=1.0,
+                derived_from=tuple(
+                    item["mention_id"] for item in quantifier_effects if item.get("semantic") == "no_implicit_filter"
+                ),
             )
         return shape
 
@@ -216,7 +231,7 @@ class OntologyIntentClassifier:
     def _select_with_llm(
         self,
         core_question: str,
-        shape_signals: tuple[ContextSignal, ...],
+        shape_signals: tuple[Any, ...],
     ) -> _LayeredLLMSelection:
         if self.llm_selector is None:
             raise RuntimeError("llm_selector is required for intent fallback")
@@ -250,7 +265,7 @@ class OntologyIntentClassifier:
     def _select_intent_candidate(
         self,
         core_question: str,
-        shape_signals: tuple[ContextSignal, ...],
+        shape_signals: tuple[Any, ...],
         candidates: tuple[dict[str, object], ...],
     ) -> object:
         return self.llm_selector.select(
@@ -289,8 +304,8 @@ class OntologyIntentClassifier:
 
 
 def _aggregation_functions_from_signals(
-    intent: IntentIdentity,
-    shape_signals: tuple[ContextSignal, ...],
+    intent: Intent,
+    shape_signals: tuple[Any, ...],
 ) -> tuple[str, ...]:
     tags = _signal_tags(shape_signals)
     if intent.secondary == "count_metric_query" or "count_hint" in tags:
@@ -298,7 +313,7 @@ def _aggregation_functions_from_signals(
     return ()
 
 
-def _recognize(recognizer: object, core_question: str, shape_signals: tuple[ContextSignal, ...]) -> object:
+def _recognize(recognizer: object, core_question: str, shape_signals: tuple[Any, ...]) -> object:
     recognize = getattr(recognizer, "recognize")
     if _accepts_shape_signals(recognize):
         return recognize(core_question, shape_signals=shape_signals)
@@ -328,8 +343,36 @@ def _failed_intent_fields(recognition: object) -> tuple[str, ...]:
     return tuple(fields)
 
 
-def _signal_tags(shape_signals: tuple[ContextSignal, ...]) -> set[str]:
+def _signal_tags(shape_signals: tuple[Any, ...]) -> set[str]:
     return {tag for signal in shape_signals for tag in signal.supports}
+
+
+def _quantifier_effects(shape_signals: tuple[Any, ...]) -> list[dict[str, Any]]:
+    effects: list[dict[str, Any]] = []
+    for signal in shape_signals:
+        supports = tuple(str(value) for value in getattr(signal, "supports", ()) or ())
+        if "quantifier" not in supports:
+            continue
+        canonical_id = next((value for value in supports if value.startswith("QUANT_")), "")
+        semantic = _quantifier_semantic(supports)
+        if not canonical_id:
+            continue
+        effects.append(
+            {
+                "mention_id": str(getattr(signal, "signal_id", "")),
+                "canonical_id": canonical_id,
+                "semantic": semantic,
+                "affects_intent": "affects_intent" in supports,
+            }
+        )
+    return effects
+
+
+def _quantifier_semantic(supports: tuple[str, ...]) -> str:
+    for value in ("no_implicit_filter", "not_exists", "existential_scope"):
+        if value in supports:
+            return value
+    return ""
 
 
 def _shape_signal_overrides(signal_tags: set[str]) -> dict[str, bool]:
@@ -347,7 +390,7 @@ def _shape_signal_overrides(signal_tags: set[str]) -> dict[str, bool]:
     }
 
 
-def _signal_ids_for_shape_field(shape_signals: tuple[ContextSignal, ...], field: str) -> tuple[str, ...]:
+def _signal_ids_for_shape_field(shape_signals: tuple[Any, ...], field: str) -> tuple[str, ...]:
     field_tags = {
         "projection_expected": {"answer_projection_region", "project_marker"},
         "aggregation_required": {"aggregation_hint", "count_hint"},
@@ -361,13 +404,13 @@ def _signal_ids_for_shape_field(shape_signals: tuple[ContextSignal, ...], field:
     return _signal_ids_for_tags(shape_signals, field_tags)
 
 
-def _signal_ids_for_tags(shape_signals: tuple[ContextSignal, ...], tags: set[str]) -> tuple[str, ...]:
+def _signal_ids_for_tags(shape_signals: tuple[Any, ...], tags: set[str]) -> tuple[str, ...]:
     if not tags:
         return ()
     return tuple(signal.signal_id for signal in shape_signals if tags.intersection(signal.supports))
 
 
-def _signal_texts(shape_signals: tuple[ContextSignal, ...]) -> tuple[str, ...]:
+def _signal_texts(shape_signals: tuple[Any, ...]) -> tuple[str, ...]:
     return tuple(signal.text for signal in shape_signals)
 
 
@@ -392,7 +435,7 @@ def _candidate_intent_label(candidate: dict[str, object]) -> str:
 
 
 def _signal_list_with_ids(
-    shape_signals: tuple[ContextSignal, ...],
+    shape_signals: tuple[Any, ...],
     candidates: tuple[dict[str, object], ...],
 ) -> str:
     candidate_ids = tuple(str(candidate["id"]) for candidate in candidates)
@@ -405,7 +448,7 @@ def _signal_list_with_ids(
 
 
 def _candidate_ids_supported_by_signal(
-    signal: ContextSignal,
+    signal: Any,
     candidates: tuple[dict[str, object], ...],
 ) -> tuple[str, ...]:
     tags = set(signal.supports)

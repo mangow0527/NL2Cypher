@@ -9,13 +9,11 @@ from services.cypher_generator_agent.app.ontology_layer.object_role_selection im
     ObjectRoleSelectionValidationError,
     OntologyObjectRoleSelectionService,
 )
+from services.cypher_generator_agent.app.intent_layer.models import Intent, IntentOutput, InitialShapeField
 from services.cypher_generator_agent.app.ontology_layer.models import (
     ContextSignal,
-    IntentIdentity,
-    IntentTrace,
     LexerTrace,
     Mention,
-    ShapeField,
 )
 from services.cypher_generator_agent.app.runtime_pipeline import OntologyGenerationPipeline
 from services.cypher_generator_agent.app.ontology_layer.assets import OntologyAssets
@@ -94,32 +92,31 @@ def _lexer_trace() -> LexerTrace:
     )
 
 
-def _intent_trace() -> IntentTrace:
-    return IntentTrace(
-        intent=IntentIdentity(
+def _intent_output() -> IntentOutput:
+    return IntentOutput(
+        intent=Intent(
             primary="record_retrieval_query",
             secondary="related_record_query",
             source="rule",
             decision="accept",
             confidence=0.9,
         ),
-        shape={
-            "answer_type": ShapeField("attribute_table", "taxonomy.secondary.default_answer_type", "accept", 1.0),
-            "projection_expected": ShapeField(True, "taxonomy.secondary.shape_profile", "accept", 1.0),
-            "relation_resolution_expected": ShapeField(
+        planning_prompt_text="用户想查询相关记录，并返回某些字段。这个问题里既有过滤条件，也有对象之间的关系。",
+        initial_shape={
+            "answer_type": InitialShapeField("attribute_table", "taxonomy.secondary.default_answer_type", "accept", 1.0),
+            "projection_expected": InitialShapeField(True, "taxonomy.secondary.shape_profile", "accept", 1.0),
+            "relation_resolution_expected": InitialShapeField(
                 True,
                 "taxonomy.secondary.shape_profile",
                 "pending",
                 0.8,
-                pending_until="step_2_3",
+                pending_until="step_3_3",
             ),
-            "path_answer_required": ShapeField(False, "taxonomy.secondary.shape_profile", "accept", 1.0),
+            "path_answer_required": InitialShapeField(False, "taxonomy.secondary.shape_profile", "accept", 1.0),
         },
         candidates=({"id": "C1", "primary": "record_retrieval_query", "secondary": "related_record_query"},),
         rule_signals_used=("返回",),
-        diagnostics={
-            "planning_prompt_text": "用户想查询相关记录，并返回某些字段。这个问题里既有过滤条件，也有对象之间的关系。"
-        },
+        diagnostics={},
     )
 
 
@@ -138,11 +135,11 @@ class AcceptingSelector:
         )
 
 
-def test_builds_candidates_from_lexer_mentions_and_step_2_0_context() -> None:
+def test_builds_candidates_from_lexer_mentions_and_step_2_intent_context() -> None:
     selector = AcceptingSelector()
     service = OntologyObjectRoleSelectionService(llm_selector=selector)
 
-    trace = service.select(lexer_trace=_lexer_trace(), intent_trace=_intent_trace())
+    trace = service.select(lexer_trace=_lexer_trace(), intent_output=_intent_output())
 
     assert trace.allowed_object_roles == ALLOWED_OBJECT_ROLES
     candidate_surfaces = [(item.candidate_id, item.mention_type, item.surface) for item in trace.object_candidates]
@@ -180,6 +177,56 @@ def test_builds_candidates_from_lexer_mentions_and_step_2_0_context() -> None:
     assert trace_payload["input_context"]["shape_signals"][0]["signal_id"] == "S4"
 
 
+def test_path_through_relation_is_evidence_not_object_candidate() -> None:
+    class Selector:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def select(self, prompt_name: str, variables: dict[str, object]):
+            self.calls.append({"prompt_name": prompt_name, **variables})
+            return SimpleNamespace(raw_response="选择 SM1：path_subject。理由：service")
+
+    lexer_trace = _lexer_trace()
+    mentions = tuple(
+        Mention(
+            canonical_id=mention.canonical_id,
+            mention_type=mention.mention_type,
+            surface=mention.surface,
+            span_start=mention.span_start,
+            span_end=mention.span_end,
+            metadata={**mention.metadata, "role": "path_through"} if mention.canonical_id == "REL_PATH_THROUGH" else mention.metadata,
+        )
+        for mention in lexer_trace.mentions
+    )
+    lexer_trace = LexerTrace(
+        question=lexer_trace.question,
+        matcher=lexer_trace.matcher,
+        ac_matches=lexer_trace.ac_matches,
+        selected_hits=lexer_trace.selected_hits,
+        discarded_hits=lexer_trace.discarded_hits,
+        resolution_summary=lexer_trace.resolution_summary,
+        unmatched_fragments=lexer_trace.unmatched_fragments,
+        vector_recalls=lexer_trace.vector_recalls,
+        mentions=mentions,
+        unmatched_spans=lexer_trace.unmatched_spans,
+        context_signals=lexer_trace.context_signals,
+        shape_signals=lexer_trace.shape_signals,
+    )
+    selector = Selector()
+    service = OntologyObjectRoleSelectionService(llm_selector=selector)
+
+    trace = service.select(lexer_trace=lexer_trace, intent_output=_intent_output())
+
+    assert [(item.mention_type, item.surface) for item in trace.object_candidates] == [
+        ("OBJECT", "服务"),
+        ("OBJECT", "隧道"),
+        ("RELATION", "源网元"),
+        ("OBJECT", "隧道"),
+        ("RELATION", "源网元"),
+    ]
+    assert all(item.surface != "经过" for item in trace.object_candidates)
+
+
 @pytest.mark.parametrize(
     "raw,error_part",
     [
@@ -196,7 +243,7 @@ def test_rejects_llm_output_outside_service_boundaries(raw: str, error_part: str
     service = OntologyObjectRoleSelectionService(llm_selector=BadSelector())
 
     with pytest.raises(ObjectRoleSelectionValidationError, match=error_part):
-        service.select(lexer_trace=_lexer_trace(), intent_trace=_intent_trace())
+        service.select(lexer_trace=_lexer_trace(), intent_output=_intent_output())
 
 
 def test_parses_selection_text_and_preserves_raw_output() -> None:
@@ -211,7 +258,7 @@ def test_parses_selection_text_and_preserves_raw_output() -> None:
 
     service = OntologyObjectRoleSelectionService(llm_selector=Selector())
 
-    trace = service.select(lexer_trace=_lexer_trace(), intent_trace=_intent_trace())
+    trace = service.select(lexer_trace=_lexer_trace(), intent_output=_intent_output())
 
     assert trace.llm_raw_output.startswith("选择 SM1")
     assert [item.candidate_id for item in trace.object_role_selection.selected_objects] == ["SM1", "SM2"]
@@ -232,7 +279,7 @@ def test_rejects_json_selection_output() -> None:
     service = OntologyObjectRoleSelectionService(llm_selector=Selector())
 
     with pytest.raises(ObjectRoleSelectionValidationError, match="unrecognized object role selection line"):
-        service.select(lexer_trace=_lexer_trace(), intent_trace=_intent_trace())
+        service.select(lexer_trace=_lexer_trace(), intent_output=_intent_output())
 
 
 def test_missing_object_candidates_clarifies_without_llm_call() -> None:
@@ -259,7 +306,7 @@ def test_missing_object_candidates_clarifies_without_llm_call() -> None:
     )
     service = OntologyObjectRoleSelectionService(llm_selector=Selector())
 
-    trace = service.select(lexer_trace=lexer_trace, intent_trace=_intent_trace())
+    trace = service.select(lexer_trace=lexer_trace, intent_output=_intent_output())
 
     assert trace.object_candidates == ()
     assert trace.object_role_selection.selected_objects == ()
@@ -267,7 +314,7 @@ def test_missing_object_candidates_clarifies_without_llm_call() -> None:
     assert trace.llm_raw_output == ""
 
 
-def test_pipeline_stops_when_step_2_1_needs_clarification() -> None:
+def test_pipeline_stops_when_step_3_1_needs_clarification() -> None:
     class ClarifyingSelector:
         def select(self, prompt_name: str, variables: dict[str, object]):
             return SimpleNamespace(raw_response="需要澄清：候选片段不足以判断后续需要重点关注什么。")
@@ -278,7 +325,7 @@ def test_pipeline_stops_when_step_2_1_needs_clarification() -> None:
 
         def map(self, **kwargs):
             self.called = True
-            raise AssertionError("step 2.2 should not run after step 2.1 clarification")
+            raise AssertionError("step 3.2 should not run after step 3.1 clarification")
 
     mapping_spy = MappingSpy()
     pipeline = OntologyGenerationPipeline(
@@ -293,12 +340,12 @@ def test_pipeline_stops_when_step_2_1_needs_clarification() -> None:
             trace_id="trace-step-2-1-clarify",
         )
 
-    assert exc_info.value.stage == "step_2_1"
+    assert exc_info.value.stage == "step_3_1"
     assert "候选片段不足以判断" in exc_info.value.clarification["reason"]
     assert mapping_spy.called is False
 
 
-def test_pipeline_runs_step_2_1_between_intent_and_logical_planner() -> None:
+def test_pipeline_runs_step_3_1_between_intent_and_logical_planning() -> None:
     selector = AcceptingSelector()
     pipeline = OntologyGenerationPipeline(
         assets=OntologyAssets.from_default_resources(),

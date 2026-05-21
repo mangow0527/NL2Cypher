@@ -4,7 +4,9 @@ from dataclasses import dataclass
 import re
 from typing import Any
 
-from .models import IntentTrace, LexerTrace
+from services.cypher_generator_agent.app.intent_layer.models import IntentOutput
+
+from .models import LexerTrace
 
 
 ALLOWED_OBJECT_ROLES = ("filter_subject", "path_subject", "projection_subject", "return_subject")
@@ -96,12 +98,13 @@ class ObjectRoleSelectionTrace:
     object_role_selection: ObjectRoleSelection
     clarification: dict[str, Any] | None = None
     input_context: dict[str, Any] | None = None
+    llm_prompt: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         candidates = [item.to_dict() for item in self.object_candidates]
         roles = list(self.allowed_object_roles)
         selection = self.object_role_selection.to_dict()
-        return {
+        payload = {
             "object_candidates": candidates,
             "allowed_object_roles": roles,
             "llm_raw_output": self.llm_raw_output,
@@ -109,13 +112,16 @@ class ObjectRoleSelectionTrace:
             "clarification": dict(self.clarification) if self.clarification is not None else None,
             "input_context": dict(self.input_context) if self.input_context is not None else {},
         }
+        if self.llm_prompt:
+            payload["llm_prompt"] = self.llm_prompt
+        return payload
 
 
 class OntologyObjectRoleSelectionService:
     def __init__(self, *, llm_selector: object) -> None:
         self.llm_selector = llm_selector
 
-    def select(self, *, lexer_trace: LexerTrace, intent_trace: IntentTrace) -> ObjectRoleSelectionTrace:
+    def select(self, *, lexer_trace: LexerTrace, intent_output: IntentOutput) -> ObjectRoleSelectionTrace:
         candidates = build_object_candidates(lexer_trace)
         if not candidates:
             return ObjectRoleSelectionTrace(
@@ -128,13 +134,13 @@ class OntologyObjectRoleSelectionService:
                     "reason": "当前问题缺少可继续规划的对象片段。",
                     "blocking_evidence": [],
                 },
-                input_context=_input_context(lexer_trace, intent_trace),
+                input_context=_input_context(lexer_trace, intent_output),
             )
         selection = self.llm_selector.select(
             "object_role_selection",
             {
                 "question": lexer_trace.question,
-                "planning_prompt_text": _planning_prompt_text(intent_trace),
+                "planning_prompt_text": _planning_prompt_text(intent_output),
                 "object_candidate_list": _candidate_list(candidates),
                 "allowed_object_roles": list(ALLOWED_OBJECT_ROLES),
                 "allowed_candidate_ids": [candidate.candidate_id for candidate in candidates],
@@ -149,7 +155,8 @@ class OntologyObjectRoleSelectionService:
             llm_raw_output=raw_output,
             object_role_selection=ObjectRoleSelection(selected_objects=selected_objects),
             clarification=clarification,
-            input_context=_input_context(lexer_trace, intent_trace),
+            input_context=_input_context(lexer_trace, intent_output),
+            llm_prompt=str(getattr(selection, "rendered_prompt", "")),
         )
 
 
@@ -335,7 +342,9 @@ def _is_role_like_relation(mention: Any) -> bool:
     if mention.mention_type != "RELATION":
         return False
     metadata = mention.metadata if isinstance(mention.metadata, dict) else {}
-    if isinstance(metadata.get("role"), str):
+    role = metadata.get("role")
+    endpoint_roles = {"source", "destination", "src", "dst", "source_endpoint", "destination_endpoint"}
+    if isinstance(role, str) and role.strip().lower() in endpoint_roles:
         return True
     role_like_terms = ("网元", "端口", "服务", "隧道", "设备", "链路", "光纤")
     return any(term in mention.surface for term in role_like_terms)
@@ -370,14 +379,14 @@ def _all_evidence_ids(candidates: tuple[ObjectCandidate, ...], lexer_trace: Lexe
     return ids
 
 
-def _intent_summary(intent_trace: IntentTrace) -> dict[str, Any]:
+def _intent_summary(intent_output: IntentOutput) -> dict[str, Any]:
     return {
-        "primary": intent_trace.intent.primary,
-        "secondary": intent_trace.intent.secondary,
+        "primary": intent_output.intent.primary,
+        "secondary": intent_output.intent.secondary,
     }
 
 
-def _shape_summary(intent_trace: IntentTrace) -> dict[str, Any]:
+def _shape_summary(intent_output: IntentOutput) -> dict[str, Any]:
     keys = (
         "answer_type",
         "projection_expected",
@@ -389,25 +398,24 @@ def _shape_summary(intent_trace: IntentTrace) -> dict[str, Any]:
         "limit_required",
         "time_grain_required",
     )
-    return {key: intent_trace.shape[key].value for key in keys if key in intent_trace.shape}
+    return {key: intent_output.initial_shape[key].value for key in keys if key in intent_output.initial_shape}
 
 
-def _input_context(lexer_trace: LexerTrace, intent_trace: IntentTrace) -> dict[str, Any]:
+def _input_context(lexer_trace: LexerTrace, intent_output: IntentOutput) -> dict[str, Any]:
     return {
         "mentions": [mention.to_dict() for mention in lexer_trace.mentions],
         "context_signals": [signal.to_dict() for signal in lexer_trace.context_signals],
         "shape_signals": [signal.to_dict() for signal in lexer_trace.shape_signals],
-        "intent": _intent_summary(intent_trace),
-        "initial_shape": _shape_summary(intent_trace),
-        "planning_prompt_text": _planning_prompt_text(intent_trace),
+        "intent": _intent_summary(intent_output),
+        "initial_shape": _shape_summary(intent_output),
+        "planning_prompt_text": _planning_prompt_text(intent_output),
     }
 
 
-def _planning_prompt_text(intent_trace: IntentTrace) -> str:
-    diagnostics_text = intent_trace.diagnostics.get("planning_prompt_text") if isinstance(intent_trace.diagnostics, dict) else None
-    if isinstance(diagnostics_text, str) and diagnostics_text.strip():
-        return diagnostics_text.strip()
-    raise ObjectRoleSelectionValidationError("intent_trace.diagnostics.planning_prompt_text is required")
+def _planning_prompt_text(intent_output: IntentOutput) -> str:
+    if intent_output.planning_prompt_text.strip():
+        return intent_output.planning_prompt_text.strip()
+    return "用户想提出一个查询问题，但意图识别阶段没有给出更具体的中文问题类型说明。请仅根据问题文本和候选片段判断后续语义规划需要关注哪些对象。"
 
 
 def _candidate_list(candidates: tuple[ObjectCandidate, ...]) -> str:
@@ -423,7 +431,7 @@ def _candidate_context(candidate: ObjectCandidate) -> str:
         if evidence.type == "nearby_value":
             fragments.append(f'"{evidence.text}"修饰它')
         elif evidence.type == "nearby_relation":
-            fragments.append(f'附近出现关系词"{evidence.text}"')
+            fragments.append(f'附近出现路径关系词"{evidence.text}"，它可能参与路径连接')
         elif evidence.type == "nearby_attribute":
             fragments.append(f'附近出现字段"{evidence.text}"')
         elif evidence.type == "projection_marker":

@@ -1,0 +1,9 @@
+version: 1
+description: Lexical signal rules that do not create mention dictionary entries.
+
+scope_filter_signals:
+  all_records:
+    signal_type: NO_FILTER_CONDITION
+    supports: [all_scope, no_filter]
+    surface_forms: [所有, 全部, 全量]
+    description: 全量范围条件；表示目标集合不需要额外过滤。

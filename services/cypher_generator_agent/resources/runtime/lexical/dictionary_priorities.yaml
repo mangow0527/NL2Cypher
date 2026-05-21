@@ -3,6 +3,10 @@ description: Type-level priority table for lexer overlap resolution.
 override_semantics: replace
 
 match_source_priorities:
+  literal_extract: 110
+  operator_extract: 108
+  quantifier_extract: 105
+  time_extract: 105
   ac_exact: 100
   vector_recall: 50
   llm_select: 40
@@ -22,6 +26,7 @@ dictionary_priorities:
     REL_LINK_DST: 105
     REL_TUNNEL_SRC: 105
     REL_TUNNEL_DST: 105
+    Tunnel.ietf_standard: 95
 
   ci_rules:
     max_overrides: 10

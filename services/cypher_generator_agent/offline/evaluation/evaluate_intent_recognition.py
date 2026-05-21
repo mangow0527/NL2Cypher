@@ -11,7 +11,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from services.cypher_generator_agent.app.infrastructure import resource_paths
-from services.cypher_generator_agent.app.ontology_layer.intent_classification import (
+from services.cypher_generator_agent.app.intent_layer import (
     EmbeddingIntentRecognizer,
     HybridIntentRecognizer,
     RuleBasedIntentRecognizer,

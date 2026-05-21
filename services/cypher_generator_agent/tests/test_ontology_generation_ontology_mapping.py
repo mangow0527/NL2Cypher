@@ -87,40 +87,57 @@ def _selection() -> ObjectRoleSelection:
     )
 
 
-def test_maps_mentions_to_ontology_and_backfills_step_2_1_selection() -> None:
+def test_maps_mentions_to_ontology_and_backfills_step_3_1_selection() -> None:
     service = OntologyMappingService(OntologyAssets.from_default_resources())
 
     mapping = service.map(lexer_trace=_lexer_trace(), object_role_selection=_selection())
+    payload = mapping.to_dict()
 
-    rows = [item.to_dict() for item in mapping.mapped_mentions]
-    assert [(item["mapping_id"], item["mention_id"], item["ontology_kind"], item["ontology_id"]) for item in rows] == [
-        ("OM1", "m_servicequality_gold_1", "enum_value", "ServiceQuality.Gold"),
-        ("OM2", "m_service_1", "class", "Service"),
-        ("OM3", "m_rel_service_uses_tunnel_1", "relation", "SERVICE_USES_TUNNEL"),
-        ("OM4", "m_tunnel_1", "class", "Tunnel"),
-        ("OM5", "m_rel_tunnel_src_1", "relation_role", "TUNNEL_SRC"),
-        ("OM6", "m_tunnel_2", "class", "Tunnel"),
-        ("OM7", "m_protocol_standard_1", "attribute", "Protocol.standard"),
-        ("OM8", "m_servicequality_gold_2", "enum_value", "ServiceQuality.Gold"),
-        ("OM9", "m_sem_gold_service_1", "semantic_object", "gold_service"),
+    assert set(payload) == {
+        "ontology_objects",
+        "ontology_relation_hints",
+        "ontology_attributes",
+        "ontology_values",
+        "evidence",
+    }
+    assert "mapped_mentions" not in payload
+    for section in ("ontology_objects", "ontology_relation_hints", "ontology_attributes", "ontology_values"):
+        for item in payload[section]:
+            assert "mention_type" not in item
+            assert "surface" not in item
+            assert "span" not in item
+
+    assert [(item["object_id"], item["class_id"]) for item in payload["ontology_objects"]] == [
+        ("OO1", "Service"),
+        ("OO2", "Tunnel"),
+        ("OO3", "NetworkElement"),
+        ("OO4", "Tunnel"),
     ]
-    assert rows[0]["constrains_attribute"] == "Service.quality_of_service"
-    assert rows[2]["domain_class"] == "Service"
-    assert rows[2]["range_class"] == "Tunnel"
-    assert rows[4]["role"] == "source"
-    assert rows[4]["target_class"] == "NetworkElement"
-    assert rows[6]["parent_class"] == "Protocol"
-    assert rows[6]["attribute_candidates"] == ["Protocol.standard", "Tunnel.ietf_standard"]
-    assert rows[8]["semantic_object_kind"] == "concept"
-    assert rows[8]["definition_ref"] == "semantic_objects.gold_service"
-    assert [item["mention_id"] for item in rows if item["ontology_id"] == "ServiceQuality.Gold"] == [
+    service_object = payload["ontology_objects"][0]
+    assert service_object["object_candidate_id"] == "SM1"
+    assert service_object["selected_roles"] == ["filter_subject", "path_subject"]
+    source_ne = payload["ontology_objects"][2]
+    assert source_ne["role_hint"] == {
+        "relation_hint_id": "ORH2",
+        "relation_id": "TUNNEL_SRC",
+        "role": "source",
+        "source_class": "Tunnel",
+    }
+    assert source_ne["object_candidate_id"] == "SM2"
+    assert source_ne["selected_roles"] == ["path_subject"]
+
+    relation_hints = [item for item in payload["ontology_relation_hints"] if "relation_id" in item]
+    assert [(item["relation_hint_id"], item["relation_id"], item["from_class"], item["to_class"]) for item in relation_hints] == [
+        ("ORH1", "SERVICE_USES_TUNNEL", "Service", "Tunnel"),
+        ("ORH2", "TUNNEL_SRC", "Tunnel", "NetworkElement"),
+    ]
+    assert relation_hints[1]["role"] == "source"
+    assert payload["ontology_attributes"][0]["attribute_candidates"] == ["Protocol.standard", "Tunnel.ietf_standard"]
+    assert payload["ontology_values"][0]["constrains_attribute"] == "Service.quality_of_service"
+    assert [item["mention_id"] for item in payload["evidence"] if item["ontology_id"] == "ServiceQuality.Gold"] == [
         "m_servicequality_gold_1",
         "m_servicequality_gold_2",
     ]
-    assert rows[1]["object_candidate_id"] == "SM1"
-    assert rows[1]["selected_roles"] == ["filter_subject", "path_subject"]
-    assert rows[4]["object_candidate_id"] == "SM2"
-    assert rows[4]["selected_roles"] == ["path_subject"]
 
 
 def test_candidate_refs_are_preserved_as_candidate_family_and_validated() -> None:
@@ -129,8 +146,7 @@ def test_candidate_refs_are_preserved_as_candidate_family_and_validated() -> Non
 
     mapping = service.map(lexer_trace=trace, object_role_selection=ObjectRoleSelection(selected_objects=()))
 
-    attribute = mapping.mapped_mentions[6].to_dict()
-    assert attribute["candidate_refs"] == ["Protocol.standard", "Tunnel.ietf_standard"]
+    attribute = mapping.to_dict()["ontology_attributes"][0]
     assert attribute["attribute_candidates"] == ["Protocol.standard", "Tunnel.ietf_standard"]
 
 
@@ -176,6 +192,33 @@ def test_default_ontology_assets_validate_mention_mappings_without_dictionary_fa
         )
 
         service.map(lexer_trace=trace, object_role_selection=ObjectRoleSelection(selected_objects=()))
+
+
+def test_default_relation_ontology_ids_use_ontology_layer_names() -> None:
+    assets = OntologyAssets.from_default_resources()
+    relation_ids = {str(item["id"]) for item in assets.domain_ontology["relations"]}
+    relation_targets = {
+        str(item["ontology_id"])
+        for item in assets.mention_to_ontology["mappings"]
+        if str(item["ontology_kind"]) in {"relation", "relation_role"}
+    }
+
+    assert all(not relation_id.startswith("REL_") for relation_id in relation_ids)
+    assert relation_targets <= relation_ids
+
+
+def test_default_semantic_relation_chains_reference_domain_relation_ids() -> None:
+    assets = OntologyAssets.from_default_resources()
+    relation_ids = {str(item["id"]) for item in assets.domain_ontology["relations"]}
+    chains = [
+        item["relation_chain"]
+        for section in (assets.domain_ontology["default_paths"], assets.semantic_objects["traversals"])
+        for item in section
+    ]
+
+    assert chains
+    assert all(str(relation_id) in relation_ids for chain in chains for relation_id in chain)
+    assert all(not str(relation_id).startswith("REL_") for chain in chains for relation_id in chain)
 
 
 def test_rejects_unknown_ontology_references_from_mapping_assets() -> None:

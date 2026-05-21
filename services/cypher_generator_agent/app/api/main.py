@@ -1,5 +1,3 @@
-import asyncio
-from contextlib import asynccontextmanager
 from typing import Dict
 
 from fastapi import FastAPI
@@ -9,17 +7,11 @@ import uvicorn
 from .models import IntentRecognitionRequest, QAQuestionRequest, SemanticParseRequest
 from .service import get_generator_status, get_workflow_service
 from services.cypher_generator_agent.app.infrastructure.config import get_settings
-from services.cypher_generator_agent.app.ontology_layer.intent_classification import get_hybrid_intent_recognizer
+from services.cypher_generator_agent.app.intent_layer import get_hybrid_intent_recognizer
 from services.cypher_generator_agent.app.runtime_pipeline import OntologyGenerationPipeline
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    asyncio.create_task(get_workflow_service().retry_pending_deliveries())
-    yield
-
-
-app = FastAPI(title="cypher-generator-agent", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="cypher-generator-agent", version="1.0.0")
 
 
 @app.get("/health")

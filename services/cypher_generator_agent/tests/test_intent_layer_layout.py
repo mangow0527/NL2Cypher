@@ -1,7 +1,7 @@
 import importlib.util
 from pathlib import Path
 
-from services.cypher_generator_agent.app.ontology_layer.intent_classification import (
+from services.cypher_generator_agent.app.intent_layer import (
     EmbeddingIntentRecognizer,
     FallbackEmbeddingStore,
     IntentRecognitionResult,
@@ -14,7 +14,7 @@ from services.cypher_generator_agent.app.ontology_layer.intent_classification im
 ROOT = Path(__file__).resolve().parents[3]
 
 
-def test_intent_classification_package_exports_recognition_components() -> None:
+def test_intent_layer_package_exports_recognition_components() -> None:
     assert RuleBasedIntentRecognizer.__name__ == "RuleBasedIntentRecognizer"
     assert EmbeddingIntentRecognizer.__name__ == "EmbeddingIntentRecognizer"
     assert RagIntentEmbeddingStore.__name__ == "RagIntentEmbeddingStore"

@@ -4,7 +4,7 @@ description: Attribute mention dictionary for schema-backed object properties.
 entries:
   - canonical_id: NetworkElement.id
     mention_type: attribute
-    surface_forms: [网元 ID, 网元ID, 网元编号, 设备 ID, 设备ID, 设备编号, NetworkElement id, unique identifier]
+    surface_forms: [网元 ID, 网元ID, 网元编号, 设备 ID, 设备ID, 设备编号, 内部ID, 内部 ID, ID, id, NetworkElement id, unique identifier]
     description: Business-visible unique identifier for NetworkElement; schema pattern is ne-[0-9]{4}.
     parent_object: NetworkElement
     column: id
@@ -76,7 +76,7 @@ entries:
 
   - canonical_id: Protocol.id
     mention_type: attribute
-    surface_forms: [协议 ID, 协议ID, 协议编号, Protocol id, proto id]
+    surface_forms: [协议 ID, 协议ID, 协议编号, 内部ID, 内部 ID, ID, id, Protocol id, proto id]
     description: Business-visible unique identifier for Protocol; schema pattern is proto-[a-z0-9-]+.
     parent_object: Protocol
     column: id
@@ -109,6 +109,8 @@ entries:
     column: standard
     value_type: STRING
     belongs_to_hint: [Protocol]
+    candidate_family: IETFStandard
+    owner_resolution_stage: ontology_binding
 
   - canonical_id: Protocol.version
     mention_type: attribute
@@ -139,7 +141,7 @@ entries:
 
   - canonical_id: Tunnel.id
     mention_type: attribute
-    surface_forms: [隧道 ID, 隧道ID, 隧道编号, Tunnel id]
+    surface_forms: [隧道 ID, 隧道ID, 隧道编号, 内部ID, 内部 ID, ID, id, Tunnel id]
     description: Business-visible unique identifier for Tunnel; schema pattern is tun-[a-z-]+-[0-9]+.
     parent_object: Tunnel
     column: id
@@ -154,6 +156,8 @@ entries:
     column: ietf_standard
     value_type: STRING
     belongs_to_hint: [Tunnel, Protocol]
+    candidate_family: IETFStandard
+    owner_resolution_stage: ontology_binding
 
   - canonical_id: Tunnel.name
     mention_type: attribute
@@ -193,7 +197,7 @@ entries:
 
   - canonical_id: Service.id
     mention_type: attribute
-    surface_forms: [服务 ID, 服务ID, 服务编号, 业务 ID, 业务ID, 业务编号, Service id]
+    surface_forms: [服务 ID, 服务ID, 服务编号, 业务 ID, 业务ID, 业务编号, 内部ID, 内部 ID, ID, id, Service id]
     description: Business-visible unique identifier for Service; schema pattern is svc-[a-z-]+-[0-9]+.
     parent_object: Service
     column: id
@@ -220,7 +224,7 @@ entries:
 
   - canonical_id: Service.elem_type
     mention_type: attribute
-    surface_forms: [服务类型, 业务类型, 类型, elem_type]
+    surface_forms: [服务类型, 业务类型, 设备类型, 类型, elem_type]
     description: Service type; schema comment lists MPLS-VPN, QoS, L3VPN, MPLS-TE, and Firewall_Service.
     parent_object: Service
     column: elem_type
@@ -238,7 +242,7 @@ entries:
 
   - canonical_id: Port.id
     mention_type: attribute
-    surface_forms: [端口 ID, 端口ID, 端口编号, 接口 ID, 接口ID, 接口编号, Port id]
+    surface_forms: [端口 ID, 端口ID, 端口编号, 接口 ID, 接口ID, 接口编号, 内部ID, 内部 ID, ID, id, Port id]
     description: Business-visible unique identifier for Port; schema pattern is port-[a-z0-9-]+.
     parent_object: Port
     column: id
@@ -310,7 +314,7 @@ entries:
 
   - canonical_id: Fiber.id
     mention_type: attribute
-    surface_forms: [光纤 ID, 光纤ID, 光纤编号, Fiber id]
+    surface_forms: [光纤 ID, 光纤ID, 光纤编号, 内部ID, 内部 ID, ID, id, Fiber id]
     description: Business-visible unique identifier for Fiber; schema pattern is fiber-[0-9]{4}.
     parent_object: Fiber
     column: id
@@ -391,7 +395,7 @@ entries:
 
   - canonical_id: Link.id
     mention_type: attribute
-    surface_forms: [链路 ID, 链路ID, 链路编号, Link id]
+    surface_forms: [链路 ID, 链路ID, 链路编号, 内部ID, 内部 ID, ID, id, Link id]
     description: Business-visible unique identifier for Link; schema pattern is link-[0-9]{4}.
     parent_object: Link
     column: id

@@ -79,6 +79,16 @@ def test_runtime_results_detail_script_puts_cypher_comparison_in_overview():
     assert "生成与提交层" in script
     assert "意图识别：一级分类 LLM 判定" in script
     assert "语义视图匹配：受控 LLM 消歧" in script
+    assert "renderOntologyLayerPrompts(layer.key" in script
+    assert "renderStructuredTraceSection" in script
+    assert "const standalonePrompts = isOntologyCgaSection(section)" in script
+    assert "ontology_path_selection', '3.3 本体路径选择 LLM 输入提示词" not in script
+    assert "一层意图 LLM 原始输出" in script
+    assert "二层意图 LLM 原始输出" in script
+    assert "意图识别与答案形态：二层意图 LLM 原始输出" not in script
+    assert "white-space: pre-line" in script or "white-space: pre-line" in (
+        Path(__file__).resolve().parents[1] / "console" / "runtime_console" / "ui" / "styles.css"
+    ).read_text(encoding="utf-8")
     assert "生成链路摘要" in script
     assert "澄清反问" in script
     assert "澄清选项" in script
@@ -1569,6 +1579,216 @@ def test_runtime_results_generator_section_parses_cga_trace_v2_clarification_req
     assert task["clarification_summary"] == "你说的对应网元是指源网元还是目的网元？"
 
 
+def test_runtime_results_generator_section_parses_ontology_cga_trace(monkeypatch, tmp_path: Path):
+    testing_dir = tmp_path / "testing"
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(testing_dir))
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_REPAIR_DATA_DIR", str(tmp_path / "repair"))
+    trace_snapshot = {
+        "schema_version": "cga_trace_v2",
+        "trace_id": "run-ontology-trace",
+        "preprocessing": {
+            "accepted": True,
+            "original_question": "帮我查一下金牌服务使用的隧道名称",
+            "core_question": "查询金牌服务使用的隧道名称",
+        },
+        "lexer": {
+            "question": "查询金牌服务使用的隧道名称",
+            "mentions": [
+                {"canonical_id": "ServiceQuality.Gold", "mention_type": "VALUE", "surface": "金牌", "span": [2, 4]},
+                {"canonical_id": "Service", "mention_type": "OBJECT", "surface": "服务", "span": [4, 6]},
+                {"canonical_id": "Tunnel.name", "mention_type": "ATTRIBUTE", "surface": "隧道名称", "span": [9, 13]},
+            ],
+            "context_signals": [
+                {
+                    "signal_id": "S2",
+                    "type": "PROXIMAL_MODIFIER",
+                    "text": "金牌服务",
+                    "span": [2, 6],
+                    "supports": ["ServiceQuality.Gold", "Service"],
+                    "strength": 0.95,
+                }
+            ],
+            "shape_signals": [
+                {
+                    "signal_id": "S1",
+                    "type": "SHAPE_SIGNAL",
+                    "text": "隧道名称",
+                    "span": [9, 13],
+                    "supports": ["answer_projection_region"],
+                    "strength": 0.85,
+                }
+            ],
+        },
+        "intent": {
+            "intent": {
+                "primary": "record_retrieval_query",
+                "secondary": "related_record_query",
+                "source": "llm",
+                "decision": "accept",
+                "confidence": 0.8,
+            },
+            "initial_shape": {"answer_type": {"value": "attribute_table", "source": "taxonomy", "decision": "accept", "confidence": 1.0}},
+            "diagnostics": {
+                "llm_stages": [
+                    {"rendered_prompt": "一层意图完整 prompt", "raw_response": "选择 C1。理由：明细查询", "decision": "accept", "candidate_id": "C1"},
+                    {"rendered_prompt": "二层意图完整 prompt", "raw_response": "选择 C4。理由：关联明细", "decision": "accept", "candidate_id": "C4"},
+                ]
+            },
+        },
+        "object_role_selection": {
+            "object_candidates": [{"candidate_id": "SM1", "surface": "服务"}],
+            "object_role_selection": {"selected_objects": [{"candidate_id": "SM1", "roles": ["filter_subject", "path_subject"]}]},
+            "llm_prompt": "3.1 对象角色 prompt",
+            "llm_raw_output": "选择 SM1：filter_subject、path_subject。理由：金牌服务参与路径。",
+        },
+        "ontology_mapping": {
+            "ontology_objects": [{"mapping_id": "OM1", "ontology_kind": "class", "class_id": "Service"}],
+            "ontology_relation_hints": [{"mapping_id": "OM2", "ontology_kind": "relation", "relation_id": "SERVICE_USES_TUNNEL"}],
+            "ontology_attributes": [{"mapping_id": "OM3", "ontology_kind": "attribute", "attribute_id": "Tunnel.name"}],
+            "ontology_values": [{"mapping_id": "OM4", "ontology_kind": "enum_value", "value_id": "ServiceQuality.Gold"}],
+            "evidence": [{"source": "mention_to_ontology"}],
+        },
+        "ontology_path_selection": {
+            "path_requests": [{"request_id": "PR1"}],
+            "candidate_paths": [{"path_id": "P1"}],
+            "selected_paths": [{"request_id": "PR1", "path_id": "P1"}],
+            "shape_updates": {},
+            "llm_prompt": "3.3 路径选择 prompt",
+            "llm_raw_output": "选择 PR1：P1。理由：服务使用隧道。",
+        },
+        "coreference": {
+            "resolved_pairs": [{"candidate_pair_id": "CP1", "decision": "same_instance"}],
+            "merged_nodes": [{"node_id": "N1"}],
+            "llm_decision_traces": [
+                {"candidate_pair_id": "CP1", "llm_prompt": "3.4 指代消解 prompt", "llm_raw_output": "选择 C1。理由：同一服务。"}
+            ],
+        },
+        "binding": {"projections": [{"result": {"attribute": "Tunnel.name", "alias": "tunnel_name"}}]},
+        "shape_finalization": {"logical_plan": {"root_operation": "match_project", "projection": [{"attribute": "name"}]}},
+        "validator": {"accepted": True, "checks": [{"name": "required_nodes", "accepted": True}]},
+        "compiler": {"cypher": "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel) RETURN t.name"},
+    }
+    _write_json(testing_dir / "goldens" / "qa_ontology_trace.json", {"id": "qa_ontology_trace", "difficulty": "L4"})
+    _write_json(
+        testing_dir / "submissions" / "qa_ontology_trace.json",
+        {
+            "id": "qa_ontology_trace",
+            "attempt_no": 1,
+            "question": "帮我查一下金牌服务使用的隧道名称",
+            "generation_run_id": "run-ontology-trace",
+            "generated_cypher": "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel) RETURN t.name",
+            "input_prompt_snapshot": json.dumps(trace_snapshot, ensure_ascii=False),
+            "generation_status": "generated",
+            "state": "evaluated",
+        },
+    )
+
+    from console.runtime_console.app.main import create_app
+
+    client = TestClient(create_app())
+    response = client.get("/api/v1/tasks/qa_ontology_trace")
+
+    assert response.status_code == 200
+    generator = response.json()["pipeline"]["cypher_generator_agent"]
+    assert generator["trace_schema_version"] == "cga_trace_v2"
+    assert [layer["key"] for layer in generator["trace_layers"]] == [
+        "preprocessing",
+        "lexical",
+        "intent_shape",
+        "ontology",
+        "validation",
+        "compilation",
+    ]
+    assert [layer["title_zh"] for layer in generator["trace_layers"]] == [
+        "自然语言问题预处理",
+        "词法层",
+        "意图识别与答案形态",
+        "本体层",
+        "校验层",
+        "编译层",
+    ]
+    assert all("raw" not in layer for layer in generator["trace_layers"])
+    preprocessing_fields = {field["label_zh"]: field["value"] for field in generator["trace_layers"][0]["fields"]}
+    assert preprocessing_fields["原始问题"] == "帮我查一下金牌服务使用的隧道名称"
+    assert preprocessing_fields["输出给下一阶段的 core_question"] == "查询金牌服务使用的隧道名称"
+    assert "未通过原因" not in preprocessing_fields
+    assert generator["trace_layers"][0]["sections"] == []
+    lexical_fields = {field["label_zh"]: field["value"] for field in generator["trace_layers"][1]["fields"]}
+    assert lexical_fields["mentions 摘要"] == "金牌(VALUE) / 服务(OBJECT) / 隧道名称(ATTRIBUTE)"
+    assert lexical_fields["上下文信号摘要"] == "金牌服务(PROXIMAL_MODIFIER)"
+    assert lexical_fields["答案形态信号摘要"] == "隧道名称(SHAPE_SIGNAL)"
+    lexical_sections = [section["title_zh"] for section in generator["trace_layers"][1]["sections"]]
+    assert lexical_sections == ["词法层输出"]
+    lexical_output = generator["trace_layers"][1]["sections"][0]["value"]
+    assert lexical_output["mentions"][0]["surface"] == "金牌"
+    assert lexical_output["context_signals"][0]["text"] == "金牌服务"
+    assert lexical_output["shape_signals"][0]["text"] == "隧道名称"
+    intent_fields = {field["label_zh"]: field["value"] for field in generator["trace_layers"][2]["fields"]}
+    assert intent_fields["一层意图字段名称"] == "record_retrieval_query"
+    assert intent_fields["一层意图中文解释"] == "明细/清单查询\n说明：返回实体、资源、记录或属性明细，不以统计值、路径结构或布尔判断为最终答案。"
+    assert intent_fields["二层意图字段名称"] == "related_record_query"
+    assert intent_fields["二层意图中文解释"] == "关联明细查询\n说明：沿关系或固定路径返回相关实体或属性明细，但不把图结构本身作为答案。"
+    assert intent_fields["答案形态摘要"] == "answer_type=attribute_table"
+    intent_sections = [section["title_zh"] for section in generator["trace_layers"][2]["sections"]]
+    assert intent_sections == []
+    ontology_layer = generator["trace_layers"][3]
+    assert ontology_layer.get("fields", []) == []
+    ontology_steps = {section["title_zh"]: section for section in ontology_layer["sections"]}
+    assert list(ontology_steps) == [
+        "3.1 对象提取与角色标注",
+        "3.2 Mention 映射到本体",
+        "3.3 本体路径选择",
+        "3.4 指代消解选择",
+        "3.5 字段绑定",
+        "3.6 最终回填结构",
+    ]
+    object_role_fields = {field["label_zh"]: field["value"] for field in ontology_steps["3.1 对象提取与角色标注"]["fields"]}
+    assert object_role_fields["对象候选"] == "服务"
+    assert object_role_fields["角色标注"] == "SM1: filter_subject, path_subject"
+    object_role_blocks = {block["title_zh"]: block["value"] for block in ontology_steps["3.1 对象提取与角色标注"]["blocks"]}
+    assert object_role_blocks["LLM 原始输入提示词"] == "3.1 对象角色 prompt"
+    mapping_fields = {field["label_zh"]: field["value"] for field in ontology_steps["3.2 Mention 映射到本体"]["fields"]}
+    assert mapping_fields["对象映射"] == "Service"
+    assert mapping_fields["关系线索"] == "SERVICE_USES_TUNNEL"
+    assert mapping_fields["属性映射"] == "Tunnel.name"
+    assert mapping_fields["取值映射"] == "ServiceQuality.Gold"
+    mapping_blocks = {block["title_zh"]: block["value"] for block in ontology_steps["3.2 Mention 映射到本体"]["blocks"]}
+    assert mapping_blocks["分类说明"][0]["description_zh"].startswith("对象类")
+    path_fields = {field["label_zh"]: field["value"] for field in ontology_steps["3.3 本体路径选择"]["fields"]}
+    assert path_fields["路径请求"] == "PR1"
+    assert path_fields["选中路径"] == "PR1 -> P1"
+    path_blocks = {block["title_zh"]: block["value"] for block in ontology_steps["3.3 本体路径选择"]["blocks"]}
+    assert path_blocks["LLM 原始输出"] == "选择 PR1：P1。理由：服务使用隧道。"
+    coreference_fields = {field["label_zh"]: field["value"] for field in ontology_steps["3.4 指代消解选择"]["fields"]}
+    assert coreference_fields["指代消解决策"] == "CP1: same_instance"
+    assert coreference_fields["合并节点"] == "N1"
+    coreference_blocks = {block["title_zh"]: block["value"] for block in ontology_steps["3.4 指代消解选择"]["blocks"]}
+    assert coreference_blocks["LLM 调用明细"][0]["prompt"] == "3.4 指代消解 prompt"
+    binding_fields = {field["label_zh"]: field["value"] for field in ontology_steps["3.5 字段绑定"]["fields"]}
+    assert binding_fields["投影绑定"] == "Tunnel.name AS tunnel_name"
+    final_fields = {field["label_zh"]: field["value"] for field in ontology_steps["3.6 最终回填结构"]["fields"]}
+    assert final_fields["根操作"] == "match_project"
+    assert final_fields["投影字段"] == "name"
+    final_blocks = {block["title_zh"]: block["value"] for block in ontology_steps["3.6 最终回填结构"]["blocks"]}
+    assert final_blocks["Step 3 输出结构"]["logical_plan"]["root_operation"] == "match_project"
+    validation_fields = {field["label_zh"]: field["value"] for field in generator["trace_layers"][4]["fields"]}
+    assert validation_fields["校验结果"] == "校验通过"
+    assert validation_fields["校验项摘要"] == "required_nodes: 通过"
+    compilation_fields = {field["label_zh"]: field["value"] for field in generator["trace_layers"][5]["fields"]}
+    assert compilation_fields["编译结果"] == "已输出 Cypher"
+    assert compilation_fields["Cypher 摘要"] == "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel) RETURN t.name"
+    prompts = generator["llm_prompts"]
+    assert prompts["intent_primary_classification"]["title_zh"] == "一层意图 LLM 判定"
+    assert prompts["intent_primary_classification"]["raw_output_title_zh"] == "一层意图 LLM 原始输出"
+    assert prompts["intent_primary_classification"]["prompt"] == "一层意图完整 prompt"
+    assert prompts["intent_secondary_classification"]["title_zh"] == "二层意图 LLM 判定"
+    assert prompts["intent_secondary_classification"]["raw_output_title_zh"] == "二层意图 LLM 原始输出"
+    assert prompts["intent_secondary_classification"]["raw_output"] == "选择 C4。理由：关联明细"
+    assert prompts["object_role_selection"]["prompt"] == "3.1 对象角色 prompt"
+    assert prompts["ontology_path_selection"]["raw_output"] == "选择 PR1：P1。理由：服务使用隧道。"
+    assert prompts["coreference_selection"]["prompt"] == "3.4 指代消解 prompt"
+
+
 def test_runtime_results_prefers_latest_generated_submission_over_stale_generation_failure(monkeypatch, tmp_path: Path):
     testing_dir = tmp_path / "testing"
     monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(testing_dir))
@@ -1645,6 +1865,54 @@ def test_runtime_results_prefers_latest_generated_submission_over_stale_generati
     assert generator["generated_cypher"] == "MATCH (fresh) RETURN fresh"
     assert generator["failure_reason"] is None
     assert payload["pipeline"]["testing_agent"]["improvement"] is None
+
+
+def test_runtime_results_ontology_profile_prefers_newer_submission_over_stale_failure(monkeypatch, tmp_path: Path):
+    testing_dir = tmp_path / "testing"
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(testing_dir))
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_REPAIR_DATA_DIR", str(tmp_path / "repair"))
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_CGA_TRACE_PROFILE", "ontology")
+    ontology_snapshot = json.dumps({"schema_version": "cga_trace_v2", "trace_profile": "ontology"}, ensure_ascii=False)
+    _write_json(testing_dir / "goldens" / "qa_ontology_retry.json", {"id": "qa_ontology_retry", "difficulty": "L1"})
+    _write_json(
+        testing_dir / "generation_failures" / "qa_ontology_retry__old-run.json",
+        {
+            "id": "qa_ontology_retry",
+            "question": "旧失败",
+            "generation_run_id": "old-run",
+            "generation_status": "service_failed",
+            "failure_reason": "semantic_contract_unaligned",
+            "input_prompt_snapshot": ontology_snapshot,
+            "received_at": "2026-05-20T12:43:00+00:00",
+        },
+    )
+    _write_json(
+        testing_dir / "submissions" / "qa_ontology_retry.json",
+        {
+            "id": "qa_ontology_retry",
+            "attempt_no": 3,
+            "question": "最新生成",
+            "generation_run_id": "new-run",
+            "generated_cypher": "MATCH (s:Service) RETURN s.name",
+            "input_prompt_snapshot": ontology_snapshot,
+            "generation_status": "generated",
+            "state": "passed",
+            "received_at": "2026-05-20T12:47:00+00:00",
+            "updated_at": "2026-05-20T12:47:01+00:00",
+        },
+    )
+
+    from console.runtime_console.app.main import create_app
+
+    client = TestClient(create_app())
+
+    payload = client.get("/api/v1/tasks/qa_ontology_retry").json()
+
+    generator = payload["pipeline"]["cypher_generator_agent"]
+    assert generator["generation_status"] == "generated"
+    assert generator["generation_run_id"] == "new-run"
+    assert generator["generated_cypher"] == "MATCH (s:Service) RETURN s.name"
+    assert generator["failure_reason"] is None
 
 
 def test_runtime_results_does_not_bind_repair_analysis_without_submission_analysis_id(monkeypatch, tmp_path: Path):

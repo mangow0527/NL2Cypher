@@ -5,106 +5,76 @@ import pytest
 from services.cypher_generator_agent.app.ontology_layer.assets import OntologyAssets
 from services.cypher_generator_agent.app.clarification_layer.errors import ClarificationNeeded
 from services.cypher_generator_agent.app.infrastructure.errors import EngineeringFailure, ResourceMissing
-from services.cypher_generator_agent.app.ontology_layer.models import IntentIdentity, IntentTrace, ShapeField
+from services.cypher_generator_agent.app.intent_layer.models import Intent, IntentOutput, InitialShapeField
 from services.cypher_generator_agent.app.ontology_layer.shape_finalization import (
     OntologyShapeFinalizer,
 )
 
 
-def _intent_trace(*, pending_relation: bool = True, projection_expected: bool = True) -> IntentTrace:
-    return IntentTrace(
-        intent=IntentIdentity(
+def _intent_output(*, pending_relation: bool = True, projection_expected: bool = True) -> IntentOutput:
+    return IntentOutput(
+        intent=Intent(
             primary="record_retrieval_query",
             secondary="related_record_query",
             source="fixture",
             decision="accept",
             confidence=0.9,
         ),
-        shape={
-            "answer_type": ShapeField("attribute_table", "taxonomy", "accept", 1.0),
-            "projection_expected": ShapeField(projection_expected, "taxonomy", "accept", 1.0),
-            "relation_resolution_expected": ShapeField(
+        planning_prompt_text="用户想查询相关记录，并返回某些字段。",
+        initial_shape={
+            "answer_type": InitialShapeField("attribute_table", "taxonomy", "accept", 1.0),
+            "projection_expected": InitialShapeField(projection_expected, "taxonomy", "accept", 1.0),
+            "relation_resolution_expected": InitialShapeField(
                 True,
                 "taxonomy",
                 "pending" if pending_relation else "accept",
                 0.8,
-                pending_until="step_2_3" if pending_relation else None,
+                pending_until="step_3_3" if pending_relation else None,
             ),
-            "path_answer_required": ShapeField(False, "taxonomy", "accept", 1.0),
-            "aggregation_functions": ShapeField([], "taxonomy", "accept", 1.0),
-            "group_by_required": ShapeField(False, "taxonomy", "accept", 1.0),
-            "order_required": ShapeField(False, "taxonomy", "accept", 1.0),
-            "limit_required": ShapeField(False, "taxonomy", "accept", 1.0),
-            "time_grain_required": ShapeField(False, "taxonomy", "accept", 1.0),
+            "path_answer_required": InitialShapeField(False, "taxonomy", "accept", 1.0),
+            "aggregation_functions": InitialShapeField([], "taxonomy", "accept", 1.0),
+            "group_by_required": InitialShapeField(False, "taxonomy", "accept", 1.0),
+            "order_required": InitialShapeField(False, "taxonomy", "accept", 1.0),
+            "limit_required": InitialShapeField(False, "taxonomy", "accept", 1.0),
+            "time_grain_required": InitialShapeField(False, "taxonomy", "accept", 1.0),
         },
         candidates=(),
         rule_signals_used=(),
+        diagnostics={},
     )
 
 
 def _mapping() -> dict[str, object]:
     return {
-        "mapped_mentions": [
+        "ontology_objects": [
+            {"object_id": "OO1", "class_id": "Service", "evidence_refs": ["E1"], "order": 1},
+            {"object_id": "OO2", "class_id": "Tunnel", "evidence_refs": ["E2"], "order": 2},
             {
-                "mapping_id": "OM1",
-                "mention_id": "m_service_1",
-                "mention_type": "OBJECT",
-                "surface": "服务",
-                "span": [4, 6],
-                "ontology_kind": "class",
-                "ontology_id": "Service",
+                "object_id": "OO3",
+                "class_id": "NetworkElement",
+                "role_hint": {"relation_hint_id": "ORH1", "relation_id": "TUNNEL_SRC", "role": "source", "source_class": "Tunnel"},
+                "evidence_refs": ["E3"],
+                "order": 3,
             },
-            {
-                "mapping_id": "OM2",
-                "mention_id": "m_tunnel_1",
-                "mention_type": "OBJECT",
-                "surface": "隧道",
-                "span": [9, 11],
-                "ontology_kind": "class",
-                "ontology_id": "Tunnel",
-            },
-            {
-                "mapping_id": "OM3",
-                "mention_id": "m_source_ne_1",
-                "mention_type": "RELATION",
-                "surface": "源网元",
-                "span": [13, 16],
-                "ontology_kind": "relation_role",
-                "ontology_id": "TUNNEL_SRC",
-                "role": "source",
-                "target_class": "NetworkElement",
-            },
-            {
-                "mapping_id": "OM4",
-                "mention_id": "m_gold_1",
-                "mention_type": "VALUE",
-                "surface": "金牌",
-                "span": [2, 4],
-                "ontology_kind": "enum_value",
-                "ontology_id": "ServiceQuality.Gold",
-                "constrains_attribute": "Service.quality_of_service",
-            },
-            {
-                "mapping_id": "OM5",
-                "mention_id": "m_ietf_1",
-                "mention_type": "ATTRIBUTE",
-                "surface": "IETF标准",
-                "span": [22, 28],
-                "ontology_kind": "attribute",
-                "ontology_id": "Tunnel.ietf_standard",
-                "parent_class": "Tunnel",
-            },
-            {
-                "mapping_id": "OM6",
-                "mention_id": "m_ip_1",
-                "mention_type": "ATTRIBUTE",
-                "surface": "IP地址",
-                "span": [33, 37],
-                "ontology_kind": "attribute",
-                "ontology_id": "NetworkElement.ip_address",
-                "parent_class": "NetworkElement",
-            },
-        ]
+        ],
+        "ontology_relation_hints": [
+            {"relation_hint_id": "ORH1", "relation_id": "TUNNEL_SRC", "from_class": "Tunnel", "to_class": "NetworkElement", "role": "source", "evidence_refs": ["E3"], "order": 3}
+        ],
+        "ontology_attributes": [
+            {"attribute_ref_id": "OA1", "attribute_id": "Tunnel.ietf_standard", "parent_class": "Tunnel", "attribute_candidates": ["Tunnel.ietf_standard"], "evidence_refs": ["E5"], "order": 5},
+            {"attribute_ref_id": "OA2", "attribute_id": "NetworkElement.ip_address", "parent_class": "NetworkElement", "attribute_candidates": ["NetworkElement.ip_address"], "evidence_refs": ["E6"], "order": 6},
+        ],
+        "ontology_values": [
+            {"value_ref_id": "OV1", "value_id": "ServiceQuality.Gold", "constrains_attribute": "Service.quality_of_service", "evidence_refs": ["E4"], "order": 4}
+        ],
+        "evidence": [
+            {"evidence_id": "E1", "mention_id": "m_service_1", "mention_type": "OBJECT", "surface": "服务", "span": [4, 6], "ontology_id": "Service"},
+            {"evidence_id": "E2", "mention_id": "m_tunnel_1", "mention_type": "OBJECT", "surface": "隧道", "span": [9, 11], "ontology_id": "Tunnel"},
+            {"evidence_id": "E3", "mention_id": "m_source_ne_1", "mention_type": "RELATION", "surface": "源网元", "span": [13, 16], "ontology_id": "TUNNEL_SRC"},
+            {"evidence_id": "E4", "mention_id": "m_gold_1", "mention_type": "VALUE", "surface": "金牌", "span": [2, 4], "ontology_id": "ServiceQuality.Gold"},
+            {"evidence_id": "E5", "mention_id": "m_ietf_1", "mention_type": "ATTRIBUTE", "surface": "IETF标准", "span": [22, 28], "ontology_id": "Tunnel.ietf_standard"},
+            {"evidence_id": "E6", "mention_id": "m_ip_1", "mention_type": "ATTRIBUTE", "surface": "IP地址", "span": [33, 37], "ontology_id": "NetworkElement.ip_address"},
+        ],
     }
 
 
@@ -122,8 +92,8 @@ def _coreference() -> dict[str, object]:
 def _ontology_path_selection() -> dict[str, object]:
     return {
         "selected_paths": [
-            {"request_id": "PR1", "path_id": "P1", "relation_chain": ["REL_SERVICE_USES_TUNNEL"], "evidence_ids": ["PE1"]},
-            {"request_id": "PR2", "path_id": "P2", "relation_chain": ["REL_TUNNEL_SRC"], "evidence_ids": ["PE2"]},
+            {"request_id": "PR1", "path_id": "P1", "relation_chain": ["SERVICE_USES_TUNNEL"], "evidence_ids": ["PE1"]},
+            {"request_id": "PR2", "path_id": "P2", "relation_chain": ["TUNNEL_SRC"], "evidence_ids": ["PE2"]},
         ],
         "shape_updates": {
             "hop_count": {"value": 2, "source": "ontology_path_selection", "decision": "accept", "confidence": 1.0},
@@ -159,7 +129,7 @@ def _binding() -> dict[str, object]:
                 "item": "IP地址@33-37",
                 "kind": "projection",
                 "decision": "accept",
-                "result": {"node": "n1", "attribute": "NetworkElement.ip_address", "alias": "source_ne_ip"},
+                "result": {"node": "n1", "attribute": "NetworkElement.ip_address", "alias": "source_ne_ip_address"},
             },
         ],
         "shape_updates": {
@@ -175,7 +145,7 @@ def _finalizer() -> OntologyShapeFinalizer:
 
 def test_finalize_builds_logical_plan_and_backfills_shape_with_warnings() -> None:
     result = _finalizer().finalize(
-        intent_trace=_intent_trace(),
+        intent_output=_intent_output(),
         ontology_mapping=_mapping(),
         ontology_path_selection=_ontology_path_selection(),
         coreference=_coreference(),
@@ -183,7 +153,7 @@ def test_finalize_builds_logical_plan_and_backfills_shape_with_warnings() -> Non
         unresolved_items=[
             {
                 "id": "u_warn",
-                "source_stage": "step_2_5",
+                "source_stage": "step_3_5",
                 "type": "ambiguous_attribute_binding",
                 "blocking": False,
                 "message": "projection candidate kept as warning",
@@ -201,32 +171,32 @@ def test_finalize_builds_logical_plan_and_backfills_shape_with_warnings() -> Non
     assert plan.shape["relation_chain_type"].value == "fixed_chain"
     assert plan.shape["filter_level"].value == "record_filter"
     assert [(edge.from_node, edge.to_node, edge.relation) for edge in plan.edges] == [
-        ("s1", "t1", "REL_SERVICE_USES_TUNNEL"),
-        ("t1", "n1", "REL_TUNNEL_SRC"),
+        ("s1", "t1", "SERVICE_USES_TUNNEL"),
+        ("t1", "n1", "TUNNEL_SRC"),
     ]
-    assert [projection.alias for projection in plan.projections] == ["tunnel_ietf_standard", "source_ne_ip"]
+    assert [projection.alias for projection in plan.projections] == ["tunnel_ietf_standard", "source_ne_ip_address"]
 
 
-def test_finalize_keeps_legacy_path_filling_parameter_compatible() -> None:
+def test_finalize_uses_ontology_path_selection_parameter() -> None:
     result = _finalizer().finalize(
-        intent_trace=_intent_trace(),
+        intent_output=_intent_output(),
         ontology_mapping=_mapping(),
-        path_filling=_ontology_path_selection(),
+        ontology_path_selection=_ontology_path_selection(),
         coreference=_coreference(),
         binding=_binding(),
     )
 
     assert result.logical_plan.shape["hop_count"].source == "ontology_path_selection"
     assert [(edge.from_node, edge.to_node, edge.relation) for edge in result.logical_plan.edges] == [
-        ("s1", "t1", "REL_SERVICE_USES_TUNNEL"),
-        ("t1", "n1", "REL_TUNNEL_SRC"),
+        ("s1", "t1", "SERVICE_USES_TUNNEL"),
+        ("t1", "n1", "TUNNEL_SRC"),
     ]
 
 
 def test_blocking_unresolved_is_classified_as_clarification_needed() -> None:
     with pytest.raises(ClarificationNeeded) as exc:
         _finalizer().finalize(
-            intent_trace=_intent_trace(),
+            intent_output=_intent_output(),
             ontology_mapping=_mapping(),
             ontology_path_selection=_ontology_path_selection(),
             coreference=_coreference(),
@@ -234,7 +204,7 @@ def test_blocking_unresolved_is_classified_as_clarification_needed() -> None:
             unresolved_items=[
                 {
                     "id": "u_path",
-                    "source_stage": "step_2_3",
+                    "source_stage": "step_3_3",
                     "type": "ambiguous_path",
                     "blocking": True,
                     "message": "服务到源网元存在多条候选路径",
@@ -245,15 +215,45 @@ def test_blocking_unresolved_is_classified_as_clarification_needed() -> None:
             ],
         )
 
-    assert exc.value.stage == "step_2_6"
+    assert exc.value.stage == "step_3_6"
+    assert exc.value.clarification["source_step"] == "step_3_3"
     assert exc.value.clarification["precheck_result"]["failures"][0]["reason_code"] == "AMBIGUOUS_PATH"
     assert exc.value.clarification["precheck_result"]["failures"][0]["clarification_options"][0]["option_id"] == "P1"
+
+
+def test_blocking_unresolved_preserves_coreference_source_step() -> None:
+    with pytest.raises(ClarificationNeeded) as exc:
+        _finalizer().finalize(
+            intent_output=_intent_output(),
+            ontology_mapping=_mapping(),
+            ontology_path_selection=_ontology_path_selection(),
+            coreference=_coreference(),
+            binding=_binding(),
+            unresolved_items=[
+                {
+                    "id": "u_coref",
+                    "source_stage": "step_3_4",
+                    "type": "ambiguous_coreference",
+                    "blocking": True,
+                    "message": "两个服务对象是否同指不明确",
+                    "suggested_error_type": "ClarificationNeeded",
+                    "reason_code": "AMBIGUOUS_COREFERENCE",
+                    "options": ["same_instance", "distinct_instances"],
+                }
+            ],
+        )
+
+    assert exc.value.stage == "step_3_6"
+    assert exc.value.clarification["source_step"] == "step_3_4"
+    failure = exc.value.clarification["precheck_result"]["failures"][0]
+    assert failure["source_step"] == "step_3_4"
+    assert failure["reason_code"] == "AMBIGUOUS_COREFERENCE"
 
 
 def test_blocking_unresolved_without_suggested_type_is_engineering_failure() -> None:
     with pytest.raises(EngineeringFailure):
         _finalizer().finalize(
-            intent_trace=_intent_trace(),
+            intent_output=_intent_output(),
             ontology_mapping=_mapping(),
             ontology_path_selection=_ontology_path_selection(),
             coreference=_coreference(),
@@ -265,7 +265,7 @@ def test_blocking_unresolved_without_suggested_type_is_engineering_failure() -> 
 def test_missing_binding_candidate_can_be_resource_missing() -> None:
     with pytest.raises(ResourceMissing) as exc:
         _finalizer().finalize(
-            intent_trace=_intent_trace(),
+            intent_output=_intent_output(),
             ontology_mapping=_mapping(),
             ontology_path_selection=_ontology_path_selection(),
             coreference=_coreference(),
@@ -273,7 +273,7 @@ def test_missing_binding_candidate_can_be_resource_missing() -> None:
             unresolved_items=[
                 {
                     "id": "u_missing",
-                    "source_stage": "step_2_5",
+                    "source_stage": "step_3_5",
                     "type": "missing_binding_candidate",
                     "blocking": True,
                     "message": "系统资料中没有可绑定候选",
@@ -283,14 +283,14 @@ def test_missing_binding_candidate_can_be_resource_missing() -> None:
             ],
         )
 
-    assert exc.value.stage == "step_2_6"
+    assert exc.value.stage == "step_3_6"
     assert exc.value.payload["precheck_result"]["failures"][0]["error_type"] == "ResourceMissing"
 
 
 def test_pending_shape_is_rejected_after_backfill() -> None:
     with pytest.raises(EngineeringFailure) as exc:
         _finalizer().finalize(
-            intent_trace=_intent_trace(),
+            intent_output=_intent_output(),
             ontology_mapping=_mapping(),
             ontology_path_selection={**_ontology_path_selection(), "shape_updates": {}},
             coreference=_coreference(),
@@ -302,23 +302,18 @@ def test_pending_shape_is_rejected_after_backfill() -> None:
 
 def test_orphan_user_node_is_rejected_as_clarification() -> None:
     mapping = _mapping()
-    mapping["mapped_mentions"].append(
-        {
-            "mapping_id": "OM7",
-            "mention_id": "m_port_1",
-            "mention_type": "OBJECT",
-            "surface": "端口",
-            "span": [38, 40],
-            "ontology_kind": "class",
-            "ontology_id": "Port",
-        }
+    mapping["ontology_objects"].append(
+        {"object_id": "OO4", "class_id": "Port", "evidence_refs": ["E7"], "order": 7}
+    )
+    mapping["evidence"].append(
+        {"evidence_id": "E7", "mention_id": "m_port_1", "mention_type": "OBJECT", "surface": "端口", "span": [38, 40], "ontology_id": "Port"}
     )
     coreference = _coreference()
     coreference["merged_nodes"].append({"node_id": "p1", "class_id": "Port", "mapping_ids": ["OM7"]})
 
     with pytest.raises(ClarificationNeeded) as exc:
         _finalizer().finalize(
-            intent_trace=_intent_trace(),
+            intent_output=_intent_output(),
             ontology_mapping=mapping,
             ontology_path_selection=_ontology_path_selection(),
             coreference=coreference,
@@ -331,7 +326,7 @@ def test_orphan_user_node_is_rejected_as_clarification() -> None:
 def test_physical_schema_terms_are_rejected_from_logical_plan() -> None:
     with pytest.raises(EngineeringFailure) as exc:
         _finalizer().finalize(
-            intent_trace=_intent_trace(),
+            intent_output=_intent_output(),
             ontology_mapping=_mapping(),
             ontology_path_selection=_ontology_path_selection(),
             coreference={"merged_nodes": [{"node_id": "svc1", "class_id": "node_label:Service", "mapping_ids": ["OM1"]}]},
@@ -346,7 +341,7 @@ def test_projection_expected_requires_projection() -> None:
 
     with pytest.raises(EngineeringFailure) as exc:
         _finalizer().finalize(
-            intent_trace=_intent_trace(projection_expected=True),
+            intent_output=_intent_output(projection_expected=True),
             ontology_mapping=_mapping(),
             ontology_path_selection=_ontology_path_selection(),
             coreference=_coreference(),

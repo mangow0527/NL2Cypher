@@ -67,8 +67,8 @@ class OntologyCoreferenceService:
                 )
                 candidate_pair = {
                     "candidate_pair_id": candidate_pair_id,
-                    "left_mapping_id": left.mapping_id,
-                    "right_mapping_id": right.mapping_id,
+                    "left_object_id": left.mapping_id,
+                    "right_object_id": right.mapping_id,
                     "class_id": left.class_id,
                     "evidence": list(evidence),
                 }
@@ -106,6 +106,7 @@ class OntologyCoreferenceService:
                 llm_decision_traces.append(
                     {
                         "candidate_pair_id": candidate_pair_id,
+                        "llm_prompt": str(getattr(selection, "rendered_prompt", "")),
                         "llm_raw_output": raw_output,
                         "validated_output": dict(validated),
                     }
@@ -122,11 +123,11 @@ class OntologyCoreferenceService:
                     same_pairs.append(resolved)
 
         merged_nodes = _merged_nodes(same_pairs, {item.mapping_id: item for item in occurrences})
-        merged_by_mapping_id = {
-            mapping_id: node["node_id"] for node in merged_nodes for mapping_id in node["mapping_ids"]
+        merged_by_object_id = {
+            object_id: node["node_id"] for node in merged_nodes for object_id in node["object_ids"]
         }
         resolved_pairs = [
-            dict(item, merged_to=merged_by_mapping_id.get(str(item["left_mapping_id"])))
+            dict(item, merged_to=merged_by_object_id.get(str(item["left_object_id"])))
             if item["decision"] == SAME_INSTANCE
             else item
             for item in resolved_pairs
@@ -186,41 +187,51 @@ def _parse_coreference_selection_text(raw_response: str) -> dict[str, Any]:
 
 def _coreference_occurrences(ontology_mapping: dict[str, Any]) -> tuple[CoreferenceOccurrence, ...]:
     occurrences: list[CoreferenceOccurrence] = []
-    for item in ontology_mapping.get("mapped_mentions", []):
+    evidence_index = _evidence_index(ontology_mapping)
+    for item in ontology_mapping.get("ontology_objects", []):
         if not isinstance(item, dict):
-            continue
-        if item.get("ontology_kind") not in {"class", "relation_role"}:
             continue
         object_candidate_id = str(item.get("object_candidate_id") or "")
         if not object_candidate_id:
             continue
-        class_id = _class_id(item)
-        if class_id is None:
+        class_id = str(item.get("class_id") or "")
+        if not class_id:
             continue
-        span = item.get("span")
-        if not isinstance(span, (list, tuple)) or len(span) != 2:
-            continue
+        evidence = _first_evidence(item, evidence_index)
+        span = evidence.get("span", [0, 0])
+        span_pair = (int(span[0]), int(span[1])) if isinstance(span, (list, tuple)) and len(span) == 2 else (0, 0)
+        role_hint = item.get("role_hint") if isinstance(item.get("role_hint"), dict) else {}
         occurrences.append(
             CoreferenceOccurrence(
-                mapping_id=str(item["mapping_id"]),
+                mapping_id=str(item.get("object_id") or object_candidate_id),
                 object_candidate_id=object_candidate_id,
-                surface=str(item.get("surface") or ""),
-                span=(int(span[0]), int(span[1])),
-                ontology_kind=str(item.get("ontology_kind") or ""),
+                surface=str(evidence.get("surface") or evidence.get("text") or ""),
+                span=span_pair,
+                ontology_kind="relation_role" if role_hint else "class",
                 class_id=class_id,
-                role=str(item["role"]) if item.get("role") is not None else None,
+                role=str(role_hint.get("role")) if role_hint.get("role") is not None else None,
                 selected_roles=tuple(str(role) for role in item.get("selected_roles", []) if role),
             )
         )
     return tuple(sorted(occurrences, key=lambda item: (item.span[0], item.span[1], item.mapping_id)))
 
 
-def _class_id(item: dict[str, Any]) -> str | None:
-    if item.get("ontology_kind") == "class" and item.get("ontology_id"):
-        return str(item["ontology_id"])
-    if item.get("ontology_kind") == "relation_role" and item.get("target_class"):
-        return str(item["target_class"])
-    return None
+def _evidence_index(ontology_mapping: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        str(item.get("evidence_id")): dict(item)
+        for item in ontology_mapping.get("evidence", [])
+        if isinstance(item, dict) and item.get("evidence_id")
+    }
+
+
+def _first_evidence(item: dict[str, Any], evidence_index: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    refs = item.get("evidence_refs")
+    if isinstance(refs, (list, tuple)):
+        for ref in refs:
+            evidence = evidence_index.get(str(ref))
+            if evidence is not None:
+                return evidence
+    return {}
 
 
 def _can_pair(left: CoreferenceOccurrence, right: CoreferenceOccurrence, projection_start: int | None) -> bool:
@@ -240,6 +251,7 @@ def _pair_evidence(
     explicit_distinction_signals: list[dict[str, Any]] | tuple[dict[str, Any], ...],
     intent: dict[str, Any],
 ) -> tuple[str, ...]:
+    del selected_paths
     evidence: list[str] = []
     if left.class_id == right.class_id:
         evidence.append("same_class")
@@ -252,8 +264,6 @@ def _pair_evidence(
         evidence.append("explicit_distinction")
     else:
         evidence.append("no_distinguishing_qualifier")
-    if _same_path_anchor(left, right, selected_paths):
-        evidence.append("same_path_anchor")
     if _different_filter_segment(left, right):
         evidence.append("different_filter_segment")
     if _comparison_sides_differ(left, right, intent):
@@ -293,21 +303,6 @@ def _has_explicit_distinction(
             return True
         text = str(signal.get("text") or "")
         if any(word in text for word in DISTINGUISHING_WORDS):
-            return True
-    return False
-
-
-def _same_path_anchor(
-    left: CoreferenceOccurrence,
-    right: CoreferenceOccurrence,
-    selected_paths: list[dict[str, Any]] | tuple[dict[str, Any], ...],
-) -> bool:
-    for path in selected_paths:
-        mapping_ids = {str(item) for item in path.get("mapping_ids", [])} if isinstance(path.get("mapping_ids"), list) else set()
-        source_mapping_id = path.get("source_mapping_id")
-        if source_mapping_id is not None:
-            mapping_ids.add(str(source_mapping_id))
-        if {left.mapping_id, right.mapping_id}.issubset(mapping_ids):
             return True
     return False
 
@@ -418,7 +413,6 @@ def _evidence_label(evidence: str) -> str:
         "right_mapping_in_projection_region": "对象 B 位于返回字段区域",
         "no_distinguishing_qualifier": "两者之间没有“另一/不同/分别/对比/差集”等区分词",
         "explicit_distinction": "问题中出现“另一/不同/分别/对比/差集”等区分词",
-        "same_path_anchor": "两个对象出现在同一条已选连接中",
         "different_filter_segment": "一个对象用于条件限定，另一个不是",
         "different_comparison_side": "两个对象位于对比问题的不同侧",
     }.get(evidence, evidence)
@@ -432,8 +426,8 @@ def _resolved_pair(
 ) -> dict[str, Any]:
     payload = {
         "candidate_pair_id": candidate_pair["candidate_pair_id"],
-        "left_mapping_id": candidate_pair["left_mapping_id"],
-        "right_mapping_id": candidate_pair["right_mapping_id"],
+        "left_object_id": candidate_pair["left_object_id"],
+        "right_object_id": candidate_pair["right_object_id"],
         "decision": decision,
         "selected_by": selected_by,
         "evidence": list(candidate_pair["evidence"]),
@@ -463,17 +457,31 @@ def _merged_nodes(
             return
         parent[right_root] = left_root
 
+    for object_id in occurrence_by_mapping_id:
+        parent[object_id] = object_id
+
     for pair in same_pairs:
-        union(str(pair["left_mapping_id"]), str(pair["right_mapping_id"]))
+        union(str(pair["left_object_id"]), str(pair["right_object_id"]))
 
     groups: dict[str, list[str]] = {}
-    for mapping_id in parent:
-        groups.setdefault(find(mapping_id), []).append(mapping_id)
+    for object_id in parent:
+        groups.setdefault(find(object_id), []).append(object_id)
     merged_nodes: list[dict[str, Any]] = []
-    for index, mapping_ids in enumerate(sorted((sorted(items) for items in groups.values()), key=lambda items: items[0]), start=1):
-        class_id = occurrence_by_mapping_id[mapping_ids[0]].class_id
-        merged_nodes.append({"node_id": f"n{index}", "class_id": class_id, "mapping_ids": mapping_ids})
+    class_counts: dict[str, int] = {}
+    ordered_groups = sorted(
+        (sorted(items, key=lambda item: occurrence_by_mapping_id[item].span) for items in groups.values()),
+        key=lambda items: occurrence_by_mapping_id[items[0]].span,
+    )
+    for object_ids in ordered_groups:
+        class_id = occurrence_by_mapping_id[object_ids[0]].class_id
+        class_counts[class_id] = class_counts.get(class_id, 0) + 1
+        merged_nodes.append({"node_id": _merged_node_id(class_id, class_counts[class_id]), "class_id": class_id, "object_ids": object_ids})
     return merged_nodes
+
+
+def _merged_node_id(class_id: str, index: int) -> str:
+    prefix = {"Service": "s", "Tunnel": "t", "NetworkElement": "n", "Port": "p", "Protocol": "proto"}.get(class_id, "n")
+    return f"{prefix}{index}"
 
 
 def _unresolved_item(
@@ -483,10 +491,15 @@ def _unresolved_item(
     reason: str,
 ) -> dict[str, Any]:
     return {
+        "id": f"u_{candidate_pair_id}",
+        "source_stage": "step_3_4",
         "type": "ambiguous_coreference",
         "blocking": True,
         "candidate_pair_id": candidate_pair_id,
-        "mapping_ids": [left.mapping_id, right.mapping_id],
+        "object_ids": [left.mapping_id, right.mapping_id],
+        "message": reason,
         "reason": reason,
+        "reason_code": "AMBIGUOUS_COREFERENCE",
+        "suggested_error_type": "ClarificationNeeded",
         "options": [SAME_INSTANCE, DISTINCT_INSTANCES],
     }

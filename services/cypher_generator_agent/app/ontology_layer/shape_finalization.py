@@ -6,13 +6,15 @@ from typing import Any
 from .assets import OntologyAssets
 from services.cypher_generator_agent.app.clarification_layer.errors import ClarificationNeeded
 from services.cypher_generator_agent.app.infrastructure.errors import EngineeringFailure, ResourceMissing
+from services.cypher_generator_agent.app.intent_layer.models import Intent, InitialShapeField
 from .models import (
     OntologyLogicalPlan,
     PlanEdge,
     PlanFilter,
+    PlanMetric,
     PlanNode,
+    PlanNodeReturn,
     PlanProjection,
-    ShapeField,
 )
 
 
@@ -42,18 +44,17 @@ class OntologyShapeFinalizer:
     def finalize(
         self,
         *,
-        intent_trace: Any,
+        intent_output: Any,
         ontology_mapping: Any,
         ontology_path_selection: Any | None = None,
-        path_filling: Any | None = None,
         coreference: Any | None = None,
         binding: Any | None = None,
         unresolved_items: list[dict[str, Any]] | tuple[dict[str, Any], ...] = (),
         warnings: list[dict[str, Any]] | tuple[dict[str, Any], ...] = (),
     ) -> ShapeFinalizationResult:
-        intent_trace_dict = _to_dict(intent_trace)
+        intent_trace_dict = _to_dict(intent_output)
         mapping_dict = _to_dict(ontology_mapping)
-        path_dict = _to_dict(ontology_path_selection if ontology_path_selection is not None else path_filling)
+        path_dict = _to_dict(ontology_path_selection)
         coref_dict = _to_dict(coreference)
         binding_dict = _to_dict(binding)
         all_unresolved = self._collect_unresolved(
@@ -67,23 +68,27 @@ class OntologyShapeFinalizer:
         if blocking_failures:
             self._raise_precheck_failure(blocking_failures, nonblocking_warnings)
 
-        shape = self._final_shape(intent_trace, intent_trace_dict, path_dict, binding_dict)
-        nodes = self._nodes(coref_dict, mapping_dict)
+        shape = self._final_shape(intent_output, intent_trace_dict, path_dict, binding_dict)
+        nodes = self._nodes(coref_dict, mapping_dict, path_dict)
         node_by_id = {node.id: node for node in nodes}
         edges = self._edges(path_dict, mapping_dict, node_by_id)
         filters = self._filters(binding_dict, node_by_id)
         nodes = tuple(
             PlanNode(id=node.id, type=node.type, alias=node.alias, filters=tuple(filters.get(node.id, ()))) for node in nodes
         )
-        projections = self._projections(binding_dict, node_by_id)
+        projections = _normalize_projection_aliases(self._projections(binding_dict, node_by_id), nodes, edges)
+        metrics = self._metrics(intent_output, nodes, binding_dict)
+        node_returns = self._node_returns(intent_output, nodes, projections, metrics)
+        nodes = _prune_unreferenced_nodes(nodes, edges, projections, metrics, node_returns, mapping_dict)
         plan = OntologyLogicalPlan(
             root_operation="SELECT",
-            intent=intent_trace.intent if hasattr(intent_trace, "intent") else _intent_identity(intent_trace_dict),
+            intent=intent_output.intent if hasattr(intent_output, "intent") else _intent_identity(intent_trace_dict),
             shape=shape,
             nodes=nodes,
             edges=edges,
             projections=projections,
-            metrics=(),
+            node_returns=node_returns,
+            metrics=metrics,
         )
         failures = self._precheck(plan, mapping_dict)
         if failures:
@@ -94,7 +99,7 @@ class OntologyShapeFinalizer:
             precheck_result=precheck_result,
             warnings=nonblocking_warnings,
             trace={
-                "stage": "step_2_6",
+                "stage": "step_3_6",
                 "shape_backfilled": {key: value.to_dict() for key, value in shape.items()},
                 "warnings": [dict(item) for item in nonblocking_warnings],
                 "precheck_result": precheck_result,
@@ -115,6 +120,7 @@ class OntologyShapeFinalizer:
         error_type = item.get("suggested_error_type")
         if error_type not in {"ClarificationNeeded", "ResourceMissing", "EngineeringFailure"}:
             error_type = "EngineeringFailure"
+        source_step = item.get("source_step") or item.get("source_stage")
         failure = {
             "check": "blocking_unresolved_empty",
             "accepted": False,
@@ -123,20 +129,22 @@ class OntologyShapeFinalizer:
             "message": item.get("message") or item.get("reason") or "blocking unresolved item",
             "source_unresolved_id": item.get("id"),
         }
+        if source_step:
+            failure["source_step"] = str(source_step)
         if error_type == "ClarificationNeeded":
             failure["clarification_options"] = _clarification_options(item.get("candidates") or item.get("options"))
         return failure
 
     def _final_shape(
         self,
-        intent_trace: Any,
+        intent_output: Any,
         intent_trace_dict: dict[str, Any],
         path_dict: dict[str, Any],
         binding_dict: dict[str, Any],
-    ) -> dict[str, ShapeField]:
-        shape = dict(getattr(intent_trace, "shape", {}) or {})
+    ) -> dict[str, InitialShapeField]:
+        shape = dict(getattr(intent_output, "initial_shape", {}) or {})
         if not shape:
-            shape = {key: _shape_field(value) for key, value in intent_trace_dict.get("shape", {}).items()}
+            shape = {key: _shape_field(value) for key, value in intent_trace_dict.get("initial_shape", {}).items()}
         for payload in (path_dict.get("shape_updates", {}), binding_dict.get("shape_updates", {})):
             if not isinstance(payload, dict):
                 continue
@@ -147,7 +155,7 @@ class OntologyShapeFinalizer:
         if "hop_count" in shape and "relation_resolution_expected" in shape:
             current = shape["relation_resolution_expected"]
             if current.decision == "pending":
-                shape["relation_resolution_expected"] = ShapeField(
+                shape["relation_resolution_expected"] = InitialShapeField(
                     value=current.value,
                     source="shape_finalization",
                     decision="accept",
@@ -156,7 +164,7 @@ class OntologyShapeFinalizer:
                 )
         return shape
 
-    def _nodes(self, coref_dict: dict[str, Any], mapping_dict: dict[str, Any]) -> tuple[PlanNode, ...]:
+    def _nodes(self, coref_dict: dict[str, Any], mapping_dict: dict[str, Any], path_dict: dict[str, Any]) -> tuple[PlanNode, ...]:
         nodes: list[PlanNode] = []
         used_ids: set[str] = set()
         merged_nodes = coref_dict.get("merged_nodes")
@@ -172,10 +180,10 @@ class OntologyShapeFinalizer:
                     continue
                 nodes.append(PlanNode(id=node_id, type=class_id, alias=_alias(class_id, len(nodes) + 1)))
                 used_ids.add(node_id)
-        for item in mapping_dict.get("mapped_mentions", []):
+        for item in (*_mapping_node_sources(mapping_dict), *_path_node_sources(path_dict, self.relations)):
             if not isinstance(item, dict):
                 continue
-            class_id = _class_for_mapping(item)
+            class_id = item.get("class_id")
             if class_id is None or any(node.type == class_id for node in nodes):
                 continue
             node_id = _node_id(class_id, len(nodes) + 1)
@@ -189,11 +197,6 @@ class OntologyShapeFinalizer:
         node_by_id: dict[str, PlanNode],
     ) -> tuple[PlanEdge, ...]:
         nodes_by_class = {node.type: node for node in node_by_id.values()}
-        class_by_mapping = {
-            str(item.get("mapping_id")): _class_for_mapping(item)
-            for item in mapping_dict.get("mapped_mentions", [])
-            if isinstance(item, dict) and item.get("mapping_id")
-        }
         edges: list[PlanEdge] = []
         selected_paths = path_dict.get("selected_paths", [])
         if not isinstance(selected_paths, (list, tuple)):
@@ -204,7 +207,7 @@ class OntologyShapeFinalizer:
             chain = selected.get("relation_chain")
             if not isinstance(chain, (list, tuple)):
                 continue
-            current_class = _selected_path_start_class(selected, class_by_mapping)
+            current_class = None
             for raw_relation_id in chain:
                 relation_id = _normalize_relation_id(str(raw_relation_id))
                 relation = self.relations.get(relation_id)
@@ -283,6 +286,43 @@ class OntologyShapeFinalizer:
             )
         return tuple(projections)
 
+    def _node_returns(
+        self,
+        intent_output: Any,
+        nodes: tuple[PlanNode, ...],
+        projections: tuple[PlanProjection, ...],
+        metrics: tuple[PlanMetric, ...],
+    ) -> tuple[PlanNodeReturn, ...]:
+        intent = getattr(intent_output, "intent", None)
+        if getattr(intent, "secondary", None) != "entity_detail_query":
+            return ()
+        if projections or metrics:
+            return ()
+        return tuple(PlanNodeReturn(node=node.id, alias=node.alias) for node in nodes)
+
+    def _metrics(self, intent_output: Any, nodes: tuple[PlanNode, ...], binding_dict: dict[str, Any]) -> tuple[PlanMetric, ...]:
+        intent = getattr(intent_output, "intent", None)
+        primary = str(getattr(intent, "primary", ""))
+        secondary = str(getattr(intent, "secondary", ""))
+        if primary == "metric_query" and secondary == "count_metric_query":
+            target = _metric_target_node(nodes)
+            return (PlanMetric(function="count", node=target.id, alias=f"{_metric_alias_prefix(target.type)}_count"),)
+        if primary == "breakdown_query" and secondary == "multi_metric_breakdown_query":
+            target = _node_by_type(nodes, "Tunnel") or _metric_target_node(nodes)
+            metrics = [PlanMetric(function="count", node=target.id, alias=f"{_metric_alias_prefix(target.type)}_count")]
+            node_by_id = {node.id: node for node in nodes}
+            for index, condition in enumerate(_metric_conditions(binding_dict), start=1):
+                metrics.append(
+                    PlanMetric(
+                        function="conditional_count",
+                        node=target.id,
+                        alias=_conditional_metric_alias(target, condition, node_by_id, index),
+                        condition=(condition,),
+                    )
+                )
+            return tuple(metrics)
+        return ()
+
     def _precheck(self, plan: OntologyLogicalPlan, mapping_dict: dict[str, Any]) -> list[dict[str, Any]]:
         failures: list[dict[str, Any]] = []
         physical_failure = _physical_term_failure(plan)
@@ -320,10 +360,10 @@ class OntologyShapeFinalizer:
         for projection in plan.projections:
             node = node_by_id.get(projection.node)
             attribute_id = f"{node.type}.{projection.attribute}" if node else f"UNKNOWN.{projection.attribute}"
-            if node is None or attribute_id not in self.attributes:
+            if node is None or (projection.attribute != "__internal_id" and attribute_id not in self.attributes):
                 failures.append(_failure("attribute_owner_exists", "EngineeringFailure", "UNKNOWN_ONTOLOGY_ATTRIBUTE", f"unknown attribute {attribute_id}"))
         projection_expected = bool(_shape_value(plan.shape, "projection_expected"))
-        if projection_expected and not plan.projections and not plan.metrics:
+        if projection_expected and not plan.projections and not plan.metrics and not plan.node_returns:
             failures.append(
                 _failure(
                     "shape_projection_consistency",
@@ -332,7 +372,7 @@ class OntologyShapeFinalizer:
                     "projection_expected is true but plan has no projections",
                 )
             )
-        if not projection_expected and plan.projections:
+        if not projection_expected and (plan.projections or plan.node_returns):
             failures.append(
                 _failure(
                     "shape_projection_consistency",
@@ -347,6 +387,15 @@ class OntologyShapeFinalizer:
                 _failure("shape_no_pending", "EngineeringFailure", "PENDING_SHAPE_FIELD", f"pending shape fields: {', '.join(pending)}")
             )
         connected_node_ids = {edge.from_node for edge in plan.edges} | {edge.to_node for edge in plan.edges}
+        if len(plan.nodes) > 1 and not plan.edges:
+            failures.append(
+                _failure(
+                    "no_cartesian_product",
+                    "EngineeringFailure",
+                    "DISCONNECTED_MATCH_NODES",
+                    "multiple ontology nodes require an explicit selected path",
+                )
+            )
         if plan.edges:
             for node in plan.nodes:
                 if node.id in connected_node_ids:
@@ -375,16 +424,19 @@ class OntologyShapeFinalizer:
             "precheck_result": precheck_result,
             "warnings": [dict(item) for item in warnings],
         }
+        source_step = next((item.get("source_step") for item in failures if item.get("source_step")), None)
+        if source_step:
+            payload["source_step"] = str(source_step)
         if plan is not None:
             payload["logical_plan_draft"] = plan.to_dict()
         first = failures[0]
         message = str(first.get("message") or "shape finalization precheck failed")
         error_type = first.get("error_type")
         if error_type == "ClarificationNeeded":
-            raise ClarificationNeeded(stage="step_2_6", message=message, clarification=payload)
+            raise ClarificationNeeded(stage="step_3_6", message=message, clarification=payload)
         if error_type == "ResourceMissing":
-            raise ResourceMissing(stage="step_2_6", message=message, payload=payload)
-        raise EngineeringFailure(stage="step_2_6", message=message, payload=payload)
+            raise ResourceMissing(stage="step_3_6", message=message, payload=payload)
+        raise EngineeringFailure(stage="step_3_6", message=message, payload=payload)
 
 
 def _to_dict(value: Any) -> dict[str, Any]:
@@ -411,11 +463,11 @@ def _normalize_unresolved(item: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-def _shape_field(value: Any) -> ShapeField:
-    if isinstance(value, ShapeField):
+def _shape_field(value: Any) -> InitialShapeField:
+    if isinstance(value, InitialShapeField):
         return value
     if isinstance(value, dict):
-        return ShapeField(
+        return InitialShapeField(
             value=value.get("value"),
             source=str(value.get("source") or "unknown"),
             decision=str(value.get("decision") or "accept"),
@@ -425,16 +477,16 @@ def _shape_field(value: Any) -> ShapeField:
             else (),
             pending_until=str(value["pending_until"]) if value.get("pending_until") is not None else None,
         )
-    return ShapeField(value=value, source="shape_finalization.compat", decision="accept", confidence=1.0)
+    return InitialShapeField(value=value, source="shape_finalization.normalized", decision="accept", confidence=1.0)
 
 
-def _default_confirmed_shape_fields() -> dict[str, ShapeField]:
+def _default_confirmed_shape_fields() -> dict[str, InitialShapeField]:
     return {
-        "aggregation_functions": ShapeField([], "shape_finalization.default", "accept", 1.0),
-        "group_by_required": ShapeField(False, "shape_finalization.default", "accept", 1.0),
-        "order_required": ShapeField(False, "shape_finalization.default", "accept", 1.0),
-        "limit_required": ShapeField(False, "shape_finalization.default", "accept", 1.0),
-        "time_grain_required": ShapeField(False, "shape_finalization.default", "accept", 1.0),
+        "aggregation_functions": InitialShapeField([], "shape_finalization.default", "accept", 1.0),
+        "group_by_required": InitialShapeField(False, "shape_finalization.default", "accept", 1.0),
+        "order_required": InitialShapeField(False, "shape_finalization.default", "accept", 1.0),
+        "limit_required": InitialShapeField(False, "shape_finalization.default", "accept", 1.0),
+        "time_grain_required": InitialShapeField(False, "shape_finalization.default", "accept", 1.0),
     }
 
 
@@ -459,7 +511,7 @@ def _relations(assets: OntologyAssets) -> dict[str, dict[str, Any]]:
     for entry in assets.entries:
         if entry.mention_type != "relation_predicate":
             continue
-        relation_id = _normalize_relation_id(entry.canonical_id)
+        relation_id = entry.canonical_id.removeprefix("REL_")
         result.setdefault(
             relation_id,
             {
@@ -485,21 +537,49 @@ def _attributes(assets: OntologyAssets) -> set[str]:
     return result
 
 
-def _class_for_mapping(item: dict[str, Any]) -> str | None:
-    kind = str(item.get("ontology_kind") or "")
-    if kind == "class" and item.get("ontology_id"):
-        return str(item["ontology_id"])
-    if kind == "relation" and item.get("domain_class"):
-        return str(item["domain_class"])
-    if kind == "relation_role" and item.get("target_class"):
-        return str(item["target_class"])
-    if kind == "attribute" and item.get("parent_class"):
-        return str(item["parent_class"])
-    if kind == "enum_value":
-        attribute = item.get("constrains_attribute") or item.get("constrains_field")
+def _mapping_node_sources(mapping_dict: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+    sources: list[dict[str, Any]] = []
+    for item in mapping_dict.get("ontology_objects", []):
+        if isinstance(item, dict) and isinstance(item.get("class_id"), str):
+            sources.append({"class_id": item["class_id"], "source": "explicit_user_mention"})
+    for item in mapping_dict.get("ontology_attributes", []):
+        if not isinstance(item, dict):
+            continue
+        parent_class = item.get("parent_class")
+        candidates = item.get("attribute_candidates")
+        if isinstance(parent_class, str) and parent_class and (
+            not isinstance(candidates, list) or len(candidates) <= 1
+        ):
+            sources.append({"class_id": parent_class, "source": "attribute_owner"})
+    for item in mapping_dict.get("ontology_values", []):
+        if not isinstance(item, dict):
+            continue
+        attribute = item.get("constrains_attribute")
         if isinstance(attribute, str) and "." in attribute:
-            return attribute.split(".", 1)[0]
-    return None
+            sources.append({"class_id": attribute.split(".", 1)[0], "source": "value_owner"})
+    return tuple(sources)
+
+
+def _path_node_sources(path_dict: dict[str, Any], relations: dict[str, dict[str, Any]]) -> tuple[dict[str, Any], ...]:
+    sources: list[dict[str, Any]] = []
+    selected_paths = path_dict.get("selected_paths", [])
+    if not isinstance(selected_paths, (list, tuple)):
+        return ()
+    for selected in selected_paths:
+        if not isinstance(selected, dict):
+            continue
+        chain = selected.get("relation_chain")
+        if not isinstance(chain, (list, tuple)):
+            continue
+        for raw_relation_id in chain:
+            relation = relations.get(_normalize_relation_id(str(raw_relation_id)))
+            if not isinstance(relation, dict):
+                continue
+            for key in ("domain", "domain_class", "range", "range_class"):
+                value = relation.get(key)
+                if isinstance(value, str) and value:
+                    sources.append({"class_id": value, "source": "selected_path"})
+    return tuple(sources)
 
 
 def _node_id(class_id: str, index: int) -> str:
@@ -519,48 +599,150 @@ def _alias(class_id: str, index: int) -> str:
 def _normalize_relation_id(relation_id: str) -> str:
     if not relation_id:
         return ""
-    return relation_id if relation_id.startswith("REL_") else f"REL_{relation_id}"
-
-
-def _selected_path_start_class(selected: dict[str, Any], class_by_mapping: dict[str, str | None]) -> str | None:
-    mapping_ids = selected.get("mapping_ids")
-    if isinstance(mapping_ids, (list, tuple)):
-        for mapping_id in mapping_ids:
-            class_id = class_by_mapping.get(str(mapping_id))
-            if class_id is not None:
-                return class_id
-    return None
+    return relation_id
 
 
 def _operator(value: str) -> str:
     return {"equals": "=", "eq": "=", "==": "="}.get(value, value)
 
 
-def _intent_identity(payload: dict[str, Any]) -> Any:
-    from .models import IntentIdentity
+def _normalize_projection_aliases(
+    projections: tuple[PlanProjection, ...],
+    nodes: tuple[PlanNode, ...],
+    edges: tuple[PlanEdge, ...],
+) -> tuple[PlanProjection, ...]:
+    if (
+        len(nodes) != 1
+        or edges
+        or not any(item.attribute == "__internal_id" for item in projections)
+        or any(item.node != nodes[0].id for item in projections)
+    ):
+        return projections
+    aliases = {"__internal_id": "id", "name": "name", "elem_type": "type"}
+    return tuple(
+        PlanProjection(node=item.node, attribute=item.attribute, alias=aliases.get(item.attribute, item.alias))
+        for item in projections
+    )
 
+
+def _prune_unreferenced_nodes(
+    nodes: tuple[PlanNode, ...],
+    edges: tuple[PlanEdge, ...],
+    projections: tuple[PlanProjection, ...],
+    metrics: tuple[PlanMetric, ...],
+    node_returns: tuple[PlanNodeReturn, ...],
+    mapping_dict: dict[str, Any],
+) -> tuple[PlanNode, ...]:
+    if len(nodes) <= 1:
+        return nodes
+    referenced = {edge.from_node for edge in edges} | {edge.to_node for edge in edges}
+    referenced.update(item.node for item in projections)
+    referenced.update(item.node for item in node_returns)
+    for metric in metrics:
+        referenced.add(metric.node)
+        referenced.update(item.node for item in metric.condition)
+    referenced.update(node.id for node in nodes if node.filters)
+    if not referenced:
+        return nodes
+    pruned = tuple(
+        node
+        for node in nodes
+        if node.id in referenced or _mapping_source_for_node(node, mapping_dict) != "attribute_owner"
+    )
+    return pruned or nodes
+
+
+def _intent_identity(payload: dict[str, Any]) -> Any:
     intent = payload.get("intent", payload)
     if not isinstance(intent, dict):
         intent = {}
-    return IntentIdentity(
+    return Intent(
         primary=str(intent.get("primary") or "record_retrieval_query"),
         secondary=str(intent.get("secondary") or "related_record_query"),
-        source=str(intent.get("source") or "shape_finalization.compat"),
+        source=str(intent.get("source") or "shape_finalization.default"),
         decision=str(intent.get("decision") or "accept"),
         confidence=float(intent.get("confidence", 1.0)),
     )
 
 
-def _shape_value(shape: dict[str, ShapeField], key: str) -> Any:
+def _shape_value(shape: dict[str, InitialShapeField], key: str) -> Any:
     field = shape.get(key)
     return field.value if field is not None else None
 
 
 def _mapping_source_for_node(node: PlanNode, mapping_dict: dict[str, Any]) -> str | None:
-    for item in mapping_dict.get("mapped_mentions", []):
-        if isinstance(item, dict) and _class_for_mapping(item) == node.type and item.get("mention_type") in {"OBJECT", "RELATION"}:
-            return "explicit_user_mention"
+    for item in _mapping_node_sources(mapping_dict):
+        if item.get("class_id") == node.type:
+            return str(item.get("source") or "")
     return None
+
+
+def _node_by_type(nodes: tuple[PlanNode, ...], node_type: str) -> PlanNode | None:
+    for node in nodes:
+        if node.type == node_type:
+            return node
+    return None
+
+
+def _metric_target_node(nodes: tuple[PlanNode, ...]) -> PlanNode:
+    for preferred in ("Tunnel", "Service", "NetworkElement", "Port"):
+        node = _node_by_type(nodes, preferred)
+        if node is not None:
+            return node
+    if nodes:
+        return nodes[-1]
+    raise EngineeringFailure(stage="step_3_6", message="metric query has no ontology node to count")
+
+
+def _metric_alias_prefix(class_id: str) -> str:
+    return {"Service": "service", "Tunnel": "tunnel", "NetworkElement": "network_element", "Port": "port"}.get(
+        class_id,
+        class_id.lower(),
+    )
+
+
+def _metric_conditions(binding_dict: dict[str, Any]) -> tuple[PlanFilter, ...]:
+    conditions: list[PlanFilter] = []
+    for item in binding_dict.get("metric_conditions", []):
+        if not isinstance(item, dict) or item.get("decision", "accept") != "accept":
+            continue
+        result = item.get("result")
+        if not isinstance(result, dict):
+            continue
+        attribute = str(result.get("attribute") or "")
+        if "." not in attribute:
+            continue
+        _, attr = attribute.split(".", 1)
+        conditions.append(
+            PlanFilter(
+                node=str(result.get("node") or ""),
+                attr=attr,
+                operator=_operator(str(result.get("operator") or "=")),
+                value=result.get("value"),
+            )
+        )
+    return tuple(conditions)
+
+
+def _conditional_metric_alias(
+    target: PlanNode,
+    condition: PlanFilter,
+    node_by_id: dict[str, PlanNode],
+    index: int,
+) -> str:
+    condition_node = node_by_id.get(condition.node)
+    condition_prefix = _condition_alias_prefix(condition_node.type if condition_node else "")
+    target_prefix = _metric_alias_prefix(target.type)
+    if condition_prefix:
+        return f"{condition_prefix}_{target_prefix}_count"
+    return f"conditional_{index}_{target_prefix}_count"
+
+
+def _condition_alias_prefix(class_id: str) -> str:
+    return {"NetworkElement": "source_ne", "Port": "port", "Service": "service", "Tunnel": "tunnel"}.get(
+        class_id,
+        class_id.lower() if class_id else "",
+    )
 
 
 def _failure(check: str, error_type: str, reason_code: str, message: str, **extra: Any) -> dict[str, Any]:

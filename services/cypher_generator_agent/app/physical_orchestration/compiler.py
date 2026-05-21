@@ -43,15 +43,15 @@ class OntologyPhysicalCompiler:
     def compile(self, plan: OntologyLogicalPlan) -> CompilerTrace:
         match_clause = self._match_clause(plan)
         lines = [f"MATCH {match_clause}"]
-        filters = [self._filter_expression(node) for node in plan.nodes for _ in node.filters]
+        filters = [self._filter_expression(node) for node in plan.nodes]
         filters = [item for item in filters if item]
         if filters:
             lines.append(f"WHERE {' AND '.join(filters)}")
-        return_items = [
-            f"{self._node_variable(self._node(plan, projection.node))}.{self._attribute_property(self._node(plan, projection.node), projection.attribute)} AS {projection.alias}"
-            for projection in plan.projections
-        ]
+        return_items = [self._projection_expression(plan, projection) for projection in plan.projections]
+        return_items.extend(self._node_variable(self._node(plan, item.node)) for item in plan.node_returns)
         return_items.extend(self._metric_expression(plan, metric) for metric in plan.metrics)
+        if not return_items:
+            raise EngineeringFailure(stage="compiler", message="logical plan has no return items")
         lines.append(f"RETURN {', '.join(return_items)}")
         cypher = "\n".join(lines)
         return CompilerTrace(
@@ -133,11 +133,22 @@ class OntologyPhysicalCompiler:
             )
         return node_property
 
+    def _projection_expression(self, plan: OntologyLogicalPlan, projection: Any) -> str:
+        node = self._node(plan, projection.node)
+        node_variable = self._node_variable(node)
+        if projection.attribute == "__internal_id":
+            return f"id({node_variable}) AS {projection.alias}"
+        return f"{node_variable}.{self._attribute_property(node, projection.attribute)} AS {projection.alias}"
+
     def _mapped_value(self, node: PlanNode, attr: str, value: Any) -> Any:
         mapping = self.attribute_mappings.get(f"{node.type}.{attr}") or {}
         transforms = mapping.get("value_transform")
         if isinstance(transforms, dict) and value in transforms:
             return transforms[value]
+        if isinstance(transforms, dict) and isinstance(value, str) and "." in value:
+            short_value = value.rsplit(".", 1)[1]
+            if short_value in transforms:
+                return transforms[short_value]
         return value
 
     def _attribute_bindings(self, plan: OntologyLogicalPlan) -> dict[str, str]:
@@ -149,7 +160,10 @@ class OntologyPhysicalCompiler:
         for projection in plan.projections:
             node = self._node(plan, projection.node)
             ontology_attribute = f"{node.type}.{projection.attribute}"
-            bindings[ontology_attribute] = f"{self._node_variable(node)}.{self._attribute_property(node, projection.attribute)}"
+            if projection.attribute == "__internal_id":
+                bindings[ontology_attribute] = f"id({self._node_variable(node)})"
+            else:
+                bindings[ontology_attribute] = f"{self._node_variable(node)}.{self._attribute_property(node, projection.attribute)}"
         for metric in plan.metrics:
             for item in metric.condition:
                 node = self._node(plan, item.node)

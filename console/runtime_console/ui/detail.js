@@ -172,7 +172,15 @@ function renderCgaLlmPrompt(item, fallbackTitle, fallbackRawOutputTitle) {
   `;
 }
 
-function renderCgaLlmPrompts(prompts = {}) {
+function isOntologyCgaSection(section = {}) {
+  if (section.trace_profile === 'ontology') {
+    return true;
+  }
+  const layers = Array.isArray(section.trace_layers) ? section.trace_layers : [];
+  return layers.some((layer) => ['preprocessing', 'lexical', 'intent_shape', 'ontology', 'validation', 'compilation'].includes(layer.key));
+}
+
+function renderCgaLlmPrompts(prompts = {}, section = {}) {
   const traceV2Order = [
     ['intent_primary_classification', '意图识别：一级分类 LLM 判定', '意图识别：一级分类 LLM 原始返回'],
     ['intent_secondary_classification', '意图识别：二级分类 LLM 判定', '意图识别：二级分类 LLM 原始返回'],
@@ -193,6 +201,54 @@ function renderCgaLlmPrompts(prompts = {}) {
   ].join('');
 }
 
+function renderOntologyLayerPrompts(layerKey, prompts = {}) {
+  const promptOrderByLayer = {
+    intent_shape: [
+      ['intent_primary_classification', '一层意图 LLM 判定', '一层意图 LLM 原始输出'],
+      ['intent_secondary_classification', '二层意图 LLM 判定', '二层意图 LLM 原始输出'],
+    ],
+  };
+  return (promptOrderByLayer[layerKey] || [])
+    .map(([key, title, rawTitle]) => renderCgaLlmPrompt(prompts[key], title, rawTitle))
+    .join('');
+}
+
+function renderTraceFields(fields = []) {
+  if (!fields.length) {
+    return '';
+  }
+  return `
+    <div class="field-grid">
+      ${fields.map((field) => metricCard(field.label_zh || '字段', inlineValue(field.value))).join('')}
+    </div>
+  `;
+}
+
+function renderTraceSectionBlock(block = {}) {
+  return `
+    <h3>${escapeHtml(block.title_zh || '输出')}</h3>
+    ${codeBlock(Object.prototype.hasOwnProperty.call(block, 'value') ? block.value : {})}
+  `;
+}
+
+function renderStructuredTraceSection(section = {}) {
+  const fields = Array.isArray(section.fields) ? section.fields : [];
+  const blocks = Array.isArray(section.blocks) ? section.blocks : [];
+  if (!fields.length && !blocks.length) {
+    return `
+      <h3>${escapeHtml(section.title_zh || '分段证据')}</h3>
+      ${codeBlock(section.value)}
+    `;
+  }
+  return `
+    <section class="trace-substep">
+      <h3>${escapeHtml(section.title_zh || '分段证据')}</h3>
+      ${renderTraceFields(fields)}
+      ${blocks.map((block) => renderTraceSectionBlock(block)).join('')}
+    </section>
+  `;
+}
+
 function chainMetric(label, item, valueKey = 'label_zh') {
   const value = item && typeof item === 'object' ? item[valueKey] : item;
   const raw = item && typeof item === 'object' ? item.value || item.reason || item.decision || item.source : null;
@@ -202,6 +258,12 @@ function chainMetric(label, item, valueKey = 'label_zh') {
 
 const cgaTraceLayerTitles = {
   orchestration: '服务编排层',
+  preprocessing: '自然语言问题预处理',
+  lexical: '词法层',
+  intent_shape: '意图识别与答案形态',
+  ontology: '本体层',
+  validation: '校验层',
+  compilation: '编译层',
   intent_recognition: '意图识别层',
   semantic_view_matching: '语义视图匹配层',
   planning: '规划层',
@@ -229,23 +291,31 @@ function renderLegacyCgaChainSummary(chain) {
   `;
 }
 
-function renderCgaTraceLayers(layers = []) {
+function renderCgaTraceLayers(layers = [], section = {}) {
   if (!layers.length) {
     return '';
   }
+  const prompts = section.llm_prompts || {};
+  const showOntologyPromptsInLayer = isOntologyCgaSection(section);
   return `
-    <h3>CGA 分层链路</h3>
     ${layers
       .map((layer) => {
         const fields = Array.isArray(layer.fields) ? layer.fields : [];
+        const sections = Array.isArray(layer.sections) ? layer.sections : [];
         const title = layer.title_zh || cgaTraceLayerTitles[layer.key] || layer.key || '未命名层级';
+        const layerPrompts = showOntologyPromptsInLayer ? renderOntologyLayerPrompts(layer.key, prompts) : '';
+        const rawEvidence = Object.prototype.hasOwnProperty.call(layer, 'raw')
+          ? `
+            <h3>${escapeHtml(title)}原始证据</h3>
+            ${codeBlock(layer.raw || {})}
+          `
+          : '';
         return `
           <h3>${escapeHtml(title)}</h3>
-          <div class="field-grid">
-            ${fields.map((field) => metricCard(field.label_zh || '字段', inlineValue(field.value))).join('')}
-          </div>
-          <h3>${escapeHtml(title)}原始证据</h3>
-          ${codeBlock(layer.raw || {})}
+          ${renderTraceFields(fields)}
+          ${layerPrompts}
+          ${sections.map((section) => renderStructuredTraceSection(section)).join('')}
+          ${rawEvidence}
         `;
       })
       .join('')}
@@ -277,6 +347,12 @@ function renderOverview(detail) {
 function renderCypherGenerator(section) {
   const chain = section.chain_summary || {};
   const traceLayers = Array.isArray(section.trace_layers) ? section.trace_layers : [];
+  const standalonePrompts = isOntologyCgaSection(section)
+    ? ''
+    : `
+      <h3>LLM 调用提示词</h3>
+      ${renderCgaLlmPrompts(section.llm_prompts || {}, section)}
+    `;
   return `
     <details class="pipeline-step" open>
       <summary>
@@ -284,9 +360,8 @@ function renderCypherGenerator(section) {
         <span class="status-pill tone-${tone(section.generation_status)}">${escapeHtml(section.generation_status || 'unknown')}</span>
       </summary>
       ${renderClarificationBlock(section.clarification)}
-      <h3>LLM 调用提示词</h3>
-      ${renderCgaLlmPrompts(section.llm_prompts || {})}
-      ${traceLayers.length ? renderCgaTraceLayers(traceLayers) : renderLegacyCgaChainSummary(chain)}
+      ${standalonePrompts}
+      ${traceLayers.length ? renderCgaTraceLayers(traceLayers, section) : renderLegacyCgaChainSummary(chain)}
       <h3>生成运行 ID</h3>
       ${codeBlock(section.generation_run_id || '未提供')}
       <h3>CGA 分层证据快照</h3>

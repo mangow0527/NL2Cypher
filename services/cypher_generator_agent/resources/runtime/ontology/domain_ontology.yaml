@@ -13,49 +13,49 @@ classes:
   - id: Link
 
 relations:
-  - id: REL_SERVICE_USES_TUNNEL
+  - id: SERVICE_USES_TUNNEL
     domain: Service
     range: Tunnel
     allowed_directions: [outgoing]
-  - id: REL_TUNNEL_SRC
+  - id: TUNNEL_SRC
     domain: Tunnel
     range: NetworkElement
     role: source
     allowed_directions: [outgoing]
-  - id: REL_TUNNEL_DST
+  - id: TUNNEL_DST
     domain: Tunnel
     range: NetworkElement
     role: destination
     allowed_directions: [outgoing]
-  - id: REL_PATH_THROUGH
+  - id: PATH_THROUGH
     domain: Tunnel
     range: NetworkElement
     role: through
     allowed_directions: [outgoing]
-  - id: REL_HAS_PORT
+  - id: HAS_PORT
     domain: NetworkElement
     range: Port
     allowed_directions: [outgoing]
-  - id: REL_TUNNEL_PROTO
+  - id: TUNNEL_PROTO
     domain: Tunnel
     range: Protocol
     allowed_directions: [outgoing]
-  - id: REL_FIBER_SRC
+  - id: FIBER_SRC
     domain: Fiber
     range: Port
     role: source
     allowed_directions: [outgoing]
-  - id: REL_FIBER_DST
+  - id: FIBER_DST
     domain: Fiber
     range: Port
     role: destination
     allowed_directions: [outgoing]
-  - id: REL_LINK_SRC
+  - id: LINK_SRC
     domain: Link
     range: Port
     role: source
     allowed_directions: [outgoing]
-  - id: REL_LINK_DST
+  - id: LINK_DST
     domain: Link
     range: Port
     role: destination
@@ -137,10 +137,10 @@ default_paths:
   - id: DP_SERVICE_TO_SOURCE_NE
     from_class: Service
     to_class: NetworkElement
-    relation_chain: [REL_SERVICE_USES_TUNNEL, REL_TUNNEL_SRC]
+    relation_chain: [SERVICE_USES_TUNNEL, TUNNEL_SRC]
     confidence: confirmed
   - id: DP_SERVICE_TO_PORT_REVIEW
     from_class: Service
     to_class: Port
-    relation_chain: [REL_SERVICE_USES_TUNNEL, REL_TUNNEL_SRC, REL_HAS_PORT]
+    relation_chain: [SERVICE_USES_TUNNEL, TUNNEL_SRC, HAS_PORT]
     confidence: needs_review

@@ -5,11 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from services.cypher_generator_agent.app.ontology_layer.assets import OntologyAssets
-from services.cypher_generator_agent.app.ontology_layer.models import (
-    IntentIdentity,
-    IntentTrace,
-    ShapeField,
-)
+from services.cypher_generator_agent.app.intent_layer.models import Intent, IntentOutput, InitialShapeField
 from services.cypher_generator_agent.app.ontology_layer.ontology_path_selection import (
     OntologyPathSelectionValidationError,
     OntologyPathSelectionService,
@@ -19,143 +15,202 @@ from services.cypher_generator_agent.app.ontology_layer.ontology_path_selection 
 )
 
 
-def _intent_trace() -> IntentTrace:
-    return IntentTrace(
-        intent=IntentIdentity(
+def _intent_output() -> IntentOutput:
+    return IntentOutput(
+        intent=Intent(
             primary="record_retrieval_query",
             secondary="related_record_query",
             source="rule",
             decision="accept",
             confidence=0.91,
         ),
-        shape={
-            "projection_expected": ShapeField(True, "taxonomy", "accept", 1.0),
-            "relation_resolution_expected": ShapeField(True, "taxonomy", "pending", 0.8, pending_until="step_2_3"),
+        planning_prompt_text="用户想查询相关记录，并返回某些字段。",
+        initial_shape={
+            "projection_expected": InitialShapeField(True, "taxonomy", "accept", 1.0),
+            "relation_resolution_expected": InitialShapeField(True, "taxonomy", "pending", 0.8, pending_until="step_3_3"),
         },
         candidates=(),
         rule_signals_used=("返回",),
+        diagnostics={},
     )
 
 
 def _ontology_mapping() -> dict[str, object]:
     return {
-        "mapped_mentions": [
+        "ontology_objects": [
             {
-                "mapping_id": "OM1",
+                "object_id": "OO1",
+                "class_id": "Service",
+                "object_candidate_id": "SM1",
+                "selected_roles": ["filter_subject", "path_subject"],
+                "evidence_refs": ["E1"],
+            },
+            {
+                "object_id": "OO2",
+                "class_id": "Tunnel",
+                "object_candidate_id": "SM2",
+                "selected_roles": ["path_subject"],
+                "evidence_refs": ["E2"],
+            },
+            {
+                "object_id": "OO3",
+                "class_id": "NetworkElement",
+                "object_candidate_id": "SM3",
+                "selected_roles": ["path_subject"],
+                "role_hint": {
+                    "relation_hint_id": "ORH2",
+                    "relation_id": "TUNNEL_SRC",
+                    "role": "source",
+                    "source_class": "Tunnel",
+                },
+                "evidence_refs": ["E3"],
+            },
+        ],
+        "ontology_relation_hints": [
+            {
+                "relation_hint_id": "ORH1",
+                "relation_id": "SERVICE_USES_TUNNEL",
+                "from_class": "Service",
+                "to_class": "Tunnel",
+                "object_candidate_id": "SM2",
+                "selected_roles": ["path_subject"],
+                "evidence_refs": ["E2"],
+            },
+            {
+                "relation_hint_id": "ORH2",
+                "relation_id": "TUNNEL_SRC",
+                "from_class": "Tunnel",
+                "to_class": "NetworkElement",
+                "role": "source",
+                "object_candidate_id": "SM3",
+                "selected_roles": ["path_subject"],
+                "evidence_refs": ["E3"],
+            },
+        ],
+        "ontology_attributes": [],
+        "ontology_values": [],
+        "evidence": [
+            {
+                "evidence_id": "E1",
                 "mention_id": "m_service_1",
                 "mention_type": "OBJECT",
                 "surface": "服务",
                 "span": [4, 6],
-                "ontology_kind": "class",
                 "ontology_id": "Service",
-                "object_candidate_id": "SM1",
-                "selected_roles": ["filter_subject", "path_subject"],
             },
             {
-                "mapping_id": "OM2",
+                "evidence_id": "E2",
                 "mention_id": "m_path_through_1",
                 "mention_type": "RELATION",
                 "surface": "经过",
                 "span": [6, 8],
-                "ontology_kind": "relation",
-                "ontology_id": "REL_SERVICE_USES_TUNNEL",
-                "domain_class": "Service",
-                "range_class": "Tunnel",
-                "object_candidate_id": "SM2",
-                "selected_roles": ["path_subject"],
+                "ontology_id": "SERVICE_USES_TUNNEL",
             },
             {
-                "mapping_id": "OM3",
+                "evidence_id": "E3",
                 "mention_id": "m_source_ne_1",
                 "mention_type": "RELATION",
                 "surface": "源网元",
                 "span": [13, 16],
-                "ontology_kind": "relation_role",
-                "ontology_id": "REL_TUNNEL_SRC",
-                "role": "source",
-                "target_class": "NetworkElement",
-                "object_candidate_id": "SM3",
-                "selected_roles": ["path_subject"],
+                "ontology_id": "TUNNEL_SRC",
             },
-        ]
+        ],
     }
 
 
-def test_builds_path_requests_from_step_2_2_ontology_mapping() -> None:
-    requests = build_path_requests(_ontology_mapping(), _intent_trace())
+def test_builds_path_requests_from_step_3_2_ontology_mapping() -> None:
+    requests = build_path_requests(_ontology_mapping())
 
     assert [item.request_id for item in requests] == ["PR1", "PR2"]
     assert requests[0].from_class == "Service"
     assert requests[0].to_class == "Tunnel"
-    assert requests[0].relation_hint == "REL_SERVICE_USES_TUNNEL"
-    assert requests[0].source_mapping_id == "OM2"
+    assert requests[0].relation_hint == "SERVICE_USES_TUNNEL"
+    assert requests[0].evidence_refs == ("E2",)
     assert requests[1].from_class == "Tunnel"
     assert requests[1].to_class == "NetworkElement"
-    assert requests[1].relation_hint == "REL_TUNNEL_SRC"
+    assert requests[1].relation_hint == "TUNNEL_SRC"
     assert requests[1].role == "source"
+    assert requests[1].evidence_refs == ("E3",)
 
 
 def test_build_path_requests_ignores_mappings_without_path_roles() -> None:
     mapping = _ontology_mapping()
-    mapping["mapped_mentions"].append(
+    mapping["ontology_relation_hints"].append(
         {
-            "mapping_id": "OM4",
-            "ontology_kind": "relation",
-            "ontology_id": "REL_TUNNEL_PROTO",
-            "surface": "协议",
-            "span": [20, 22],
-            "domain_class": "Tunnel",
-            "range_class": "Protocol",
+            "relation_hint_id": "ORH3",
+            "relation_id": "TUNNEL_PROTO",
+            "from_class": "Tunnel",
+            "to_class": "Protocol",
             "selected_roles": ["projection_target"],
+            "evidence_refs": ["E4"],
         }
     )
 
-    requests = build_path_requests(mapping, _intent_trace())
+    requests = build_path_requests(mapping)
 
-    assert [item.source_mapping_id for item in requests] == ["OM2", "OM3"]
+    assert [item.relation_hint for item in requests] == ["SERVICE_USES_TUNNEL", "TUNNEL_SRC"]
+
+
+def test_build_path_requests_consumes_ir_without_mention_fields() -> None:
+    mapping = _ontology_mapping()
+    assert "mapped_mentions" not in mapping
+    for section in ("ontology_objects", "ontology_relation_hints", "ontology_attributes", "ontology_values"):
+        for item in mapping[section]:
+            assert not {"mention_type", "surface", "span"}.intersection(item)
+
+    requests = build_path_requests(mapping)
+
+    assert [(item.from_class, item.to_class, item.relation_hint) for item in requests] == [
+        ("Service", "Tunnel", "SERVICE_USES_TUNNEL"),
+        ("Tunnel", "NetworkElement", "TUNNEL_SRC"),
+    ]
+
+
+def test_role_relation_evidence_does_not_create_duplicate_tunnel_to_network_element_request() -> None:
+    requests = build_path_requests(_ontology_mapping())
+
+    assert [(item.from_class, item.to_class) for item in requests].count(("Tunnel", "NetworkElement")) == 1
 
 
 def test_enumerates_explicit_role_semantic_and_default_candidate_paths_without_graph_duplicates() -> None:
     assets = OntologyAssets.from_default_resources()
     requests = build_path_requests(
         {
-            "mapped_mentions": [
+            "ontology_objects": [],
+            "ontology_relation_hints": [
                 {
-                    "mapping_id": "OM1",
-                    "ontology_kind": "relation",
-                    "ontology_id": "REL_SERVICE_USES_TUNNEL",
-                    "surface": "经过",
-                    "span": [0, 2],
-                    "domain_class": "Service",
-                    "range_class": "Tunnel",
+                    "relation_hint_id": "ORH1",
+                    "relation_id": "SERVICE_USES_TUNNEL",
+                    "from_class": "Service",
+                    "to_class": "Tunnel",
+                    "evidence_refs": ["E1"],
                 },
                 {
-                    "mapping_id": "OM2",
-                    "ontology_kind": "relation_role",
-                    "ontology_id": "REL_TUNNEL_SRC",
+                    "relation_hint_id": "ORH2",
+                    "relation_id": "TUNNEL_SRC",
                     "role": "source",
-                    "target_class": "NetworkElement",
-                    "surface": "源网元",
-                    "span": [3, 6],
+                    "from_class": "Tunnel",
+                    "to_class": "NetworkElement",
+                    "evidence_refs": ["E2"],
                 },
                 {
-                    "mapping_id": "OM3",
-                    "ontology_kind": "semantic_object",
-                    "ontology_id": "service_source_ne",
-                    "surface": "服务源网元",
-                    "span": [0, 6],
+                    "relation_hint_id": "ORH3",
+                    "semantic_object_id": "service_source_ne",
+                    "evidence_refs": ["E3"],
                 },
-            ]
+            ],
+            "ontology_attributes": [],
+            "ontology_values": [],
+            "evidence": [],
         },
-        _intent_trace(),
     )
 
     candidates = build_candidate_paths(requests, assets)
     chains_by_source = {(item.request_id, item.source): item.relation_chain for item in candidates}
 
-    assert chains_by_source[("PR1", "explicit_relation_mapping")] == ("REL_SERVICE_USES_TUNNEL",)
-    assert chains_by_source[("PR2", "role_relation_mapping")] == ("REL_TUNNEL_SRC",)
-    assert chains_by_source[("PR3", "semantic_traversal")] == ("REL_SERVICE_USES_TUNNEL", "REL_TUNNEL_SRC")
+    assert chains_by_source[("PR1", "explicit_relation_mapping")] == ("SERVICE_USES_TUNNEL",)
+    assert chains_by_source[("PR2", "role_relation_mapping")] == ("TUNNEL_SRC",)
+    assert chains_by_source[("PR3", "semantic_traversal")] == ("SERVICE_USES_TUNNEL", "TUNNEL_SRC")
     assert all(item.source != "ontology_relation_graph" for item in candidates)
 
 
@@ -165,17 +220,17 @@ def test_uses_ontology_relation_graph_only_as_fallback() -> None:
         request_id="PR1",
         from_class="Tunnel",
         to_class="Port",
-        source_mapping_id="OM1",
-        source_surface="端口",
+        source_id="ORH1",
         source_kind="relation_role",
+        evidence_refs=("E1",),
     )
 
     candidates = build_candidate_paths((request,), assets)
 
     assert [(item.source, item.relation_chain) for item in candidates] == [
-        ("ontology_relation_graph", ("REL_TUNNEL_SRC", "REL_HAS_PORT")),
-        ("ontology_relation_graph", ("REL_TUNNEL_DST", "REL_HAS_PORT")),
-        ("ontology_relation_graph", ("REL_PATH_THROUGH", "REL_HAS_PORT")),
+        ("ontology_relation_graph", ("TUNNEL_SRC", "HAS_PORT")),
+        ("ontology_relation_graph", ("TUNNEL_DST", "HAS_PORT")),
+        ("ontology_relation_graph", ("PATH_THROUGH", "HAS_PORT")),
     ]
 
 
@@ -192,7 +247,6 @@ def test_auto_accepts_single_candidate_requests_without_calling_llm() -> None:
 
     trace = service.fill(
         ontology_mapping=_ontology_mapping(),
-        intent_trace=_intent_trace(),
         question="查询金牌服务经过的隧道及其源网元",
     )
 
@@ -205,6 +259,57 @@ def test_auto_accepts_single_candidate_requests_without_calling_llm() -> None:
     assert service.llm_selector.calls == []
 
 
+def test_zero_hop_attribute_projection_marks_relation_resolution_complete() -> None:
+    class Selector:
+        def select(self, prompt_name: str, variables: dict[str, object]):
+            raise AssertionError("zero-hop attribute projection must not call the path-selection LLM")
+
+    service = OntologyPathSelectionService(assets=OntologyAssets.from_default_resources(), llm_selector=Selector())
+    trace = service.fill(
+        ontology_mapping={
+            "ontology_objects": [
+                {
+                    "object_id": "OO1",
+                    "class_id": "Service",
+                    "selected_roles": ["path_subject"],
+                    "evidence_refs": ["E1"],
+                    "order": 1,
+                }
+            ],
+            "ontology_relation_hints": [],
+            "ontology_attributes": [
+                {
+                    "attribute_ref_id": "OA1",
+                    "attribute_id": "Service.name",
+                    "parent_class": "Service",
+                    "attribute_candidates": ["Service.name"],
+                    "evidence_refs": ["E2"],
+                    "order": 2,
+                },
+                {
+                    "attribute_ref_id": "OA2",
+                    "attribute_id": "Service.bandwidth",
+                    "parent_class": "Service",
+                    "attribute_candidates": ["Service.bandwidth"],
+                    "evidence_refs": ["E3"],
+                    "order": 3,
+                },
+            ],
+            "ontology_values": [],
+            "evidence": [],
+        },
+        question="查询所有服务的名称和带宽。",
+    )
+
+    assert trace.path_requests == ()
+    assert trace.selected_paths == ()
+    assert trace.clarification is None
+    assert trace.shape_updates["hop_count"].value == 0
+    assert trace.shape_updates["relation_chain_type"].value == "zero_hop"
+    assert trace.shape_updates["relation_resolution_expected"].value is False
+    assert trace.shape_updates["relation_resolution_expected"].decision == "accept"
+
+
 def test_calls_llm_only_for_multi_candidate_requests_with_local_cards() -> None:
     class Selector:
         def __init__(self) -> None:
@@ -215,24 +320,19 @@ def test_calls_llm_only_for_multi_candidate_requests_with_local_cards() -> None:
             return SimpleNamespace(raw_response="选择 PR2：P2。理由：源网元明确要求选择隧道源端。")
 
     mapping = _ontology_mapping()
-    mapping["mapped_mentions"][2] = {
-        "mapping_id": "OM3",
-        "mention_id": "m_source_ne_1",
-        "mention_type": "RELATION",
-        "surface": "源网元",
-        "span": [13, 16],
-        "ontology_kind": "relation_role",
+    mapping["ontology_relation_hints"][1] = {
+        "relation_hint_id": "ORH2",
         "role": "source",
-        "domain_class": "Tunnel",
-        "target_class": "NetworkElement",
+        "from_class": "Tunnel",
+        "to_class": "NetworkElement",
         "object_candidate_id": "SM3",
         "selected_roles": ["path_subject"],
+        "evidence_refs": ["E3"],
     }
     service = OntologyPathSelectionService(assets=OntologyAssets.from_default_resources(), llm_selector=Selector())
 
     trace = service.fill(
         ontology_mapping=mapping,
-        intent_trace=_intent_trace(),
         question="查询金牌服务经过的隧道及其源网元",
     )
 
@@ -263,21 +363,23 @@ def test_needs_review_default_path_generates_service_clarification_without_promp
             raise AssertionError("needs_review default path should not be sent to the LLM prompt")
 
     request_mapping = {
-        "mapped_mentions": [
+        "ontology_objects": [],
+        "ontology_relation_hints": [
             {
-                "mapping_id": "OM1",
-                "ontology_kind": "relation_role",
-                "surface": "端口",
-                "span": [8, 10],
-                "domain_class": "Service",
-                "target_class": "Port",
+                "relation_hint_id": "ORH1",
+                "from_class": "Service",
+                "to_class": "Port",
                 "selected_roles": ["path_subject"],
+                "evidence_refs": ["E1"],
             }
-        ]
+        ],
+        "ontology_attributes": [],
+        "ontology_values": [],
+        "evidence": [],
     }
     service = OntologyPathSelectionService(assets=OntologyAssets.from_default_resources(), llm_selector=Selector())
 
-    trace = service.fill(ontology_mapping=request_mapping, intent_trace=_intent_trace(), question="查询服务端口")
+    trace = service.fill(ontology_mapping=request_mapping, question="查询服务端口")
 
     assert trace.candidate_paths == ()
     assert service.llm_selector.calls == []
@@ -299,7 +401,6 @@ def test_trace_root_dict_uses_ontology_path_selection_field() -> None:
 
     trace = service.fill(
         ontology_mapping=_ontology_mapping(),
-        intent_trace=_intent_trace(),
         question="查询金牌服务经过的隧道及其源网元",
     )
 
@@ -308,30 +409,6 @@ def test_trace_root_dict_uses_ontology_path_selection_field() -> None:
     assert set(output) == {"ontology_path_selection"}
     assert "path_filling" not in output
     assert output["ontology_path_selection"]["selected_paths"]
-
-
-def test_legacy_path_filling_import_keeps_new_root_field() -> None:
-    from services.cypher_generator_agent.app.ontology_layer.path_filling import OntologyPathFillingService
-
-    class Selector:
-        def select(self, prompt_name: str, variables: dict[str, object]):
-            return SimpleNamespace(
-                raw_response=(
-                    "选择 PR1：P1。理由：经过对应服务到隧道。\n"
-                    "选择 PR2：P2。理由：源网元对应隧道源端。"
-                )
-            )
-
-    trace = OntologyPathFillingService(
-        assets=OntologyAssets.from_default_resources(),
-        llm_selector=Selector(),
-    ).fill(
-        ontology_mapping=_ontology_mapping(),
-        intent_trace=_intent_trace(),
-        question="查询金牌服务经过的隧道及其源网元",
-    )
-
-    assert set(trace.to_stage_dict()) == {"ontology_path_selection"}
 
 
 def test_clarify_selection_generates_unresolved_clarification() -> None:
@@ -343,23 +420,18 @@ def test_clarify_selection_generates_unresolved_clarification() -> None:
 
     service = OntologyPathSelectionService(assets=OntologyAssets.from_default_resources(), llm_selector=Selector())
     mapping = _ontology_mapping()
-    mapping["mapped_mentions"][2] = {
-        "mapping_id": "OM3",
-        "mention_id": "m_source_ne_1",
-        "mention_type": "RELATION",
-        "surface": "源网元",
-        "span": [13, 16],
-        "ontology_kind": "relation_role",
+    mapping["ontology_relation_hints"][1] = {
+        "relation_hint_id": "ORH2",
         "role": "source",
-        "domain_class": "Tunnel",
-        "target_class": "NetworkElement",
+        "from_class": "Tunnel",
+        "to_class": "NetworkElement",
         "object_candidate_id": "SM3",
         "selected_roles": ["path_subject"],
+        "evidence_refs": ["E3"],
     }
 
     trace = service.fill(
         ontology_mapping=mapping,
-        intent_trace=_intent_trace(),
         question="查询金牌服务经过的隧道及其源网元",
     )
 
@@ -401,23 +473,18 @@ def test_rejects_llm_selection_outside_service_boundaries(raw: str, error_part: 
 
     service = OntologyPathSelectionService(assets=OntologyAssets.from_default_resources(), llm_selector=Selector())
     mapping = _ontology_mapping()
-    mapping["mapped_mentions"][2] = {
-        "mapping_id": "OM3",
-        "mention_id": "m_source_ne_1",
-        "mention_type": "RELATION",
-        "surface": "源网元",
-        "span": [13, 16],
-        "ontology_kind": "relation_role",
+    mapping["ontology_relation_hints"][1] = {
+        "relation_hint_id": "ORH2",
         "role": "source",
-        "domain_class": "Tunnel",
-        "target_class": "NetworkElement",
+        "from_class": "Tunnel",
+        "to_class": "NetworkElement",
         "object_candidate_id": "SM3",
         "selected_roles": ["path_subject"],
+        "evidence_refs": ["E3"],
     }
 
     with pytest.raises(OntologyPathSelectionValidationError, match=error_part):
         service.fill(
             ontology_mapping=mapping,
-            intent_trace=_intent_trace(),
             question="查询金牌服务经过的隧道及其源网元",
         )

@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-
-def _dict_without_none(value: dict[str, Any]) -> dict[str, Any]:
-    return {key: item for key, item in value.items() if item is not None}
+if TYPE_CHECKING:
+    from services.cypher_generator_agent.app.intent_layer.models import Intent, IntentOutput, InitialShapeField
 
 
 @dataclass(frozen=True)
@@ -58,62 +57,6 @@ class ContextSignal:
 
 
 @dataclass(frozen=True)
-class ShapeField:
-    value: Any
-    source: str
-    decision: str
-    confidence: float
-    derived_from: tuple[str, ...] = ()
-    pending_until: str | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return _dict_without_none(
-            {
-                "value": self.value,
-                "source": self.source,
-                "decision": self.decision,
-                "confidence": self.confidence,
-                "derived_from": list(self.derived_from),
-                "pending_until": self.pending_until,
-            }
-        )
-
-
-@dataclass(frozen=True)
-class IntentIdentity:
-    primary: str
-    secondary: str
-    source: str
-    decision: str
-    confidence: float
-    clarify_origin: str | None = None
-    clarify_reason: str | None = None
-    failed_fields: tuple[str, ...] = ()
-    candidate_intents: tuple[dict[str, Any], ...] = ()
-    evidence: dict[str, Any] | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "primary": self.primary,
-            "secondary": self.secondary,
-            "source": self.source,
-            "decision": self.decision,
-            "confidence": self.confidence,
-        }
-        if self.clarify_origin is not None:
-            payload["clarify_origin"] = self.clarify_origin
-        if self.clarify_reason is not None:
-            payload["clarify_reason"] = self.clarify_reason
-        if self.failed_fields:
-            payload["failed_fields"] = list(self.failed_fields)
-        if self.candidate_intents:
-            payload["candidate_intents"] = [dict(item) for item in self.candidate_intents]
-        if self.evidence is not None:
-            payload["evidence"] = dict(self.evidence)
-        return payload
-
-
-@dataclass(frozen=True)
 class LexerTrace:
     question: str
     matcher: str
@@ -127,12 +70,14 @@ class LexerTrace:
     unmatched_spans: tuple[tuple[int, int], ...]
     context_signals: tuple[ContextSignal, ...]
     shape_signals: tuple[ContextSignal, ...]
+    structured_matches: tuple[dict[str, Any], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "question": self.question,
             "matcher": self.matcher,
             "ac_matches": [dict(item) for item in self.ac_matches],
+            "structured_matches": [dict(item) for item in self.structured_matches],
             "selected_hits": [dict(item) for item in self.selected_hits],
             "discarded_hits": [dict(item) for item in self.discarded_hits],
             "resolution_summary": dict(self.resolution_summary),
@@ -142,24 +87,6 @@ class LexerTrace:
             "unmatched_spans": [list(item) for item in self.unmatched_spans],
             "context_signals": [item.to_dict() for item in self.context_signals],
             "shape_signals": [item.to_dict() for item in self.shape_signals],
-        }
-
-
-@dataclass(frozen=True)
-class IntentTrace:
-    intent: IntentIdentity
-    shape: dict[str, ShapeField]
-    candidates: tuple[dict[str, Any], ...]
-    rule_signals_used: tuple[str, ...]
-    diagnostics: dict[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "intent": self.intent.to_dict(),
-            "shape": {key: value.to_dict() for key, value in self.shape.items()},
-            "candidates": [dict(item) for item in self.candidates],
-            "rule_signals_used": list(self.rule_signals_used),
-            "diagnostics": dict(self.diagnostics),
         }
 
 
@@ -217,6 +144,15 @@ class PlanProjection:
 
 
 @dataclass(frozen=True)
+class PlanNodeReturn:
+    node: str
+    alias: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"node": self.node, "alias": self.alias}
+
+
+@dataclass(frozen=True)
 class PlanMetric:
     function: str
     node: str
@@ -237,11 +173,12 @@ class PlanMetric:
 @dataclass(frozen=True)
 class OntologyLogicalPlan:
     root_operation: str
-    intent: IntentIdentity
-    shape: dict[str, ShapeField]
+    intent: Intent
+    shape: dict[str, InitialShapeField]
     nodes: tuple[PlanNode, ...]
     edges: tuple[PlanEdge, ...]
     projections: tuple[PlanProjection, ...]
+    node_returns: tuple[PlanNodeReturn, ...] = ()
     metrics: tuple[PlanMetric, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
@@ -252,23 +189,8 @@ class OntologyLogicalPlan:
             "nodes": [item.to_dict() for item in self.nodes],
             "edges": [item.to_dict() for item in self.edges],
             "projection": [item.to_dict() for item in self.projections],
+            "node_returns": [item.to_dict() for item in self.node_returns],
             "metrics": [item.to_dict() for item in self.metrics],
-        }
-
-
-@dataclass(frozen=True)
-class PlannerTrace:
-    path_candidates: tuple[dict[str, Any], ...]
-    selected_paths: tuple[dict[str, Any], ...]
-    coreference: tuple[dict[str, Any], ...]
-    bindings: tuple[dict[str, Any], ...]
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "path_candidates": [dict(item) for item in self.path_candidates],
-            "selected_paths": [dict(item) for item in self.selected_paths],
-            "coreference": [dict(item) for item in self.coreference],
-            "bindings": [dict(item) for item in self.bindings],
         }
 
 
@@ -306,22 +228,29 @@ class GenerationTrace:
     trace_id: str
     preprocessing: dict[str, Any]
     lexer: LexerTrace
-    intent: IntentTrace
+    intent: IntentOutput
     object_role_selection: Any
     ontology_mapping: Any
-    planner: PlannerTrace
+    ontology_path_selection: Any
+    coreference: Any
+    binding: Any
+    shape_finalization: Any
     validator: ValidatorTrace
     compiler: CompilerTrace
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "schema_version": "cga_trace_v2",
             "trace_id": self.trace_id,
             "preprocessing": dict(self.preprocessing),
             "lexer": self.lexer.to_dict(),
             "intent": self.intent.to_dict(),
             "object_role_selection": self.object_role_selection.to_dict(),
             "ontology_mapping": self.ontology_mapping.to_dict(),
-            "planner": self.planner.to_dict(),
+            "ontology_path_selection": self.ontology_path_selection.to_dict(),
+            "coreference": dict(self.coreference),
+            "binding": self.binding.to_dict(),
+            "shape_finalization": self.shape_finalization.to_dict(),
             "validator": self.validator.to_dict(),
             "compiler": self.compiler.to_dict(),
         }
