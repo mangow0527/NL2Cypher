@@ -66,6 +66,47 @@ def test_question_framing_service_keeps_statistics_sorting_time_role_as_single_l
     assert trace.atoms[0].roles == (QuestionFramingRole.AGG_SORT_TIME,)
 
 
+def test_question_framing_service_builds_trace_only_retrieval_plan_for_path_query() -> None:
+    client = _FixtureCompletionClient(
+        "\n".join(
+            [
+                "原子问题：",
+                "1. 所有服务 ｜ 找什么对象",
+                "2. 使用的隧道对应的源端网元 ｜ 通过什么关系继续找",
+                "3. 源端网元 ｜ 最后返回什么",
+            ]
+        )
+    )
+    service = QuestionFramingService(client=client)
+
+    trace = service.run("查询所有服务使用的隧道对应的源端网元")
+
+    plan = trace.to_dict()["retrieval_plan"]
+    assert plan["version"] == "question_framing_retrieval_plan_v1"
+    assert plan["path_queries"] == [
+        {
+            "query_id": "PQ1",
+            "atom_ids": ["QA1", "QA2"],
+            "source_text": "所有服务",
+            "path_text": "使用的隧道对应的源端网元",
+            "retrieval_text": "所有服务 使用的隧道对应的源端网元",
+            "roles": ["FIND_OBJECT", "RELATION_PATH"],
+            "grounding_spans": [[2, 6], [6, 18]],
+            "generic_connectors": ["对应"],
+        }
+    ]
+    assert plan["return_targets"] == [
+        {
+            "atom_id": "QA3",
+            "text": "源端网元",
+            "retrieval_text": "源端网元",
+            "span": [14, 18],
+            "roles": ["RETURN_CONTENT"],
+        }
+    ]
+    assert plan["diagnostics"] == []
+
+
 def test_lexer_keeps_question_framing_trace_and_uses_filter_atoms_as_projection_hint() -> None:
     assets = OntologyAssets.from_default_resources()
     question = "查询名称为 Service_002 的服务的 ID、名称和服务质量"

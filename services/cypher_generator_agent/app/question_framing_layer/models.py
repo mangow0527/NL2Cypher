@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
@@ -88,6 +88,7 @@ class QuestionFramingTrace:
     question: str
     raw_response: str
     atoms: tuple[QuestionAtom, ...]
+    retrieval_plan: dict[str, Any] = field(default_factory=dict)
     diagnostics: tuple[str, ...] = ()
     enabled: bool = True
 
@@ -120,5 +121,6 @@ class QuestionFramingTrace:
             "question": self.question,
             "raw_response": self.raw_response,
             "atoms": [atom.to_dict() for atom in self.atoms],
+            "retrieval_plan": dict(self.retrieval_plan),
             "diagnostics": list(self.diagnostics),
         }

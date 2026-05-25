@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Protocol
+from typing import Any, Protocol
 
 from .models import QuestionAtom, QuestionFramingRole, QuestionFramingTrace, normalize_question_framing_role
 
@@ -9,6 +9,41 @@ from .models import QuestionAtom, QuestionFramingRole, QuestionFramingTrace, nor
 class CompletionClient(Protocol):
     def complete(self, prompt: str) -> str:
         ...
+
+
+_RETRIEVAL_PLAN_VERSION = "question_framing_retrieval_plan_v1"
+
+_GENERIC_CONNECTOR_TERMS: tuple[str, ...] = (
+    "连接关系",
+    "对应",
+    "相关",
+    "关联",
+    "连接",
+    "关系",
+    "之间",
+    "双方",
+    "各自",
+)
+
+_ATTRIBUTE_HINT_TERMS: tuple[str, ...] = (
+    "ID",
+    "Id",
+    "id",
+    "名称",
+    "名字",
+    "属性",
+    "状态",
+    "类型",
+    "地址",
+    "IP",
+    "ip",
+    "位置",
+    "标准",
+    "服务质量",
+    "延迟",
+    "时延",
+    "带宽",
+)
 
 
 QUESTION_FRAMING_PROMPT_TEMPLATE = """请把下面的问题拆成几个原子性小问题，并标明每个小问题在整个问题里负责什么。
@@ -110,10 +145,12 @@ def _parse_question_framing_response(question: str, raw_response: str) -> Questi
         )
     if not atoms:
         diagnostics.append("no_parseable_question_atoms")
+    retrieval_plan = _build_retrieval_plan(question, tuple(atoms))
     return QuestionFramingTrace(
         question=question,
         raw_response=raw_response,
         atoms=tuple(atoms),
+        retrieval_plan=retrieval_plan,
         diagnostics=tuple(diagnostics),
         enabled=bool(atoms),
     )
@@ -193,3 +230,110 @@ def _find_stripped_span(question: str, atom_text: str) -> tuple[int, int] | None
     if start >= 0:
         return (start, start + len(stripped))
     return None
+
+
+def _build_retrieval_plan(question: str, atoms: tuple[QuestionAtom, ...]) -> dict[str, Any]:
+    plan_diagnostics: list[str] = []
+    path_queries: list[dict[str, Any]] = []
+    for path_index, path_atom in enumerate(atoms):
+        if not path_atom.has_role(QuestionFramingRole.RELATION_PATH):
+            continue
+        source_atoms = tuple(
+            atom for atom in atoms[: path_index + 1] if atom.has_role(QuestionFramingRole.FIND_OBJECT)
+        )
+        query_atoms = _dedupe_atoms((*source_atoms, path_atom))
+        source_text = _join_atom_texts(source_atoms)
+        path_text = path_atom.text
+        retrieval_text = _join_non_empty((source_text, path_text))
+        path_queries.append(
+            {
+                "query_id": f"PQ{len(path_queries) + 1}",
+                "atom_ids": [atom.atom_id for atom in query_atoms],
+                "source_text": source_text,
+                "path_text": path_text,
+                "retrieval_text": retrieval_text,
+                "roles": _roles_for_atoms(query_atoms),
+                "grounding_spans": _spans_for_atoms(query_atoms),
+                "generic_connectors": _generic_connectors_in_text(retrieval_text),
+            }
+        )
+    if atoms and not path_queries:
+        plan_diagnostics.append("no_relation_path_atoms")
+
+    return_targets = tuple(atom for atom in atoms if atom.has_role(QuestionFramingRole.RETURN_CONTENT))
+    metric_atoms = tuple(atom for atom in atoms if atom.has_role(QuestionFramingRole.AGG_SORT_TIME))
+    attribute_atoms = tuple(atom for atom in return_targets if _looks_like_attribute_atom(atom.text))
+    all_text = " ".join(atom.text for atom in atoms)
+    return {
+        "version": _RETRIEVAL_PLAN_VERSION,
+        "question": question,
+        "path_queries": path_queries,
+        "return_targets": [_target_payload(atom) for atom in return_targets],
+        "attribute_queries": [_target_payload(atom) for atom in attribute_atoms],
+        "metric_queries": [_target_payload(atom) for atom in metric_atoms],
+        "generic_connectors": _generic_connectors_in_text(all_text),
+        "diagnostics": plan_diagnostics,
+    }
+
+
+def _dedupe_atoms(atoms: tuple[QuestionAtom, ...]) -> tuple[QuestionAtom, ...]:
+    selected: list[QuestionAtom] = []
+    seen: set[str] = set()
+    for atom in atoms:
+        if atom.atom_id in seen:
+            continue
+        selected.append(atom)
+        seen.add(atom.atom_id)
+    return tuple(selected)
+
+
+def _join_atom_texts(atoms: tuple[QuestionAtom, ...]) -> str:
+    return _join_non_empty(tuple(atom.text for atom in atoms))
+
+
+def _join_non_empty(values: tuple[str, ...]) -> str:
+    return " ".join(value.strip() for value in values if value and value.strip())
+
+
+def _roles_for_atoms(atoms: tuple[QuestionAtom, ...]) -> list[str]:
+    roles: list[str] = []
+    for atom in atoms:
+        for role in atom.roles:
+            if role.value not in roles:
+                roles.append(role.value)
+    return roles
+
+
+def _spans_for_atoms(atoms: tuple[QuestionAtom, ...]) -> list[list[int]]:
+    return [list(atom.span) for atom in atoms if atom.span is not None]
+
+
+def _target_payload(atom: QuestionAtom) -> dict[str, Any]:
+    return {
+        "atom_id": atom.atom_id,
+        "text": atom.text,
+        "retrieval_text": atom.text,
+        "span": list(atom.span) if atom.span is not None else None,
+        "roles": [role.value for role in atom.roles],
+    }
+
+
+def _looks_like_attribute_atom(text: str) -> bool:
+    return any(term in text for term in _ATTRIBUTE_HINT_TERMS)
+
+
+def _generic_connectors_in_text(text: str) -> list[str]:
+    matches: list[tuple[int, int, str]] = []
+    for term in _GENERIC_CONNECTOR_TERMS:
+        for match in re.finditer(re.escape(term), text):
+            matches.append((match.start(), match.end(), term))
+    selected: list[tuple[int, int, str]] = []
+    for start, end, term in sorted(matches, key=lambda item: (item[0], -(item[1] - item[0]), item[2])):
+        if any(start >= selected_start and end <= selected_end for selected_start, selected_end, _ in selected):
+            continue
+        selected.append((start, end, term))
+    connectors: list[str] = []
+    for _, _, term in selected:
+        if term not in connectors:
+            connectors.append(term)
+    return connectors
