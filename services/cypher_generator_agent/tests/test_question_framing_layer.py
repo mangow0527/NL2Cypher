@@ -107,6 +107,27 @@ def test_question_framing_service_builds_trace_only_retrieval_plan_for_path_quer
     assert plan["diagnostics"] == []
 
 
+def test_question_framing_retrieval_plan_does_not_duplicate_combined_find_and_path_atom() -> None:
+    client = _FixtureCompletionClient(
+        "\n".join(
+            [
+                "原子问题：",
+                "1. 所有服务与隧道的对应关系 ｜ 找什么对象 + 通过什么关系继续找",
+                "2. 双方的名称及延迟值 ｜ 最后返回什么",
+            ]
+        )
+    )
+    service = QuestionFramingService(client=client)
+
+    trace = service.run("查询所有服务与隧道的对应关系，并返回双方的名称及延迟值")
+
+    path_query = trace.to_dict()["retrieval_plan"]["path_queries"][0]
+    assert path_query["atom_ids"] == ["QA1"]
+    assert path_query["source_text"] == ""
+    assert path_query["path_text"] == "所有服务与隧道的对应关系"
+    assert path_query["retrieval_text"] == "所有服务与隧道的对应关系"
+
+
 def test_lexer_keeps_question_framing_trace_and_uses_filter_atoms_as_projection_hint() -> None:
     assets = OntologyAssets.from_default_resources()
     question = "查询名称为 Service_002 的服务的 ID、名称和服务质量"

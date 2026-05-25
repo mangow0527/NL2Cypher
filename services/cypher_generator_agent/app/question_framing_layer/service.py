@@ -238,9 +238,7 @@ def _build_retrieval_plan(question: str, atoms: tuple[QuestionAtom, ...]) -> dic
     for path_index, path_atom in enumerate(atoms):
         if not path_atom.has_role(QuestionFramingRole.RELATION_PATH):
             continue
-        source_atoms = tuple(
-            atom for atom in atoms[: path_index + 1] if atom.has_role(QuestionFramingRole.FIND_OBJECT)
-        )
+        source_atoms = tuple(atom for atom in atoms[:path_index] if atom.has_role(QuestionFramingRole.FIND_OBJECT))
         query_atoms = _dedupe_atoms((*source_atoms, path_atom))
         source_text = _join_atom_texts(source_atoms)
         path_text = path_atom.text
