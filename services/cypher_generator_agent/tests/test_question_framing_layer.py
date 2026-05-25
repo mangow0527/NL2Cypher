@@ -42,6 +42,10 @@ def test_question_framing_service_parses_atomic_questions_and_roles() -> None:
 
     assert "不要生成查询语句" in client.prompts[0]
     assert "连接/关系/关联/连接关系" in client.prompts[0]
+    assert "只描述从一个对象到另一个对象的路径动作和对象短语" in client.prompts[0]
+    assert "不要这样拆：" in client.prompts[0]
+    assert "应该这样拆：" in client.prompts[0]
+    assert "对象A的名称及其使用的对象B的名称和标准 ｜ 通过什么关系继续找" in client.prompts[0]
     assert "查询名称为 Service_002 的服务的 ID、名称和服务质量" in client.prompts[0]
     assert [atom.text for atom in trace.atoms] == ["名称为 Service_002 的服务", "ID、名称和服务质量"]
     assert trace.atoms[0].roles == (
@@ -126,6 +130,48 @@ def test_question_framing_retrieval_plan_does_not_duplicate_combined_find_and_pa
     assert path_query["source_text"] == ""
     assert path_query["path_text"] == "所有服务与隧道的对应关系"
     assert path_query["retrieval_text"] == "所有服务与隧道的对应关系"
+
+
+def test_question_framing_retrieval_plan_trims_return_attributes_from_mixed_path_atoms() -> None:
+    client = _FixtureCompletionClient(
+        "\n".join(
+            [
+                "原子问题：",
+                "1. 服务名称 ｜ 找什么对象 + 最后返回什么",
+                "2. 使用的隧道的名称和IETF标准 ｜ 通过什么关系继续找 + 最后返回什么",
+            ]
+        )
+    )
+    service = QuestionFramingService(client=client)
+
+    trace = service.run("查询服务名称及其使用的隧道的名称和IETF标准")
+
+    plan = trace.to_dict()["retrieval_plan"]
+    path_query = plan["path_queries"][0]
+    assert path_query["source_text"] == "服务"
+    assert path_query["path_text"] == "使用的隧道"
+    assert path_query["retrieval_text"] == "服务 使用的隧道"
+    assert path_query["generic_connectors"] == []
+    assert plan["return_targets"] == [
+        {
+            "atom_id": "QA1",
+            "text": "服务名称",
+            "retrieval_text": "服务名称",
+            "span": [2, 6],
+            "roles": ["FIND_OBJECT", "RETURN_CONTENT"],
+        },
+        {
+            "atom_id": "QA2",
+            "text": "使用的隧道的名称和IETF标准",
+            "retrieval_text": "使用的隧道的名称和IETF标准",
+            "span": [8, 23],
+            "roles": ["RELATION_PATH", "RETURN_CONTENT"],
+        },
+    ]
+    assert plan["diagnostics"] == [
+        "source_text_trimmed_return_attribute:QA1:服务名称->服务",
+        "path_text_trimmed_return_attribute:QA2:使用的隧道的名称和IETF标准->使用的隧道",
+    ]
 
 
 def test_lexer_keeps_question_framing_trace_and_uses_filter_atoms_as_projection_hint() -> None:

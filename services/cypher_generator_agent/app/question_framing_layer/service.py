@@ -25,7 +25,41 @@ _GENERIC_CONNECTOR_TERMS: tuple[str, ...] = (
     "各自",
 )
 
+_PATH_ACTION_TERMS: tuple[str, ...] = (
+    "使用的",
+    "使用",
+    "经过的",
+    "经过",
+    "连接到",
+    "连接的",
+    "连接",
+    "关联到",
+    "关联的",
+    "关联",
+    "对应的",
+    "对应",
+    "包含的",
+    "包含",
+)
+
+_PATH_LEADING_NOISE_TERMS: tuple[str, ...] = (
+    "及其",
+    "其",
+)
+
+_PATH_RETURN_MARKER_TERMS: tuple[str, ...] = (
+    "并返回",
+    "返回",
+    "输出",
+    "列出",
+    "展示",
+)
+
 _ATTRIBUTE_HINT_TERMS: tuple[str, ...] = (
+    "IETF标准",
+    "元素类型",
+    "节点详情",
+    "延迟值",
     "ID",
     "Id",
     "id",
@@ -66,6 +100,9 @@ QUESTION_FRAMING_PROMPT_TEMPLATE = """请把下面的问题拆成几个原子性
 5. 如果问题很简单，也可以只拆成一个原子小问题。
 6. 如果不确定某个片段的作用，角色写“不确定”。
 7. “A 与 B 之间的连接/关系/关联/连接关系”表示两类对象之间的关系路径，标为“通过什么关系继续找”，不要把“连接/关系/之间”拆成要返回的对象或字段。
+8. “通过什么关系继续找”只描述从一个对象到另一个对象的路径动作和对象短语。
+9. 如果一个片段同时包含“关系动作”和“最终要展示的字段”，要拆开，不要合成一个原子问题。
+10. 出现“返回/并返回/输出/列出”后面的内容，优先标为“最后返回什么”，不要继续并入 RELATION_PATH。
 
 输出格式必须是：
 原子问题：
@@ -90,6 +127,15 @@ QUESTION_FRAMING_PROMPT_TEMPLATE = """请把下面的问题拆成几个原子性
 原子问题：
 1. 所有服务与隧道之间的连接关系 ｜ 找什么对象 + 通过什么关系继续找
 2. 双方的元素类型 ｜ 最后返回什么
+
+反例修正：
+问题：查询对象A的名称及其使用的对象B的名称和标准
+不要这样拆：
+1. 对象A的名称及其使用的对象B的名称和标准 ｜ 通过什么关系继续找
+应该这样拆：
+1. 对象A的名称 ｜ 最后返回什么
+2. 使用的对象B ｜ 通过什么关系继续找
+3. 对象B的名称和标准 ｜ 最后返回什么
 
 问题：{question}
 原子问题：
@@ -240,8 +286,11 @@ def _build_retrieval_plan(question: str, atoms: tuple[QuestionAtom, ...]) -> dic
             continue
         source_atoms = tuple(atom for atom in atoms[:path_index] if atom.has_role(QuestionFramingRole.FIND_OBJECT))
         query_atoms = _dedupe_atoms((*source_atoms, path_atom))
-        source_text = _join_atom_texts(source_atoms)
-        path_text = path_atom.text
+        source_text, source_diagnostics = _sanitized_source_text(source_atoms)
+        path_text, path_diagnostic = _sanitized_path_text(path_atom)
+        plan_diagnostics.extend(source_diagnostics)
+        if path_diagnostic is not None:
+            plan_diagnostics.append(path_diagnostic)
         retrieval_text = _join_non_empty((source_text, path_text))
         path_queries.append(
             {
@@ -318,6 +367,100 @@ def _target_payload(atom: QuestionAtom) -> dict[str, Any]:
 
 def _looks_like_attribute_atom(text: str) -> bool:
     return any(term in text for term in _ATTRIBUTE_HINT_TERMS)
+
+
+def _sanitized_source_text(atoms: tuple[QuestionAtom, ...]) -> tuple[str, list[str]]:
+    texts: list[str] = []
+    diagnostics: list[str] = []
+    for atom in atoms:
+        cleaned = _trim_return_attribute_from_source_text(atom.text)
+        texts.append(cleaned)
+        if cleaned != atom.text:
+            diagnostics.append(f"source_text_trimmed_return_attribute:{atom.atom_id}:{atom.text}->{cleaned}")
+    return _join_non_empty(tuple(texts)), diagnostics
+
+
+def _sanitized_path_text(atom: QuestionAtom) -> tuple[str, str | None]:
+    cleaned = _strip_return_marker_tail(atom.text)
+    cleaned = _strip_path_leading_noise(cleaned)
+    cleaned = _strip_attribute_prefix_before_path_action(cleaned)
+    cleaned = _strip_path_leading_noise(cleaned)
+    cleaned = _trim_return_attribute_tail(cleaned)
+    cleaned = _strip_path_leading_noise(cleaned)
+    if not cleaned:
+        cleaned = atom.text
+    if cleaned != atom.text:
+        return cleaned, f"path_text_trimmed_return_attribute:{atom.atom_id}:{atom.text}->{cleaned}"
+    return cleaned, None
+
+
+def _trim_return_attribute_from_source_text(text: str) -> str:
+    stripped = text.strip()
+    for term in _attribute_terms_by_length():
+        for suffix in (f"的{term}", term):
+            if not stripped.endswith(suffix):
+                continue
+            prefix = stripped[: -len(suffix)].rstrip(" 的")
+            if prefix:
+                return prefix
+    return stripped
+
+
+def _strip_return_marker_tail(text: str) -> str:
+    stripped = text.strip()
+    indexes = [stripped.find(term) for term in _PATH_RETURN_MARKER_TERMS if stripped.find(term) > 0]
+    if indexes:
+        return stripped[: min(indexes)].strip(" ，,；;")
+    return stripped
+
+
+def _strip_path_leading_noise(text: str) -> str:
+    stripped = text.strip()
+    changed = True
+    while changed:
+        changed = False
+        for term in _PATH_LEADING_NOISE_TERMS:
+            if stripped.startswith(term):
+                stripped = stripped[len(term) :].strip()
+                changed = True
+    return stripped
+
+
+def _strip_attribute_prefix_before_path_action(text: str) -> str:
+    earliest_action_index: int | None = None
+    for term in _PATH_ACTION_TERMS:
+        index = text.find(term)
+        if index > 0 and (earliest_action_index is None or index < earliest_action_index):
+            earliest_action_index = index
+    if earliest_action_index is None:
+        return text
+    prefix = text[:earliest_action_index]
+    if _looks_like_attribute_atom(prefix):
+        return text[earliest_action_index:].strip()
+    return text
+
+
+def _trim_return_attribute_tail(text: str) -> str:
+    if not _has_path_action(text):
+        return text
+    for match in _attribute_tail_pattern().finditer(text):
+        candidate = text[: match.start()].rstrip(" 的")
+        if candidate:
+            return candidate
+    return text
+
+
+def _has_path_action(text: str) -> bool:
+    return any(term in text for term in _PATH_ACTION_TERMS)
+
+
+def _attribute_terms_by_length() -> tuple[str, ...]:
+    return tuple(sorted(_ATTRIBUTE_HINT_TERMS, key=len, reverse=True))
+
+
+def _attribute_tail_pattern() -> re.Pattern[str]:
+    terms = "|".join(re.escape(term) for term in _attribute_terms_by_length())
+    return re.compile(rf"(?:的)?(?:{terms})(?:[和及、,，].*)?$")
 
 
 def _generic_connectors_in_text(text: str) -> list[str]:
