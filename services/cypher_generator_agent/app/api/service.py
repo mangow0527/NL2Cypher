@@ -45,13 +45,25 @@ class CypherGeneratorAgentService:
             result = self.pipeline.generate(request.question, trace_id=generation_run_id)
         except ClarificationNeeded as exc:
             clarification = self.clarification_service.build(exc, original_question=request.question)
+            clarification_snapshot = dict(exc.partial_trace)
+            clarification_snapshot.update(
+                {
+                    "schema_version": "cga_trace_v2",
+                    "trace_profile": "ontology",
+                    "question": request.question,
+                    "generation_run_id": generation_run_id,
+                    "generation_status": "clarification_required",
+                    "clarification": clarification,
+                }
+            )
+            clarification_snapshot.setdefault("trace_id", generation_run_id)
             await self.testing_client.submit_generation_failure(
                 CgaGenerationNonSuccessReport(
                     id=request.id,
                     question=request.question,
                     generation_run_id=generation_run_id,
                     generation_status="clarification_required",
-                    input_prompt_snapshot=json.dumps(clarification, ensure_ascii=False),
+                    input_prompt_snapshot=json.dumps(clarification_snapshot, ensure_ascii=False, indent=2),
                     clarification=clarification,
                 )
             )
@@ -60,28 +72,29 @@ class CypherGeneratorAgentService:
                 generation_status="clarification_required",
             )
         except OntologyGenerationError as exc:
+            failure_snapshot = dict(exc.partial_trace)
+            failure_snapshot.update(
+                {
+                    "schema_version": "cga_trace_v2",
+                    "trace_profile": "ontology",
+                    "question": request.question,
+                    "generation_run_id": generation_run_id,
+                    "generation_status": "service_failed",
+                    "failure": {
+                        "stage": exc.stage,
+                        "message": exc.message,
+                        "payload": exc.payload,
+                    },
+                }
+            )
+            failure_snapshot.setdefault("trace_id", generation_run_id)
             await self.testing_client.submit_generation_failure(
                 CgaGenerationNonSuccessReport(
                     id=request.id,
                     question=request.question,
                     generation_run_id=generation_run_id,
                     generation_status="service_failed",
-                    input_prompt_snapshot=json.dumps(
-                        {
-                            "schema_version": "cga_trace_v2",
-                            "trace_profile": "ontology",
-                            "question": request.question,
-                            "generation_run_id": generation_run_id,
-                            "generation_status": "service_failed",
-                            "failure": {
-                                "stage": exc.stage,
-                                "message": exc.message,
-                                "payload": exc.payload,
-                            },
-                        },
-                        ensure_ascii=False,
-                        indent=2,
-                    ),
+                    input_prompt_snapshot=json.dumps(failure_snapshot, ensure_ascii=False, indent=2),
                     failure_reason="semantic_contract_unaligned",
                 )
             )
@@ -105,6 +118,7 @@ class CypherGeneratorAgentService:
             generation_run_id=generation_run_id,
             generation_status="submitted_to_testing",
         )
+
 
 def get_generator_status() -> Dict[str, object]:
     settings = get_settings()

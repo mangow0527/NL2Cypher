@@ -25,8 +25,16 @@ def natural_language_preprocessing_dir() -> Path:
     return NATURAL_LANGUAGE_PREPROCESSING_RESOURCE_DIR
 
 
+def lexical_dictionaries_dir() -> Path:
+    return LEXICAL_RESOURCE_DIR / "dictionaries"
+
+
 def lexical_mention_dictionaries_dir() -> Path:
-    return LEXICAL_RESOURCE_DIR / "mention_dictionaries"
+    return lexical_dictionaries_dir()
+
+
+def lexical_structured_extractors_dir() -> Path:
+    return LEXICAL_RESOURCE_DIR / "structured_extractors"
 
 
 def ontology_resource_dir() -> Path:
@@ -35,6 +43,10 @@ def ontology_resource_dir() -> Path:
 
 def offline_lexical_generation_rules_path() -> Path:
     return OFFLINE_LEXICAL_ASSET_GENERATION_DIR / "generation_rules.yaml"
+
+
+def offline_lexical_uncertain_path() -> Path:
+    return OFFLINE_LEXICAL_ASSET_GENERATION_DIR / "uncertain.yaml"
 
 
 def offline_intent_eval_set_path() -> Path:
@@ -69,24 +81,16 @@ def intent_llm_fewshots_path() -> Path:
     return INTENT_RESOURCE_DIR / "llm_fewshots.yaml"
 
 
-def lexer_dictionary_priorities_path() -> Path:
-    return LEXICAL_RESOURCE_DIR / "dictionary_priorities.yaml"
-
-
-def lexer_signal_rules_path() -> Path:
-    return LEXICAL_RESOURCE_DIR / "signal_rules.yaml"
-
-
 def lexer_operators_path() -> Path:
-    return LEXICAL_RESOURCE_DIR / "operators.yaml"
+    return lexical_structured_extractors_dir() / "operators.yaml"
 
 
 def lexer_quantifiers_path() -> Path:
-    return LEXICAL_RESOURCE_DIR / "quantifiers.yaml"
+    return lexical_structured_extractors_dir() / "quantifiers.yaml"
 
 
 def lexer_literal_patterns_path() -> Path:
-    return LEXICAL_RESOURCE_DIR / "literal_patterns.yaml"
+    return lexical_structured_extractors_dir() / "literal_patterns.yaml"
 
 
 def lexer_mention_vector_corpus_path() -> Path:

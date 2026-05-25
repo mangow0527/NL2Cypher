@@ -6,6 +6,7 @@ import pytest
 
 from services.cypher_generator_agent.app.ontology_layer.object_role_selection import (
     ALLOWED_OBJECT_ROLES,
+    build_object_candidates,
     ObjectRoleSelectionValidationError,
     OntologyObjectRoleSelectionService,
 )
@@ -120,6 +121,30 @@ def _intent_output() -> IntentOutput:
     )
 
 
+def _attribute_projection_intent_output() -> IntentOutput:
+    return IntentOutput(
+        intent=Intent(
+            primary="record_retrieval_query",
+            secondary="attribute_projection_query",
+            source="rule",
+            decision="accept",
+            confidence=0.9,
+        ),
+        planning_prompt_text="用户想返回对象的指定字段。",
+        initial_shape={
+            "answer_type": InitialShapeField("attribute_table", "taxonomy.secondary.default_answer_type", "accept", 1.0),
+            "projection_expected": InitialShapeField(True, "taxonomy.secondary.shape_profile", "accept", 1.0),
+            "aggregation_required": InitialShapeField(False, "taxonomy.secondary.shape_profile", "accept", 1.0),
+            "aggregation_functions": InitialShapeField((), "taxonomy.secondary.shape_profile", "accept", 1.0),
+            "relation_resolution_expected": InitialShapeField(False, "taxonomy.secondary.shape_profile", "accept", 1.0),
+            "path_answer_required": InitialShapeField(False, "taxonomy.secondary.shape_profile", "accept", 1.0),
+        },
+        candidates=({"id": "C1", "primary": "record_retrieval_query", "secondary": "attribute_projection_query"},),
+        rule_signals_used=("元素类型",),
+        diagnostics={},
+    )
+
+
 class AcceptingSelector:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
@@ -177,6 +202,21 @@ def test_builds_candidates_from_lexer_mentions_and_step_2_intent_context() -> No
     assert trace_payload["input_context"]["shape_signals"][0]["signal_id"] == "S4"
 
 
+def test_attribute_projection_selection_strips_return_subject() -> None:
+    class Selector:
+        def select(self, prompt_name: str, variables: dict[str, object]):
+            assert prompt_name == "object_role_selection"
+            return SimpleNamespace(raw_response="选择 SM1：return_subject。理由：fixture")
+
+    service = OntologyObjectRoleSelectionService(llm_selector=Selector())
+
+    trace = service.select(lexer_trace=_lexer_trace(), intent_output=_attribute_projection_intent_output())
+
+    selected = trace.object_role_selection.selected_objects[0]
+    assert selected.candidate_id == "SM1"
+    assert selected.roles == ("projection_subject",)
+
+
 def test_path_through_relation_is_evidence_not_object_candidate() -> None:
     class Selector:
         def __init__(self) -> None:
@@ -225,6 +265,50 @@ def test_path_through_relation_is_evidence_not_object_candidate() -> None:
         ("RELATION", "源网元"),
     ]
     assert all(item.surface != "经过" for item in trace.object_candidates)
+
+
+def test_infers_object_candidate_from_attribute_and_value_owners() -> None:
+    lexer_trace = LexerTrace(
+        question="查询服务质量等级为 Gold 的服务名称及其服务质量等级",
+        matcher="test",
+        ac_matches=(),
+        selected_hits=(),
+        discarded_hits=(),
+        resolution_summary={},
+        unmatched_fragments=(),
+        vector_recalls=(),
+        mentions=(
+            _mention("OP_QUERY", "OPERATION", "查询", (0, 2)),
+            _mention(
+                "Service.quality_of_service",
+                "ATTRIBUTE",
+                "服务质量等级",
+                (2, 8),
+                {"parent_object": "Service"},
+            ),
+            _mention("OP_EQ", "COMPARISON_OPERATOR", "为", (8, 9)),
+            _mention(
+                "ServiceQuality.Gold",
+                "VALUE",
+                "Gold",
+                (10, 14),
+                {"constrains_field": "Service.quality_of_service", "raw_value": "Gold"},
+            ),
+            _mention("Service.name", "ATTRIBUTE", "服务名称", (16, 20), {"parent_object": "Service"}),
+        ),
+        unmatched_spans=(),
+        context_signals=(),
+        shape_signals=(),
+    )
+
+    candidates = build_object_candidates(lexer_trace)
+
+    assert [(item.mention_type, item.surface, item.lexical_canonical_id) for item in candidates] == [
+        ("OBJECT", "服务", "Service")
+    ]
+    assert candidates[0].metadata["inferred_from"] == "attribute_or_value_owner"
+    assert candidates[0].metadata["inferred_class_id"] == "Service"
+    assert {item.type for item in candidates[0].evidence} == {"owner_attribute", "owner_value"}
 
 
 @pytest.mark.parametrize(
@@ -288,7 +372,7 @@ def test_missing_object_candidates_clarifies_without_llm_call() -> None:
             raise AssertionError("LLM should not be called when no object candidates exist")
 
     lexer_trace = LexerTrace(
-        question="查询路由器名称",
+        question="查询一下",
         matcher="test",
         ac_matches=(),
         selected_hits=(),
@@ -296,10 +380,7 @@ def test_missing_object_candidates_clarifies_without_llm_call() -> None:
         resolution_summary={},
         unmatched_fragments=(),
         vector_recalls=(),
-        mentions=(
-            _mention("NetworkElementType.router", "VALUE", "路由器", (2, 5)),
-            _mention("NetworkElement.name", "ATTRIBUTE", "名称", (5, 7)),
-        ),
+        mentions=(_mention("OP_QUERY", "OPERATION", "查询", (0, 2)),),
         unmatched_spans=(),
         context_signals=(),
         shape_signals=(),
@@ -312,6 +393,43 @@ def test_missing_object_candidates_clarifies_without_llm_call() -> None:
     assert trace.object_role_selection.selected_objects == ()
     assert trace.clarification["reason_code"] == "missing_object_candidate"
     assert trace.llm_raw_output == ""
+
+
+def test_pipeline_clarification_preserves_partial_trace_before_failed_step() -> None:
+    class ClarifyingSelector:
+        def select(self, prompt_name: str, variables: dict[str, object]):
+            assert prompt_name == "object_role_selection"
+            return SimpleNamespace(raw_response="需要澄清：候选片段不足以判断后续需要重点关注什么。")
+
+    pipeline = OntologyGenerationPipeline(
+        assets=OntologyAssets.from_default_resources(),
+        object_role_selection_service=OntologyObjectRoleSelectionService(llm_selector=ClarifyingSelector()),
+    )
+
+    with pytest.raises(ClarificationNeeded) as exc_info:
+        pipeline.generate(
+            "查询所有服务质量等级为 Gold 的服务名称及其服务质量等级。",
+            trace_id="trace-partial-step-3-1",
+        )
+
+    partial_trace = exc_info.value.partial_trace
+    assert partial_trace["schema_version"] == "cga_trace_v2"
+    assert partial_trace["trace_profile"] == "ontology"
+    assert partial_trace["trace_id"] == "trace-partial-step-3-1"
+    assert partial_trace["generation_status"] == "clarification_required"
+    assert partial_trace["preprocessing"]["core_question"] == "查询所有服务质量等级为 Gold 的服务名称及其服务质量等级"
+    assert [item["surface"] for item in partial_trace["lexer"]["mentions"]] == [
+        "查询",
+        "所有",
+        "服务质量等级",
+        "为",
+        "Gold",
+        "服务名称",
+        "服务质量等级",
+    ]
+    assert partial_trace["intent"]["intent"]["primary"] == "existence_query"
+    assert partial_trace["object_role_selection"]["object_candidates"][0]["lexical_canonical_id"] == "Service"
+    assert partial_trace["object_role_selection"]["clarification"]["reason"] == "候选片段不足以判断后续需要重点关注什么。"
 
 
 def test_pipeline_stops_when_step_3_1_needs_clarification() -> None:

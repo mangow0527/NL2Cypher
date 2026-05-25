@@ -9,6 +9,7 @@ import httpx
 
 from services.cypher_generator_agent.app.ontology_layer.assets import OntologyAssets
 from services.cypher_generator_agent.app.ontology_layer.models import DictionaryEntry
+from services.cypher_generator_agent.app.lexical_layer.types import normalize_expected_mention_type, normalize_mention_type
 
 
 DEFAULT_MENTION_COLLECTION = "nl2cypher_mention_candidates_v1"
@@ -49,7 +50,7 @@ class MentionVectorCandidate:
             id=_required_text(hit, "id", "candidate_id", "fragment_key"),
             text=_required_text(hit, "text", "content", "sample_text"),
             canonical_id=_required_text(hit, "canonical_id", metadata=metadata),
-            mention_type=_required_text(hit, "mention_type", metadata=metadata),
+            mention_type=normalize_mention_type(_required_text(hit, "mention_type", metadata=metadata)),
             surface=_required_text(hit, "surface", metadata=metadata),
             score=_score(hit),
             metadata=metadata,
@@ -131,7 +132,7 @@ class RagMentionVectorRetriever:
             return []
         filters: dict[str, object] = {"enabled": True}
         if expected_mention_type:
-            filters["mention_type"] = expected_mention_type
+            filters["mention_type"] = normalize_expected_mention_type(expected_mention_type) or expected_mention_type
         request_payload: dict[str, object] = {
             "query": fragment,
             "top_k": top_k,
@@ -161,9 +162,9 @@ def _documents_for_entry(
     entry: DictionaryEntry,
     entries_by_id: dict[str, DictionaryEntry],
 ) -> tuple[MentionVectorDocument, ...]:
-    if entry.mention_type == "synonym":
+    if entry.mention_type in {"SYNONYM", "VALUE"}:
         return ()
-    if entry.mention_type != "synonym_group":
+    if entry.mention_type != "SYNONYM_GROUP":
         return tuple(_document_for_surface(entry, surface, extra_metadata={}) for surface in entry.surface_forms if surface)
 
     documents: list[MentionVectorDocument] = []

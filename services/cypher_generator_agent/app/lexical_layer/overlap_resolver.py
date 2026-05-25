@@ -1,12 +1,32 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Protocol
 
-import yaml
+from services.cypher_generator_agent.app.lexical_layer.types import normalize_mention_type
 
-from services.cypher_generator_agent.app.infrastructure import resource_paths
+
+DEFAULT_MATCH_SOURCE_PRIORITIES: dict[str, int] = {
+    "operator_extract": 108,
+    "quantifier_extract": 105,
+    "ac_exact": 100,
+    "vector_recall": 50,
+    "literal_extract": 40,
+    "time_extract": 40,
+    "llm_select": 40,
+}
+
+DEFAULT_MENTION_TYPE_PRIORITIES: dict[str, int] = {
+    "RELATION": 100,
+    "ATTRIBUTE": 90,
+    "OBJECT": 80,
+    "VALUE": 70,
+    "OPERATION": 60,
+    "LITERAL_VALUE": 60,
+    "COMPARISON_OPERATOR": 60,
+    "QUANTIFIER": 60,
+    "TIME_EXPRESSION": 60,
+}
 
 
 class RawHit(Protocol):
@@ -29,35 +49,24 @@ class DictionaryPriorities:
     by_type: dict[str, int]
     by_canonical_id: dict[str, int]
     match_source_priorities: dict[str, int]
-    max_overrides: int
-    override_semantics: str
+
+    @classmethod
+    def default(cls) -> "DictionaryPriorities":
+        return cls(
+            by_type=dict(DEFAULT_MENTION_TYPE_PRIORITIES),
+            by_canonical_id={},
+            match_source_priorities=dict(DEFAULT_MATCH_SOURCE_PRIORITIES),
+        )
 
     @classmethod
     def from_default_resources(cls) -> "DictionaryPriorities":
-        return cls.from_path(resource_paths.lexer_dictionary_priorities_path())
-
-    @classmethod
-    def from_path(cls, path: Path) -> "DictionaryPriorities":
-        payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        dictionary = payload.get("dictionary_priorities", {}) or {}
-        ci_rule = dictionary.get("ci_rules", dictionary.get("ci_rule", {})) or {}
-        return cls(
-            by_type={str(key): int(value) for key, value in (dictionary.get("by_type", {}) or {}).items()},
-            by_canonical_id={
-                str(key): int(value) for key, value in (dictionary.get("by_canonical_id", {}) or {}).items()
-            },
-            match_source_priorities={
-                str(key): int(value) for key, value in (payload.get("match_source_priorities", {}) or {}).items()
-            },
-            max_overrides=int(ci_rule.get("max_overrides", 0)),
-            override_semantics=str(payload.get("override_semantics", "replace")),
-        )
+        return cls.default()
 
     def source_priority(self, hit: RawHit) -> int:
         return self.match_source_priorities.get(hit.match_source, 0)
 
     def dictionary_priority(self, hit: RawHit) -> int:
-        return self.by_canonical_id.get(hit.canonical_id, self.by_type.get(hit.mention_type, 0))
+        return self.by_canonical_id.get(hit.canonical_id, self.by_type.get(normalize_mention_type(hit.mention_type), 0))
 
 
 @dataclass(frozen=True)

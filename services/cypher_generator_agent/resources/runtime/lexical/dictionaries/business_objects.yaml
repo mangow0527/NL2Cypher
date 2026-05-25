@@ -1,0 +1,90 @@
+version: 2
+source_schema: services/testing_agent/docs/reference/schema.json
+description: Business object mention dictionary for first-stage mention extraction.
+entries:
+- canonical_id: NetworkElement
+  mention_type: OBJECT
+  surface_forms:
+  - 网元
+  - 网络元素
+  - 网络设备
+  - 设备
+  - NetworkElement
+  - network element
+  description: Network element node, covering routers, switches, firewalls, load balancers, and WAN optimizers.
+  schema_table: NetworkElement
+  ontology_class: NetworkDevice
+- canonical_id: Protocol
+  mention_type: OBJECT
+  surface_forms:
+  - 协议
+  - 网络协议
+  - 协议定义
+  - Protocol
+  - network protocol
+  description: Network protocol definition object.
+  schema_table: Protocol
+  ontology_class: ProtocolDefinition
+- canonical_id: Tunnel
+  mention_type: OBJECT
+  surface_forms:
+  - 隧道
+  - 网络隧道
+  - Tunnel
+  - network tunnel
+  description: Network tunnel instance; tunnel paths are represented through PATH_THROUGH edges.
+  schema_table: Tunnel
+  ontology_class: NetworkTunnel
+- canonical_id: Service
+  mention_type: OBJECT
+  surface_forms:
+  - 服务
+  - 业务
+  - 业务服务
+  - 网络服务
+  - Service
+  - business service
+  - service layer
+  description: Business or service layer object carried by network resources.
+  schema_table: Service
+  ontology_class: BusinessService
+- canonical_id: Port
+  mention_type: OBJECT
+  surface_forms:
+  - 端口
+  - 接口
+  - 网络接口
+  - Port
+  - interface
+  - physical interface
+  - logical interface
+  description: Physical or logical interface on a network element.
+  schema_table: Port
+  ontology_class: NetworkPort
+- canonical_id: Fiber
+  mention_type: OBJECT
+  surface_forms:
+  - 光纤
+  - 纤芯
+  - 光缆
+  - Fiber
+  - fiber optic cable
+  - physical fiber
+  description: Physical fiber optic cable resource.
+  schema_table: Fiber
+  ontology_class: PhysicalFiber
+- canonical_id: Link
+  mention_type: OBJECT
+  surface_forms:
+  - 链路
+  - 连接
+  - 网络链路
+  - 物理链路
+  - 逻辑链路
+  - Link
+  - network link
+  - physical link
+  - logical link
+  description: Logical or physical link between ports.
+  schema_table: Link
+  ontology_class: NetworkLink

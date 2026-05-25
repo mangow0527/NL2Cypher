@@ -150,6 +150,91 @@ def test_candidate_refs_are_preserved_as_candidate_family_and_validated() -> Non
     assert attribute["attribute_candidates"] == ["Protocol.standard", "Tunnel.ietf_standard"]
 
 
+def test_value_mapping_preserves_enum_raw_value_separately_from_value_id() -> None:
+    service = OntologyMappingService(OntologyAssets.from_default_resources())
+    trace = LexerTrace(
+        question="查询类型为MPLS-VPN的服务",
+        matcher="test",
+        ac_matches=(),
+        selected_hits=(),
+        discarded_hits=(),
+        resolution_summary={},
+        unmatched_fragments=(),
+        vector_recalls=(),
+        mentions=(
+            _mention(
+                "ServiceType.MPLS-VPN",
+                "VALUE",
+                "MPLS-VPN",
+                (5, 13),
+                {"constrains_field": "Service.elem_type", "raw_value": "MPLS-VPN"},
+            ),
+            _mention("Service", "OBJECT", "服务", (14, 16)),
+        ),
+        unmatched_spans=(),
+        context_signals=(),
+        shape_signals=(),
+    )
+
+    mapping = service.map(lexer_trace=trace, object_role_selection=ObjectRoleSelection(selected_objects=()))
+    value = mapping.to_dict()["ontology_values"][0]
+
+    assert value["value_id"] == "ServiceType.MPLS-VPN"
+    assert value["raw_value"] == "MPLS-VPN"
+    assert value["constrains_attribute"] == "Service.elem_type"
+
+
+def test_maps_inferred_object_selection_from_attribute_owner() -> None:
+    service = OntologyMappingService(OntologyAssets.from_default_resources())
+    trace = LexerTrace(
+        question="查询服务质量等级为 Gold 的服务名称",
+        matcher="test",
+        ac_matches=(),
+        selected_hits=(),
+        discarded_hits=(),
+        resolution_summary={},
+        unmatched_fragments=(),
+        vector_recalls=(),
+        mentions=(
+            _mention("Service.quality_of_service", "ATTRIBUTE", "服务质量等级", (2, 8), {"parent_object": "Service"}),
+            _mention(
+                "ServiceQuality.Gold",
+                "VALUE",
+                "Gold",
+                (10, 14),
+                {"constrains_field": "Service.quality_of_service", "raw_value": "Gold"},
+            ),
+            _mention("Service.name", "ATTRIBUTE", "服务名称", (16, 20), {"parent_object": "Service"}),
+        ),
+        unmatched_spans=(),
+        context_signals=(),
+        shape_signals=(),
+    )
+
+    mapping = service.map(
+        lexer_trace=trace,
+        object_role_selection=ObjectRoleSelection(
+            selected_objects=(
+                SelectedObjectRole(
+                    candidate_id="SM1",
+                    mention_id="m_service_quality_of_service_1",
+                    roles=("filter_subject", "projection_subject"),
+                    evidence_ids=("E1",),
+                    selected_by="llm",
+                    reason="属性和值共同指向服务",
+                    class_id="Service",
+                ),
+            )
+        ),
+    ).to_dict()
+
+    assert mapping["ontology_objects"][0]["class_id"] == "Service"
+    assert mapping["ontology_objects"][0]["selected_roles"] == ["filter_subject", "projection_subject"]
+    assert mapping["ontology_objects"][0]["object_candidate_id"] == "SM1"
+    assert mapping["ontology_attributes"][0]["attribute_id"] == "Service.quality_of_service"
+    assert mapping["ontology_values"][0]["constrains_attribute"] == "Service.quality_of_service"
+
+
 def test_default_ontology_assets_validate_mention_mappings_without_dictionary_fallbacks() -> None:
     assets = OntologyAssets.from_default_resources()
     service = OntologyMappingService(

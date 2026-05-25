@@ -6,6 +6,7 @@
 
 ```text
 上游预处理产出 core_question
+  -> Step 0 问题框定 Question Framing（可选 hint）
   -> Step 1 词法层 Lexer
   -> Step 2 意图与答案形态识别 Intent / Shape
   -> Step 3 本体逻辑规划 Ontology Planner
@@ -14,25 +15,64 @@
   -> 执行 Cypher / 返回结果
 ```
 
-核心思想是把“自然语言到 Cypher”拆成五步：
+核心思想是把“自然语言到 Cypher”拆成一个可降级的前置 hint 层和五个主步骤：
 
-1. 先把问题切成可处理的 mention 和线索。
-2. 再判断用户想要的答案形态。
-3. 再把 mention 和 intent 规划成本体级 logical plan。
-4. 再检查 logical plan 是否符合业务语义。
-5. 最后把本体级计划编译成具体 Cypher。
+1. 可选地先把问题拆成原子片段，给词法层提供 hint。
+2. 再把问题切成可处理的 mention 和线索。
+3. 再判断用户想要的答案形态。
+4. 再把 mention 和 intent 规划成本体级 logical plan。
+5. 再检查 logical plan 是否符合业务语义。
+6. 最后把本体级计划编译成具体 Cypher。
 
 下文用同一个问题串起每一步的输入输出：`查询金牌服务穿越的隧道及其源网元，返回隧道的IETF标准和源网元的IP地址`。
 
+## Step 0：问题框定 Question Framing
+
+Step 0 是词法层之前的可选辅助层，负责让 LLM 做普通问题拆分，把 `core_question` 拆成若干原子问题片段。LLM 只知道这些片段后续会辅助图数据库 / Cypher 查询，不知道系统内部的 mention、本体、canonical、logical plan 等术语。
+
+提示词要求 LLM 输出简单文本，不输出 JSON。典型输出类似：
+
+```text
+找什么对象：金牌服务
+通过什么关系继续找：穿越的隧道
+通过什么关系继续找：隧道的源网元
+最后返回什么：隧道的IETF标准
+最后返回什么：源网元的IP地址
+```
+
+代码层会把 LLM 文本解析并包装成内部 `question_framing.atoms`，再交给 Lexer 作为 hint：
+
+```json
+{
+  "question_framing": {
+    "enabled": true,
+    "atoms": [
+      {"atom_id": "QA1", "text": "金牌服务", "roles": ["FIND_OBJECT", "FILTER_CONDITION"], "span": [2, 6], "confidence": 0.86, "raw_role_text": "找什么对象 + 用什么条件筛选"},
+      {"atom_id": "QA2", "text": "穿越的隧道", "roles": ["RELATION_PATH"], "span": [6, 11], "confidence": 0.82, "raw_role_text": "通过什么关系继续找"},
+      {"atom_id": "QA3", "text": "隧道的源网元", "roles": ["RELATION_PATH"], "span": [9, 16], "confidence": 0.8, "raw_role_text": "通过什么关系继续找"},
+      {"atom_id": "QA4", "text": "隧道的IETF标准", "roles": ["RETURN_CONTENT"], "span": [19, 28], "confidence": 0.9, "raw_role_text": "最后返回什么"},
+      {"atom_id": "QA5", "text": "源网元的IP地址", "roles": ["RETURN_CONTENT"], "span": [29, 37], "confidence": 0.9, "raw_role_text": "最后返回什么"}
+    ],
+    "diagnostics": []
+  }
+}
+```
+
+atom 的 `roles` 使用内部规范化枚举：`FIND_OBJECT`、`FILTER_CONDITION`、`RELATION_PATH`、`RETURN_CONTENT`、`AGG_SORT_TIME`、`UNKNOWN`。LLM 的中文角色只保留在 `raw_role_text` 里用于 trace；`span`、`confidence` 和 `diagnostics` 由代码补充，LLM 不直接输出内部结构。
+
+Step 0 只影响词法层 hint：可以指导残片向量召回的 `expected_mention_type`，帮助区分 projection / filter 角色，或限制未命中片段的召回范围。它不能覆盖词典和向量事实，不能生成本体 canonical，不能生成 logical plan 或 Cypher。
+
+如果 LLM 失败、输出无法解析、角色不合法或 span 找不到，系统直接降级为无 framing 模式。降级不阻塞主流程，也不产生澄清请求。
+
 ## Step 1：词法层 Lexer
 
-Step 1 负责把标准化后的 `core_question` 转成 mention 序列和词法线索。
+Step 1 负责把标准化后的 `core_question` 转成 mention 序列和词法线索。若 Step 0 产出了可用 `question_framing.atoms`，Lexer 可以把它们作为 hint；若 Step 0 降级或关闭，Lexer 按原流程运行。
 
 它主要做：
 
 - 用词典扫描业务对象、关系、属性、属性值和操作词。
 - 抽取字面值、运算符、量词、时间表达等结构化元素；这是与 AC 词典扫描、向量召回并列的独立通道。
-- 识别没有被词典覆盖的残片，并对残片做向量召回。
+- 识别没有被词典覆盖的残片，并对残片做向量召回；Step 0 hint 只可辅助判断 `expected_mention_type` 和召回范围。
 - 处理重叠命中，例如“源网元”覆盖“源”和“网元”。
 - 保留候选族，例如“名称”可能对应服务名称、隧道名称、网元名称。
 - 抽取上下文线索和答案形态线索，例如“返回”后面的字段区域。
@@ -48,11 +88,20 @@ Step 1 输出 9 类 `mention_type`。词典命中产生 `OPERATION`、`VALUE`、
     "original_question": "查询金牌服务穿越的隧道及其源网元，返回隧道的IETF标准和源网元的IP地址",
     "core_question": "查询金牌服务穿越的隧道及其源网元，返回隧道的IETF标准和源网元的IP地址",
     "clarification_request": null
+  },
+  "question_framing": {
+    "enabled": true,
+    "atoms": [
+      {"atom_id": "QA1", "text": "金牌服务", "roles": ["FIND_OBJECT", "FILTER_CONDITION"], "span": [2, 6]},
+      {"atom_id": "QA2", "text": "穿越的隧道", "roles": ["RELATION_PATH"], "span": [6, 11]},
+      {"atom_id": "QA4", "text": "隧道的IETF标准", "roles": ["RETURN_CONTENT"], "span": [19, 28]},
+      {"atom_id": "QA5", "text": "源网元的IP地址", "roles": ["RETURN_CONTENT"], "span": [29, 37]}
+    ]
   }
 }
 ```
 
-这个 JSON 表示预处理认为问题可以继续进入 Cypher 生成流程。Lexer 使用 `core_question` 做词典扫描和向量召回，`original_question` 只保留在 trace 中用于回溯。
+这个 JSON 表示预处理认为问题可以继续进入 Cypher 生成流程。Lexer 使用 `core_question` 做词典扫描和向量召回，`original_question` 只保留在 trace 中用于回溯；`question_framing` 是可选 hint，缺失时不影响 Step 1 执行。
 
 本步骤输出：
 
@@ -650,7 +699,7 @@ Step 3 负责把 Step 1 的 mention 和线索，结合 Step 2 的 intent / initi
 
 这个 JSON 把过滤值和返回字段绑定到具体语义节点上：`金牌` 约束 `Service`，`延迟小于20ms` 由谓词组装生成 literal filter，`IETF标准` 属于 `Tunnel`，`IP地址` 属于源网元。
 
-第一版明确不新增 Step；不改 `domain_ontology` 结构；不改 3.1-3.4；不在 Step 1 做类型推断；不在 Step 5 做参数化。Step 5 只复用 `value_kind=literal` 的 parsed value 直接渲染 Cypher。
+谓词组装扩展不新增主流程 Step；不改 `domain_ontology` 结构；不改 3.1-3.4；不在 Step 1 做类型推断；不在 Step 5 做参数化。Step 5 只复用 `value_kind=literal` 的 parsed value 直接渲染 Cypher。
 
 ### 3.6 Shape 回填与结构预校验
 

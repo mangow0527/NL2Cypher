@@ -135,6 +135,12 @@ class IntentCandidateGate:
         primary_intent = candidate.primary_intent
         secondary_intent = candidate.secondary_intent
 
+        if _should_force_attribute_projection(question, shape_tags):
+            if secondary_intent == "attribute_projection_query":
+                return True
+            if secondary_intent in {"entity_list_query", "entity_detail_query"}:
+                return False
+
         if shape_tags.intersection({"answer_projection_region", "project_marker"}):
             if primary_intent == "relationship_path_query" and not shape_tags.intersection(
                 {"path_answer_hint", "path_enumeration_hint", "topology_answer_hint"}
@@ -570,6 +576,18 @@ class RuleBasedIntentRecognizer:
         shape_signals: tuple[object, ...] = (),
     ) -> IntentRecognitionResult:
         shape_tags = _shape_signal_tags(shape_signals)
+        if _should_force_attribute_projection(question, shape_tags):
+            return IntentRecognitionResult(
+                primary_intent="record_retrieval_query",
+                secondary_intent="attribute_projection_query",
+                confidence=0.88,
+                source=self.source,
+                decision=self.decision,
+                evidence={
+                    "stage": "rule",
+                    "matched_rule_ids": ["question_framing_return_content_attribute_projection"],
+                },
+            )
         matched_rules = [rule for rule in self.rules if rule.matches(question, shape_tags=shape_tags)]
         if not matched_rules:
             return IntentRecognitionResult(
@@ -1163,6 +1181,33 @@ def _shape_signal_tags(shape_signals: tuple[object, ...]) -> set[str]:
         if signal_type:
             tags.add(str(signal_type))
     return tags
+
+
+def _has_return_content_attribute_projection(shape_tags: set[str]) -> bool:
+    if "RETURN_CONTENT" not in shape_tags:
+        return False
+    if "answer_projection_region" not in shape_tags and "project_marker" not in shape_tags:
+        return False
+    return not shape_tags.intersection({"aggregation_hint", "count_hint", "AGG_SORT_TIME"})
+
+
+def _should_force_attribute_projection(question: str, shape_tags: set[str]) -> bool:
+    if not _has_return_content_attribute_projection(shape_tags) or _has_explicit_node_return_signal(question):
+        return False
+    features = extract_query_structural_features(question)
+    return not (
+        features.has_relation_signal
+        or features.has_path_signal
+        or features.has_group_signal
+        or features.has_aggregation_signal
+    )
+
+
+def _has_explicit_node_return_signal(question: str) -> bool:
+    return _contains_any(
+        question,
+        ("详细信息", "详情", "完整信息", "节点信息", "完整配置", "详细配置", "对象信息"),
+    )
 
 
 def _has_limit_signal(text: str) -> bool:

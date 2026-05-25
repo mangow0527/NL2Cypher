@@ -5,7 +5,10 @@ import re
 import pytest
 
 from services.cypher_generator_agent.app.runtime_pipeline import OntologyGenerationPipeline
+from services.cypher_generator_agent.app.intent_layer.layer import IntentLayer
 from services.cypher_generator_agent.app.intent_layer.models import Intent, IntentOutput, InitialShapeField
+from services.cypher_generator_agent.app.lexical_layer.lexer import OntologyLexer
+from services.cypher_generator_agent.app.lexical_layer.mention_vector_recall import MentionVectorCandidate
 from services.cypher_generator_agent.app.clarification_layer.errors import ClarificationNeeded
 from services.cypher_generator_agent.app.ontology_layer.assets import OntologyAssets
 from services.cypher_generator_agent.app.ontology_layer.object_role_selection import OntologyObjectRoleSelectionService
@@ -18,6 +21,7 @@ from services.cypher_generator_agent.app.ontology_layer.ontology_path_selection 
     SelectedPath,
 )
 from services.cypher_generator_agent.app.ontology_layer.models import ContextSignal
+from services.cypher_generator_agent.app.question_framing_layer.service import QuestionFramingService
 
 
 class _FixtureIntentClassifier:
@@ -130,6 +134,113 @@ class _ProjectionSubjectObjectRoleSelectionSelector:
         return Selection()
 
 
+class _ReturnSubjectObjectRoleSelectionSelector:
+    def select(self, prompt_name: str, variables: dict[str, object]):
+        class Selection:
+            raw_response = "\n".join(
+                f"选择 {candidate_id}：filter_subject、return_subject。理由：fixture"
+                for candidate_id in variables.get("allowed_candidate_ids", [])
+            )
+
+        assert prompt_name == "object_role_selection"
+        return Selection()
+
+
+class _ServiceElemTypeQuestionFramingClient:
+    def complete(self, prompt: str) -> str:
+        return (
+            "原子问题：\n"
+            "1. 所有服务 ｜ 找什么对象\n"
+            "2. 元素类型 ｜ 最后返回什么\n"
+        )
+
+
+class _ServiceInfoQuestionFramingClient:
+    def complete(self, prompt: str) -> str:
+        return "原子问题：\n1. 所有的服务信息 ｜ 找什么对象 + 最后返回什么\n"
+
+
+class _ServiceTunnelBothSidesQuestionFramingClient:
+    def complete(self, prompt: str) -> str:
+        return (
+            "原子问题：\n"
+            "1. 所有服务与隧道之间的连接关系 ｜ 找什么对象 + 通过什么关系继续找\n"
+            "2. 双方的元素类型 ｜ 最后返回什么\n"
+        )
+
+
+class _GenericInfoVectorRetriever:
+    provider = "fake_generic_info_vector"
+
+    def search(
+        self,
+        fragment: str,
+        *,
+        expected_mention_type: str | None,
+        top_k: int,
+    ) -> list[MentionVectorCandidate]:
+        if fragment != "信息":
+            return []
+        return [
+            MentionVectorCandidate(
+                id="mention.Link.status.信息",
+                text="信息 status generic info",
+                canonical_id="Link.status",
+                mention_type="ATTRIBUTE",
+                surface="状态",
+                score=0.93,
+                metadata={"dictionary": "attributes"},
+            )
+        ]
+
+
+class _RelationPathStructuralVectorRetriever:
+    provider = "fake_relation_path_structural_vector"
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def search(
+        self,
+        fragment: str,
+        *,
+        expected_mention_type: str | None,
+        top_k: int,
+    ) -> list[MentionVectorCandidate]:
+        self.calls.append(
+            {
+                "fragment": fragment,
+                "expected_mention_type": expected_mention_type,
+                "top_k": top_k,
+            }
+        )
+        if fragment == "之间":
+            return [
+                MentionVectorCandidate(
+                    id="mention.Fiber.location.之间",
+                    text="之间 location Fiber.location",
+                    canonical_id="Fiber.location",
+                    mention_type="ATTRIBUTE",
+                    surface="位置",
+                    score=0.92,
+                    metadata={"dictionary": "attributes"},
+                )
+            ]
+        if fragment == "双方的元素":
+            return [
+                MentionVectorCandidate(
+                    id="mention.NetworkElement.software_version.双方的元素",
+                    text="双方的元素 software version",
+                    canonical_id="NetworkElement.software_version",
+                    mention_type="ATTRIBUTE",
+                    surface="软件版本",
+                    score=0.93,
+                    metadata={"dictionary": "attributes"},
+                )
+            ]
+        return []
+
+
 class _ProjectionAttributeIntentClassifier:
     def run(self, *, core_question: str, shape_signals: tuple[ContextSignal, ...]) -> IntentOutput:
         return IntentOutput(
@@ -194,11 +305,34 @@ class _FixtureBindingSelector:
         return Selection()
 
 
+class _RecordingExplicitLogicalPlanningService:
+    def __init__(self) -> None:
+        self.delegate = OntologyLogicalPlanningService(
+            assets=OntologyAssets.from_default_resources(),
+            coreference_service=OntologyCoreferenceService(llm_selector=_SameInstanceCoreferenceSelector()),
+            binding_service=OntologyBindingService(llm_selector=_FixtureBindingSelector()),
+        )
+        self.calls: list[str] = []
+
+    def resolve_coreference(self, *args, **kwargs):
+        self.calls.append("step_3_4_coreference")
+        return self.delegate.resolve_coreference(*args, **kwargs)
+
+    def bind(self, *args, **kwargs):
+        self.calls.append("step_3_5_binding")
+        return self.delegate.bind(*args, **kwargs)
+
+    def finalize_shape(self, *args, **kwargs):
+        self.calls.append("step_3_6_shape_finalization")
+        return self.delegate.finalize_shape(*args, **kwargs)
+
+
 def _binding_candidate_id(question: str, candidate_lines: str, signal_lines: str) -> str:
     for keyword, attribute in (
         ("源网元", "NetworkElement.ip_address"),
         ("IP", "NetworkElement.ip_address"),
         ("IETF", "Tunnel.ietf_standard"),
+        ("元素类型", "Service.elem_type"),
         ("隧道", "Tunnel.name"),
         ("端口", "Port.name"),
         ("带宽", "Service.bandwidth"),
@@ -316,6 +450,76 @@ def _projection_attribute_pipeline() -> OntologyGenerationPipeline:
         intent_layer=_ProjectionAttributeIntentClassifier(),  # type: ignore[arg-type]
         object_role_selection_service=OntologyObjectRoleSelectionService(
             llm_selector=_ProjectionSubjectObjectRoleSelectionSelector()
+        ),
+        logical_planning_service=OntologyLogicalPlanningService(
+            assets=assets,
+            coreference_service=OntologyCoreferenceService(llm_selector=_SameInstanceCoreferenceSelector()),
+            binding_service=OntologyBindingService(llm_selector=_FixtureBindingSelector()),
+        ),
+    )
+
+
+def _entity_list_pipeline() -> OntologyGenerationPipeline:
+    assets = OntologyAssets.from_default_resources()
+    return OntologyGenerationPipeline(
+        assets=assets,
+        object_role_selection_service=OntologyObjectRoleSelectionService(
+            llm_selector=_ReturnSubjectObjectRoleSelectionSelector()
+        ),
+        logical_planning_service=OntologyLogicalPlanningService(
+            assets=assets,
+            coreference_service=OntologyCoreferenceService(llm_selector=_SameInstanceCoreferenceSelector()),
+            binding_service=OntologyBindingService(llm_selector=_FixtureBindingSelector()),
+        ),
+    )
+
+
+def _question_framing_projection_pipeline() -> OntologyGenerationPipeline:
+    assets = OntologyAssets.from_default_resources()
+    return OntologyGenerationPipeline(
+        assets=assets,
+        question_framing_service=QuestionFramingService(client=_ServiceElemTypeQuestionFramingClient()),
+        intent_layer=IntentLayer(),
+        object_role_selection_service=OntologyObjectRoleSelectionService(
+            llm_selector=_ProjectionSubjectObjectRoleSelectionSelector()
+        ),
+        logical_planning_service=OntologyLogicalPlanningService(
+            assets=assets,
+            coreference_service=OntologyCoreferenceService(llm_selector=_SameInstanceCoreferenceSelector()),
+            binding_service=OntologyBindingService(llm_selector=_FixtureBindingSelector()),
+        ),
+    )
+
+
+def _question_framing_service_info_pipeline() -> OntologyGenerationPipeline:
+    assets = OntologyAssets.from_default_resources()
+    return OntologyGenerationPipeline(
+        assets=assets,
+        lexer=OntologyLexer(assets, vector_retriever=_GenericInfoVectorRetriever()),
+        question_framing_service=QuestionFramingService(client=_ServiceInfoQuestionFramingClient()),
+        intent_layer=IntentLayer(),
+        object_role_selection_service=OntologyObjectRoleSelectionService(
+            llm_selector=_ReturnSubjectObjectRoleSelectionSelector()
+        ),
+        logical_planning_service=OntologyLogicalPlanningService(
+            assets=assets,
+            coreference_service=OntologyCoreferenceService(llm_selector=_SameInstanceCoreferenceSelector()),
+            binding_service=OntologyBindingService(llm_selector=_FixtureBindingSelector()),
+        ),
+    )
+
+
+def _service_tunnel_both_sides_pipeline(
+    retriever: _RelationPathStructuralVectorRetriever,
+) -> OntologyGenerationPipeline:
+    assets = OntologyAssets.from_default_resources()
+    return OntologyGenerationPipeline(
+        assets=assets,
+        lexer=OntologyLexer(assets, vector_retriever=retriever),
+        question_framing_service=QuestionFramingService(client=_ServiceTunnelBothSidesQuestionFramingClient()),
+        intent_layer=_FixtureIntentClassifier(),  # type: ignore[arg-type]
+        object_role_selection_service=OntologyObjectRoleSelectionService(
+            llm_selector=_FixtureObjectRoleSelectionSelector()
         ),
         logical_planning_service=OntologyLogicalPlanningService(
             assets=assets,
@@ -452,11 +656,153 @@ def test_ontology_generation_pipeline_composes_literal_comparison_filter() -> No
     )
     assert [(item.attr, item.operator, item.value) for item in result.logical_plan.nodes[0].filters] == [
         ("latency", "<", 20),
-        ("quality_of_service", "=", "ServiceQuality.Gold"),
+        ("quality_of_service", "=", "Gold"),
     ]
     assert [item.surface for item in result.trace.lexer.mentions if item.mention_type == "QUANTIFIER"] == ["所有"]
     assert result.trace.binding.shape_updates["filter_level"].value == "multi_predicate"
     assert result.trace.intent.intent.secondary == "attribute_projection_query"
+
+
+def test_question_framing_return_content_atom_drives_service_elem_type_projection() -> None:
+    pipeline = _question_framing_projection_pipeline()
+
+    result = pipeline.generate("查询所有服务的元素类型。", trace_id="trace-service-elem-type")
+
+    assert result.status == "generated"
+    assert result.cypher == "MATCH (s:Service)\nRETURN s.elem_type AS service_elem_type"
+    assert result.trace.intent.intent.secondary == "attribute_projection_query"
+    assert any("RETURN_CONTENT" in signal.supports for signal in result.trace.lexer.context_signals)
+    assert result.logical_plan.node_returns == ()
+    assert [(item.attribute, item.alias) for item in result.logical_plan.projections] == [
+        ("elem_type", "service_elem_type")
+    ]
+    selected_roles = result.trace.ontology_mapping.to_dict()["ontology_objects"][0]["selected_roles"]
+    assert selected_roles == ["projection_subject"]
+
+
+def test_ontology_generation_pipeline_composes_identifier_filter_and_dedupes_projection_attribute() -> None:
+    pipeline = _projection_attribute_pipeline()
+
+    result = pipeline.generate(
+        "查询名称为 Service_002 的服务的 ID、名称和服务质量。",
+        trace_id="trace-service-name-identifier-filter",
+    )
+
+    assert result.status == "generated"
+    assert result.cypher == (
+        "MATCH (s:Service)\n"
+        "WHERE s.name = 'Service_002'\n"
+        "RETURN s.id AS service_id, s.name AS service_name, "
+        "s.quality_of_service AS service_quality_of_service"
+    )
+    assert [(item.attr, item.operator, item.value) for item in result.logical_plan.nodes[0].filters] == [
+        ("name", "=", "Service_002")
+    ]
+    assert [(item.attribute, item.alias) for item in result.logical_plan.projections] == [
+        ("id", "service_id"),
+        ("name", "service_name"),
+        ("quality_of_service", "service_quality_of_service"),
+    ]
+    assert any(
+        mention.surface == "Service_002" and mention.mention_type == "LITERAL_VALUE"
+        for mention in result.trace.lexer.mentions
+    )
+
+
+def test_ontology_generation_pipeline_keeps_detail_node_with_explicit_projection_fields() -> None:
+    pipeline = _pipeline()
+
+    result = pipeline.generate(
+        "查询名称为 Service_003 的服务的 ID、服务质量等级及详细信息。",
+        trace_id="trace-service-name-fields-and-detail",
+    )
+
+    assert result.status == "generated"
+    assert result.cypher == (
+        "MATCH (s:Service)\n"
+        "WHERE s.name = 'Service_003'\n"
+        "RETURN s.id AS service_id, s.quality_of_service AS service_quality_of_service, s"
+    )
+    assert [(item.attribute, item.alias) for item in result.logical_plan.projections] == [
+        ("id", "service_id"),
+        ("quality_of_service", "service_quality_of_service"),
+    ]
+    assert [(item.node, item.alias) for item in result.logical_plan.node_returns] == [("s1", "s")]
+
+
+def test_ontology_generation_pipeline_uses_physical_raw_value_for_service_type_filter() -> None:
+    pipeline = _projection_attribute_pipeline()
+
+    result = pipeline.generate(
+        "查询类型为MPLS-VPN的服务的ID、名称和带宽。",
+        trace_id="trace-service-type-raw-filter",
+    )
+
+    assert result.status == "generated"
+    assert result.cypher == (
+        "MATCH (s:Service)\n"
+        "WHERE s.elem_type = 'MPLS-VPN'\n"
+        "RETURN s.id AS service_id, s.name AS service_name, s.bandwidth AS service_bandwidth"
+    )
+    assert [(item.attr, item.operator, item.value) for item in result.logical_plan.nodes[0].filters] == [
+        ("elem_type", "=", "MPLS-VPN")
+    ]
+    assert result.trace.binding.filters[0].result["value_id"] == "ServiceType.MPLS-VPN"
+    assert result.trace.binding.filters[0].result["value_kind"] == "enum"
+
+
+def test_ontology_generation_pipeline_returns_service_node_for_enum_filter_entity_list() -> None:
+    pipeline = _entity_list_pipeline()
+
+    result = pipeline.generate("查询所有服务质量等级为Bronze的服务。", trace_id="trace-service-quality-entity-list")
+
+    assert result.status == "generated"
+    assert result.cypher == "MATCH (s:Service)\nWHERE s.quality_of_service = 'Bronze'\nRETURN s"
+    assert [(item.attr, item.operator, item.value) for item in result.logical_plan.nodes[0].filters] == [
+        ("quality_of_service", "=", "Bronze")
+    ]
+    assert result.logical_plan.projections == ()
+    assert result.logical_plan.node_returns[0].node == "s1"
+
+
+def test_question_framing_generic_service_info_returns_node_not_vector_attribute() -> None:
+    pipeline = _question_framing_service_info_pipeline()
+
+    result = pipeline.generate("查询所有的服务信息。", trace_id="trace-service-info")
+
+    assert result.status == "generated"
+    assert result.cypher == "MATCH (s:Service)\nRETURN s"
+    assert result.trace.intent.intent.secondary == "entity_list_query"
+    assert not any(mention.canonical_id == "Link.status" for mention in result.trace.lexer.mentions)
+    assert result.logical_plan.projections == ()
+    assert result.logical_plan.node_returns[0].node == "s1"
+
+
+def test_pipeline_generates_service_tunnel_endpoint_elem_type_projection_without_structural_noise() -> None:
+    retriever = _RelationPathStructuralVectorRetriever()
+    pipeline = _service_tunnel_both_sides_pipeline(retriever)
+
+    result = pipeline.generate(
+        "查询所有服务与隧道之间的连接关系，并返回双方的元素类型。",
+        trace_id="trace-service-tunnel-both-sides-type",
+    )
+
+    assert result.status == "generated"
+    assert result.cypher == (
+        "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel)\n"
+        "RETURN s.elem_type AS service_elem_type, t.elem_type AS tunnel_elem_type"
+    )
+    assert [edge.relation for edge in result.logical_plan.edges] == ["SERVICE_USES_TUNNEL"]
+    assert [(item.attribute, item.alias) for item in result.logical_plan.projections] == [
+        ("elem_type", "service_elem_type"),
+        ("elem_type", "tunnel_elem_type"),
+    ]
+    assert not any(mention.canonical_id == "Link" for mention in result.trace.lexer.mentions)
+    assert not any(mention.canonical_id == "Fiber.location" for mention in result.trace.lexer.mentions)
+    assert not any(mention.canonical_id == "NetworkElement.software_version" for mention in result.trace.lexer.mentions)
+    called_fragments = [call["fragment"] for call in retriever.calls]
+    assert "之间" not in called_fragments
+    assert "双方的元素" not in called_fragments
 
 
 def test_ontology_generation_pipeline_returns_node_for_entity_detail_query() -> None:
@@ -575,6 +921,29 @@ def test_runtime_pipeline_logical_plan_edges_come_from_step_3_3_selected_paths()
     assert result.trace.ontology_path_selection.selected_paths[0].relation_chain == ("SERVICE_USES_TUNNEL", "TUNNEL_SRC")
 
 
+def test_runtime_pipeline_calls_explicit_step_3_4_3_5_3_6_services() -> None:
+    logical_planning = _RecordingExplicitLogicalPlanningService()
+    pipeline = OntologyGenerationPipeline(
+        assets=OntologyAssets.from_default_resources(),
+        intent_layer=_FixtureIntentClassifier(),  # type: ignore[arg-type]
+        object_role_selection_service=OntologyObjectRoleSelectionService(llm_selector=_FixtureObjectRoleSelectionSelector()),
+        logical_planning_service=logical_planning,  # type: ignore[arg-type]
+    )
+
+    result = pipeline.generate("查询金牌服务使用的隧道名称", trace_id="trace-explicit-3-4")
+    trace = result.trace.to_dict()
+
+    assert result.status == "generated"
+    assert logical_planning.calls == [
+        "step_3_4_coreference",
+        "step_3_5_binding",
+        "step_3_6_shape_finalization",
+    ]
+    assert trace["coreference"]["stage"] == "step_3_4_coreference"
+    assert trace["binding"]["stage"] == "step_3_5_binding"
+    assert trace["shape_finalization"]["trace"]["stage"] == "step_3_6"
+
+
 def test_runtime_pipeline_single_candidate_path_selection_does_not_call_llm() -> None:
     class NoPathSelectionLLM:
         def __init__(self) -> None:
@@ -659,7 +1028,7 @@ def test_runtime_pipeline_preserves_coreference_source_step_after_shape_finaliza
         )
 
     assert exc_info.value.stage == "step_3_6"
-    assert exc_info.value.clarification["source_step"] == "step_3_4"
+    assert exc_info.value.clarification["source_step"] == "step_3_4_coreference"
     assert exc_info.value.clarification["precheck_result"]["failures"][0]["reason_code"] == "AMBIGUOUS_COREFERENCE"
 
 

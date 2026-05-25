@@ -32,6 +32,7 @@ class ClarificationQuestionService:
         reason_code = _reason_code(raw, failure)
         reason = _reason(raw, failure, exc.message)
         options = _options(raw, failure)
+        no_option_reason = _no_option_reason(raw, failure, options, reason_code)
         normalized = {
             "core_question": _core_question(raw, core_question, original_question),
             "source_step": source_step,
@@ -40,10 +41,14 @@ class ClarificationQuestionService:
             "missing_information": _missing_information(raw, reason_code),
             "stage_params": _stage_params(raw, failure),
             "options": options,
+            "no_option_reason": no_option_reason,
             "raw_clarification": raw,
         }
         wording = self._wording(normalized)
         normalized["user_message"] = wording["user_message"]
+        normalized["question_zh"] = wording["user_message"]
+        normalized["source_stage"] = source_step
+        normalized["expected_answer_type"] = "single_choice" if normalized["options"] else "free_text"
         if wording.get("llm_raw_output") is not None:
             normalized["llm_raw_output"] = wording["llm_raw_output"]
         if wording.get("llm_prompt_name") is not None:
@@ -63,6 +68,7 @@ class ClarificationQuestionService:
                 "missing_information": payload["missing_information"],
                 "stage_params": _format_stage_params(payload["stage_params"]),
                 "option_list_with_ids": _option_lines(payload["options"]),
+                "no_option_reason": payload["no_option_reason"] or "不适用，已提供固定选项。",
             },
         )
         parsed = getattr(result, "parsed", None)
@@ -124,6 +130,8 @@ def _missing_information(payload: dict[str, Any], reason_code: str) -> str:
         "AMBIGUOUS_PATH": "用户需要确认对象之间按哪条业务关系连接。",
         "AMBIGUOUS_COREFERENCE": "用户需要确认两个对象是否指向同一个业务对象。",
         "AMBIGUOUS_ATTRIBUTE_BINDING": "用户需要确认字段或条件属于哪个对象。",
+        "MISSING_PROJECTION_TARGET": "用户需要明确要返回哪个字段或对象。",
+        "MISSING_METRIC_TARGET": "用户需要明确要统计服务、隧道、网元、端口或其他对象。",
         "SEMANTIC_ATTRIBUTE_OWNER_INVALID": "用户需要确认非法属性应改为查询哪个相关对象的属性。",
     }.get(reason_code, "用户需要补充当前缺失的判断信息。")
 
@@ -148,6 +156,8 @@ def _options(payload: dict[str, Any], failure: dict[str, Any]) -> list[str]:
     if not values:
         values = payload.get("suggested_rewrites")
     if not values:
+        values = payload.get("candidate_intents")
+    if not values:
         values = failure.get("clarification_options")
     if not values:
         values = failure.get("options")
@@ -161,14 +171,50 @@ def _options(payload: dict[str, Any], failure: dict[str, Any]) -> list[str]:
     return options
 
 
+def _no_option_reason(
+    payload: dict[str, Any],
+    failure: dict[str, Any],
+    options: list[str],
+    reason_code: str,
+) -> str | None:
+    if options:
+        return None
+    for value in (payload.get("no_option_reason"), failure.get("no_option_reason")):
+        if isinstance(value, str) and value:
+            return value
+    return {
+        "object_role_llm_unavailable": "当前环境缺少对象角色选择 LLM，无法列出可靠固定选项。",
+        "object_role_validation_failed": "对象角色选择结果未通过校验，无法列出可靠固定选项。",
+        "path_selection_validation_failed": "路径选择结果未通过校验，无法列出可靠固定选项。",
+        "MISSING_METRIC_TARGET": "当前 logical plan 中没有可统计的本体对象。",
+        "SEMANTIC_ATTRIBUTE_OWNER_INVALID": "语义校验失败项没有提供可安全替换的固定候选。",
+        "CLARIFICATION_REQUIRED": "当前澄清来源没有提供固定候选。",
+    }.get(reason_code, "当前澄清来源没有提供固定候选。")
+
+
 def _option_label(item: Any) -> str:
     if isinstance(item, str):
         return item
     if isinstance(item, dict):
+        intent_label = _intent_option_label(item)
+        if intent_label:
+            return intent_label
         for key in ("label", "summary", "description", "text", "option_id"):
             value = item.get(key)
             if isinstance(value, str) and value:
                 return value
+    return ""
+
+
+def _intent_option_label(item: dict[str, Any]) -> str:
+    primary = item.get("primary")
+    secondary = item.get("secondary")
+    if isinstance(primary, str) and isinstance(secondary, str) and primary and secondary:
+        return f"{primary} / {secondary}"
+    if isinstance(primary, str) and primary:
+        return primary
+    if isinstance(secondary, str) and secondary:
+        return secondary
     return ""
 
 

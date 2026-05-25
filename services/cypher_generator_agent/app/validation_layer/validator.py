@@ -176,7 +176,7 @@ def _attribute_ids(assets: OntologyAssets) -> set[str]:
         for item in assets.domain_ontology.get("attributes", [])
         if isinstance(item, dict) and item.get("id")
     }
-    attribute_ids.update(entry.canonical_id for entry in assets.entries if entry.mention_type == "attribute")
+    attribute_ids.update(entry.canonical_id for entry in assets.entries if entry.mention_type == "ATTRIBUTE")
     return attribute_ids
 
 

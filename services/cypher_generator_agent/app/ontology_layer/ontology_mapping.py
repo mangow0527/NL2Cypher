@@ -30,6 +30,7 @@ class MappedMention:
     target_class: str | None = None
     parent_class: str | None = None
     constrains_attribute: str | None = None
+    raw_value: str | None = None
     role: str | None = None
     attribute_candidates: tuple[str, ...] = ()
     semantic_object_kind: str | None = None
@@ -58,6 +59,7 @@ class MappedMention:
             "target_class",
             "parent_class",
             "constrains_attribute",
+            "raw_value",
             "role",
             "semantic_object_kind",
             "definition_ref",
@@ -108,7 +110,7 @@ class OntologyMappingService:
     ) -> OntologyMapping:
         mention_ids = _mention_ids(lexer_trace)
         selected_by_mention_id = {
-            item.mention_id: (item.candidate_id, item.roles)
+            item.mention_id: (item.candidate_id, item.roles, item.class_id)
             for item in object_role_selection.selected_objects
         }
         mapped: list[MappedMention] = []
@@ -120,11 +122,15 @@ class OntologyMappingService:
                 continue
             selected = selected_by_mention_id.get(mention_id)
             if selected is not None:
+                metadata = dict(mapping.metadata)
+                if selected[2] is not None:
+                    metadata["selected_object_class_id"] = selected[2]
                 mapping = MappedMention(
                     **{
                         **mapping.__dict__,
                         "object_candidate_id": selected[0],
                         "selected_roles": selected[1],
+                        "metadata": metadata,
                     }
                 )
             mapped.append(mapping)
@@ -209,7 +215,14 @@ class OntologyMappingService:
             )
         if ontology_kind == "enum_value":
             value = self._require(ontology_id, self._values, "value")
-            return MappedMention(**common, constrains_attribute=str(value["constrains_attribute"]))
+            raw_value = mention.metadata.get("raw_value")
+            if raw_value is None:
+                raw_value = value.get("raw_value")
+            return MappedMention(
+                **common,
+                constrains_attribute=str(value["constrains_attribute"]),
+                raw_value=str(raw_value) if raw_value is not None else None,
+            )
         if ontology_kind == "structured_mention":
             return MappedMention(**common)
         if ontology_kind == "semantic_object":
@@ -279,6 +292,7 @@ def _ontology_mapping_ir(mention_rows: list[MappedMention]) -> OntologyMapping:
     relation_hint_index = 0
     attribute_index = 0
     value_index = 0
+    synthetic_object_keys: set[tuple[str, str | None]] = set()
 
     for order, mapped in enumerate(mention_rows, start=1):
         evidence_id = f"E{order}"
@@ -286,6 +300,7 @@ def _ontology_mapping_ir(mention_rows: list[MappedMention]) -> OntologyMapping:
         evidence_refs = [evidence_id]
         if mapped.ontology_kind == "class":
             object_index += 1
+            synthetic_object_keys.add((mapped.ontology_id, mapped.object_candidate_id))
             ontology_objects.append(
                 _without_none(
                     {
@@ -332,6 +347,7 @@ def _ontology_mapping_ir(mention_rows: list[MappedMention]) -> OntologyMapping:
             )
             ontology_relation_hints.append(relation_hint)
             object_index += 1
+            synthetic_object_keys.add((str(mapped.target_class or mapped.range_class), mapped.object_candidate_id))
             ontology_objects.append(
                 _without_none(
                     {
@@ -351,6 +367,22 @@ def _ontology_mapping_ir(mention_rows: list[MappedMention]) -> OntologyMapping:
                 )
             )
         elif mapped.ontology_kind == "attribute":
+            inferred_class_id = _selected_object_class(mapped)
+            if inferred_class_id is not None and (inferred_class_id, mapped.object_candidate_id) not in synthetic_object_keys:
+                object_index += 1
+                synthetic_object_keys.add((inferred_class_id, mapped.object_candidate_id))
+                ontology_objects.append(
+                    _without_none(
+                        {
+                            "object_id": f"OO{object_index}",
+                            "class_id": inferred_class_id,
+                            "object_candidate_id": mapped.object_candidate_id,
+                            "selected_roles": list(mapped.selected_roles),
+                            "evidence_refs": evidence_refs,
+                            "order": order,
+                        }
+                    )
+                )
             attribute_index += 1
             ontology_attributes.append(
                 _without_none(
@@ -365,12 +397,29 @@ def _ontology_mapping_ir(mention_rows: list[MappedMention]) -> OntologyMapping:
                 )
             )
         elif mapped.ontology_kind == "enum_value":
+            inferred_class_id = _selected_object_class(mapped)
+            if inferred_class_id is not None and (inferred_class_id, mapped.object_candidate_id) not in synthetic_object_keys:
+                object_index += 1
+                synthetic_object_keys.add((inferred_class_id, mapped.object_candidate_id))
+                ontology_objects.append(
+                    _without_none(
+                        {
+                            "object_id": f"OO{object_index}",
+                            "class_id": inferred_class_id,
+                            "object_candidate_id": mapped.object_candidate_id,
+                            "selected_roles": list(mapped.selected_roles),
+                            "evidence_refs": evidence_refs,
+                            "order": order,
+                        }
+                    )
+                )
             value_index += 1
             ontology_values.append(
                 _without_none(
                     {
                         "value_ref_id": f"OV{value_index}",
                         "value_id": mapped.ontology_id,
+                        "raw_value": mapped.raw_value,
                         "constrains_attribute": mapped.constrains_attribute,
                         "evidence_refs": evidence_refs,
                         "order": order,
@@ -401,6 +450,15 @@ def _ontology_mapping_ir(mention_rows: list[MappedMention]) -> OntologyMapping:
         ontology_values=tuple(ontology_values),
         evidence=tuple(evidence),
     )
+
+
+def _selected_object_class(mapped: MappedMention) -> str | None:
+    if not mapped.object_candidate_id or not mapped.selected_roles:
+        return None
+    class_id = mapped.metadata.get("selected_object_class_id")
+    if isinstance(class_id, str) and class_id:
+        return class_id
+    return None
 
 
 def _evidence_record(mapped: MappedMention, evidence_id: str) -> dict[str, Any]:
@@ -439,7 +497,7 @@ def _domain_section(payload: dict[str, Any], section: str) -> dict[str, Any]:
 def _classes(assets: OntologyAssets) -> dict[str, Any]:
     classes = _domain_section(assets.domain_ontology, "classes")
     for entry in assets.entries:
-        if entry.mention_type == "business_object":
+        if entry.mention_type == "OBJECT":
             classes.setdefault(entry.canonical_id, {"id": entry.canonical_id})
     return classes
 
@@ -454,7 +512,7 @@ def _relations(assets: OntologyAssets) -> dict[str, Any]:
         }
         relations[relation_id] = normalized
     for entry in assets.entries:
-        if entry.mention_type != "relation_predicate":
+        if entry.mention_type != "RELATION":
             continue
         ontology_id = entry.canonical_id.removeprefix("REL_")
         normalized = {
@@ -470,7 +528,7 @@ def _relations(assets: OntologyAssets) -> dict[str, Any]:
 def _attributes(assets: OntologyAssets) -> dict[str, Any]:
     attributes = _domain_section(assets.domain_ontology, "attributes")
     for entry in assets.entries:
-        if entry.mention_type == "attribute":
+        if entry.mention_type == "ATTRIBUTE":
             attributes.setdefault(
                 entry.canonical_id,
                 {
@@ -484,12 +542,13 @@ def _attributes(assets: OntologyAssets) -> dict[str, Any]:
 def _values(assets: OntologyAssets) -> dict[str, Any]:
     values = _domain_section(assets.domain_ontology, "values")
     for entry in assets.entries:
-        if entry.mention_type == "attribute_value":
+        if entry.mention_type == "VALUE":
             values.setdefault(
                 entry.canonical_id,
                 {
                     "id": entry.canonical_id,
                     "constrains_attribute": entry.metadata.get("constrains_field"),
+                    "raw_value": entry.metadata.get("raw_value"),
                 },
             )
     return values

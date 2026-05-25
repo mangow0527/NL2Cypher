@@ -92,6 +92,7 @@ def test_runtime_results_detail_script_puts_cypher_comparison_in_overview():
     assert "生成链路摘要" in script
     assert "澄清反问" in script
     assert "澄清选项" in script
+    assert "no_option_reason" in script
     assert "发给大模型的完整提示词" not in script
     assert "大模型原始输出" not in script
     assert "parser 后 Cypher" not in script
@@ -1577,6 +1578,63 @@ def test_runtime_results_generator_section_parses_cga_trace_v2_clarification_req
     task = list_response.json()["tasks"][0]
     assert task["clarification"]["question_zh"] == "你说的对应网元是指源网元还是目的网元？"
     assert task["clarification_summary"] == "你说的对应网元是指源网元还是目的网元？"
+
+
+def test_runtime_results_normalizes_unified_clarification_payload_for_display(monkeypatch, tmp_path: Path):
+    testing_dir = tmp_path / "testing"
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(testing_dir))
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_REPAIR_DATA_DIR", str(tmp_path / "repair"))
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_CGA_TRACE_PROFILE", "ontology")
+    clarification = {
+        "core_question": "查询服务相关网元",
+        "source_step": "step_3_3_ontology_path_selection",
+        "reason_code": "ambiguous_path",
+        "reason": "存在多条路径。",
+        "missing_information": "用户需要确认对象之间按哪条业务关系连接。",
+        "user_message": "你想按服务到源网元，还是服务到目的网元来查询？",
+        "options": ["服务到源网元", "服务到目的网元"],
+    }
+    _write_json(testing_dir / "goldens" / "qa_unified_clarify.json", {"id": "qa_unified_clarify", "difficulty": "L5"})
+    _write_json(
+        testing_dir / "generation_failures" / "qa_unified_clarify__run-unified-clarify.json",
+        {
+            "id": "qa_unified_clarify",
+            "question": "查询服务相关网元",
+            "generation_run_id": "run-unified-clarify",
+            "generation_status": "clarification_required",
+            "input_prompt_snapshot": json.dumps(clarification, ensure_ascii=False),
+            "clarification": clarification,
+            "parsed_cypher": None,
+            "gate_passed": False,
+            "received_at": "2026-05-11T00:00:00+00:00",
+        },
+    )
+
+    from console.runtime_console.app.main import create_app
+
+    client = TestClient(create_app())
+    response = client.get("/api/v1/tasks/qa_unified_clarify")
+
+    assert response.status_code == 200
+    display = response.json()["summary"]["clarification"]
+    assert display["question_zh"] == "你想按服务到源网元，还是服务到目的网元来查询？"
+    assert display["source_step"] == "step_3_3_ontology_path_selection"
+    assert display["source_stage"] == "step_3_3_ontology_path_selection"
+    assert display["reason"] == "存在多条路径。"
+    assert display["missing_information"] == "用户需要确认对象之间按哪条业务关系连接。"
+    assert display["expected_answer_type"] == "single_choice"
+    assert display["options"] == [
+        {"id": "option_1", "label": "服务到源网元"},
+        {"id": "option_2", "label": "服务到目的网元"},
+    ]
+    assert response.json()["summary"]["clarification_summary"] == display["question_zh"]
+
+    list_response = client.get("/api/v1/tasks")
+    assert list_response.status_code == 200
+    task = list_response.json()["tasks"][0]
+    assert task["id"] == "qa_unified_clarify"
+    assert task["cga_trace_profile"] == "ontology"
+    assert task["clarification_summary"] == display["question_zh"]
 
 
 def test_runtime_results_generator_section_parses_ontology_cga_trace(monkeypatch, tmp_path: Path):

@@ -108,23 +108,39 @@ def test_logical_planning_consumes_intent_mapping_and_path_selection_outputs() -
         question=lexer_output.question,
     )
 
-    logical_plan, planning_trace = OntologyLogicalPlanningService(
+    logical_planning = OntologyLogicalPlanningService(
         assets=assets,
         coreference_service=OntologyCoreferenceService(llm_selector=_SameInstanceCoreferenceSelector()),
         binding_service=OntologyBindingService(llm_selector=_TunnelNameBindingSelector()),
-    ).plan(
+    )
+    coreference = logical_planning.resolve_coreference(
         question=lexer_output.question,
         lexer_trace=lexer_output,
         intent_output=intent_output,
         ontology_mapping=ontology_mapping.to_dict(),
         ontology_path_selection=ontology_path_selection,
     )
+    binding = logical_planning.bind(
+        question=lexer_output.question,
+        lexer_trace=lexer_output,
+        intent_output=intent_output,
+        ontology_mapping=ontology_mapping.to_dict(),
+        coreference=coreference,
+    )
+    shape_finalization = logical_planning.finalize_shape(
+        intent_output=intent_output,
+        ontology_mapping=ontology_mapping.to_dict(),
+        ontology_path_selection=ontology_path_selection,
+        coreference=coreference,
+        binding=binding,
+    )
+    logical_plan = shape_finalization.logical_plan
 
     assert logical_plan.intent == intent_output.intent
     assert logical_plan.shape["answer_type"] == intent_output.initial_shape["answer_type"]
     assert [edge.relation for edge in logical_plan.edges] == ["SERVICE_USES_TUNNEL"]
-    assert planning_trace.binding.projections
-    assert planning_trace.shape_finalization.precheck_result["passed"] is True
+    assert binding.projections
+    assert shape_finalization.precheck_result["passed"] is True
 
 
 def test_legacy_ontology_layer_intent_classification_path_is_not_available() -> None:

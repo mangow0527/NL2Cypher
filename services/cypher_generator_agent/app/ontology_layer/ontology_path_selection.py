@@ -250,6 +250,7 @@ def build_path_requests(
             )
         )
     requests.extend(_terminal_attribute_requests(ontology_attributes, requests))
+    requests.extend(_terminal_projection_subject_requests(ontology_objects, requests))
     return tuple(_renumber_requests(_deduplicate_requests(requests)))
 
 
@@ -488,6 +489,8 @@ def _path_subject_pair_requests(
         if not from_class or not to_class or from_class == to_class:
             continue
         bridge_relation = _bridge_relation_between(left, right, relation_hints)
+        if bridge_relation is None and _relation_hint_chain_exists_between(left, right, relation_hints):
+            continue
         requests.append(
             PathRequest(
                 request_id="PR0",
@@ -551,6 +554,42 @@ def _bridge_relation_between(
     return None
 
 
+def _relation_hint_chain_exists_between(
+    left: dict[str, Any],
+    right: dict[str, Any],
+    relation_hints: list[dict[str, Any]],
+) -> bool:
+    left_order = _order(left)
+    right_order = _order(right)
+    from_class = str(left.get("class_id") or "")
+    to_class = str(right.get("class_id") or "")
+    if not from_class or not to_class:
+        return False
+    edges: dict[str, set[str]] = {}
+    for item in relation_hints:
+        if not isinstance(item, dict) or not _has_path_role(item):
+            continue
+        item_order = _order(item)
+        if item_order < left_order or item_order > right_order:
+            continue
+        hint_from = str(item.get("from_class") or "")
+        hint_to = str(item.get("to_class") or "")
+        if hint_from and hint_to:
+            edges.setdefault(hint_from, set()).add(hint_to)
+    frontier = [from_class]
+    seen = {from_class}
+    while frontier:
+        current = frontier.pop(0)
+        for next_class in edges.get(current, ()):
+            if next_class == to_class:
+                return True
+            if next_class in seen:
+                continue
+            seen.add(next_class)
+            frontier.append(next_class)
+    return False
+
+
 def _terminal_attribute_requests(
     ontology_attributes: list[dict[str, Any]],
     requests: list[PathRequest],
@@ -580,6 +619,42 @@ def _terminal_attribute_requests(
     return added
 
 
+def _terminal_projection_subject_requests(
+    ontology_objects: list[dict[str, Any]],
+    requests: list[PathRequest],
+) -> list[PathRequest]:
+    classes_in_paths = {request.from_class for request in requests} | {request.to_class for request in requests}
+    available_requests = list(requests)
+    added: list[PathRequest] = []
+    for item in sorted((value for value in ontology_objects if isinstance(value, dict)), key=_order):
+        class_id = str(item.get("class_id") or "")
+        if not class_id or class_id in classes_in_paths:
+            continue
+        if not (_has_selected_role(item, "projection_subject") or _has_selected_role(item, "return_subject")):
+            continue
+        previous_request = _nearest_request_before(item, available_requests)
+        if previous_request is not None:
+            from_class = previous_request.to_class
+        else:
+            anchor = _nearest_path_subject_before(item, ontology_objects)
+            from_class = str(anchor.get("class_id") or "") if anchor else ""
+        if not from_class or from_class == class_id:
+            continue
+        added.append(
+            PathRequest(
+                request_id="PR0",
+                from_class=from_class,
+                to_class=class_id,
+                source_id=str(item.get("object_id") or ""),
+                source_kind="projection_subject_link",
+                evidence_refs=_evidence_refs(item),
+            )
+        )
+        classes_in_paths.add(class_id)
+        available_requests.append(added[-1])
+    return added
+
+
 def _nearest_request_before(
     item: dict[str, Any],
     requests: list[PathRequest],
@@ -591,8 +666,37 @@ def _nearest_request_before(
         if request_order <= item_order:
             preceding.append((request_order, request))
     if not preceding:
+        if not requests:
+            return None
         return requests[-1]
     return max(preceding, key=lambda value: value[0])[1]
+
+
+def _nearest_path_subject_before(
+    item: dict[str, Any],
+    ontology_objects: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    item_order = _order(item)
+    anchors = [
+        value
+        for value in ontology_objects
+        if isinstance(value, dict)
+        and _has_selected_role(value, "path_subject")
+        and value.get("class_id")
+        and _order(value) < item_order
+    ]
+    if anchors:
+        return max(anchors, key=_order)
+    anchors = [
+        value
+        for value in ontology_objects
+        if isinstance(value, dict)
+        and _has_selected_role(value, "path_subject")
+        and value.get("class_id")
+    ]
+    if anchors:
+        return max(anchors, key=_order)
+    return None
 
 
 def _unique_attribute_parent(item: dict[str, Any]) -> str:
@@ -705,7 +809,7 @@ def _relation_index(assets: OntologyAssets | None) -> dict[str, dict[str, Any]]:
             if relation_id:
                 relations[relation_id] = dict(item, id=relation_id)
     for entry in assets.entries:
-        if entry.mention_type != "relation_predicate":
+        if entry.mention_type != "RELATION":
             continue
         relation_id = entry.canonical_id.removeprefix("REL_")
         relations.setdefault(

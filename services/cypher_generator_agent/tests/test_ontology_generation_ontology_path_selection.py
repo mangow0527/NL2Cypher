@@ -172,6 +172,127 @@ def test_role_relation_evidence_does_not_create_duplicate_tunnel_to_network_elem
     assert [(item.from_class, item.to_class) for item in requests].count(("Tunnel", "NetworkElement")) == 1
 
 
+def test_terminal_projection_subject_gets_path_request_from_previous_path_endpoint() -> None:
+    assets = OntologyAssets.from_default_resources()
+    mapping = {
+        "ontology_objects": [
+            {
+                "object_id": "OO1",
+                "class_id": "Service",
+                "selected_roles": ["path_subject"],
+                "evidence_refs": ["E1"],
+                "order": 1,
+            },
+            {
+                "object_id": "OO2",
+                "class_id": "NetworkElement",
+                "selected_roles": ["path_subject"],
+                "evidence_refs": ["E5"],
+                "order": 5,
+            },
+            {
+                "object_id": "OO3",
+                "class_id": "Port",
+                "selected_roles": ["projection_subject"],
+                "evidence_refs": ["E6"],
+                "order": 6,
+            },
+        ],
+        "ontology_relation_hints": [
+            {
+                "relation_hint_id": "ORH1",
+                "relation_id": "SERVICE_USES_TUNNEL",
+                "from_class": "Service",
+                "to_class": "Tunnel",
+                "selected_roles": ["path_subject"],
+                "evidence_refs": ["E3"],
+                "order": 3,
+            },
+            {
+                "relation_hint_id": "ORH2",
+                "relation_id": "PATH_THROUGH",
+                "from_class": "Tunnel",
+                "to_class": "NetworkElement",
+                "selected_roles": ["path_subject"],
+                "evidence_refs": ["E4"],
+                "order": 4,
+            },
+        ],
+        "ontology_attributes": [],
+        "ontology_values": [],
+        "evidence": [],
+    }
+
+    requests = build_path_requests(mapping, assets=assets)
+    candidates = build_candidate_paths(requests, assets)
+
+    assert [(item.from_class, item.to_class, item.source_kind) for item in requests] == [
+        ("Service", "Tunnel", "relation"),
+        ("Tunnel", "NetworkElement", "relation"),
+        ("NetworkElement", "Port", "projection_subject_link"),
+    ]
+    assert [item.relation_chain for item in candidates if item.request_id == "PR3"] == [("HAS_PORT",)]
+
+
+def test_path_subject_pair_does_not_add_default_path_when_relation_hints_already_bridge_pair() -> None:
+    mapping = {
+        "ontology_objects": [
+            {
+                "object_id": "OO1",
+                "class_id": "Service",
+                "selected_roles": ["path_subject"],
+                "evidence_refs": ["E1"],
+                "order": 1,
+            },
+            {
+                "object_id": "OO2",
+                "class_id": "NetworkElement",
+                "selected_roles": ["path_subject"],
+                "evidence_refs": ["E5"],
+                "order": 5,
+            },
+            {
+                "object_id": "OO3",
+                "class_id": "Port",
+                "selected_roles": ["projection_subject"],
+                "evidence_refs": ["E6"],
+                "order": 6,
+            },
+        ],
+        "ontology_relation_hints": [
+            {
+                "relation_hint_id": "ORH1",
+                "relation_id": "SERVICE_USES_TUNNEL",
+                "from_class": "Service",
+                "to_class": "Tunnel",
+                "selected_roles": ["path_subject"],
+                "evidence_refs": ["E3"],
+                "order": 3,
+            },
+            {
+                "relation_hint_id": "ORH2",
+                "relation_id": "PATH_THROUGH",
+                "from_class": "Tunnel",
+                "to_class": "NetworkElement",
+                "selected_roles": ["path_subject"],
+                "evidence_refs": ["E4"],
+                "order": 4,
+            },
+        ],
+        "ontology_attributes": [],
+        "ontology_values": [],
+        "evidence": [],
+    }
+
+    requests = build_path_requests(mapping)
+
+    assert [(item.from_class, item.to_class, item.relation_hint, item.source_kind) for item in requests] == [
+        ("Service", "Tunnel", "SERVICE_USES_TUNNEL", "relation"),
+        ("Tunnel", "NetworkElement", "PATH_THROUGH", "relation"),
+        ("NetworkElement", "Port", None, "projection_subject_link"),
+    ]
+
+
 def test_enumerates_explicit_role_semantic_and_default_candidate_paths_without_graph_duplicates() -> None:
     assets = OntologyAssets.from_default_resources()
     requests = build_path_requests(

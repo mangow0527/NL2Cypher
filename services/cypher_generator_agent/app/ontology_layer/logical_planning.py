@@ -41,7 +41,7 @@ class OntologyLogicalPlanningService:
         self.shape_finalizer = shape_finalizer or OntologyShapeFinalizer(assets)
         self.relations = _relations_by_id(assets)
 
-    def plan(
+    def resolve_coreference(
         self,
         *,
         question: str,
@@ -49,7 +49,7 @@ class OntologyLogicalPlanningService:
         intent_output: IntentOutput,
         ontology_mapping: dict[str, Any],
         ontology_path_selection: Any,
-    ) -> tuple[OntologyLogicalPlan, OntologyLogicalPlanningTrace]:
+    ) -> dict[str, Any]:
         path_payload = _to_dict(ontology_path_selection)
         coreference = self.coreference_service.resolve(
             question=question,
@@ -60,8 +60,23 @@ class OntologyLogicalPlanningService:
             explicit_distinction_signals=[],
             intent={"primary": intent_output.intent.primary, "secondary": intent_output.intent.secondary},
         )
-        coreference = _with_planning_nodes(coreference, ontology_mapping, path_payload, self.relations)
-        binding = self.binding_service.bind(
+        return _with_planning_nodes(
+            {"stage": "step_3_4_coreference", **coreference},
+            ontology_mapping,
+            path_payload,
+            self.relations,
+        )
+
+    def bind(
+        self,
+        *,
+        question: str,
+        lexer_trace: LexerTrace,
+        intent_output: IntentOutput,
+        ontology_mapping: dict[str, Any],
+        coreference: dict[str, Any],
+    ) -> BindingTrace:
+        return self.binding_service.bind(
             ontology_mapping=ontology_mapping,
             merged_nodes=coreference.get("merged_nodes", []),
             candidate_family={},
@@ -71,17 +86,22 @@ class OntologyLogicalPlanningService:
             question=question,
             unmatched_fragments=lexer_trace.unmatched_fragments,
         )
-        shape_finalization = self.shape_finalizer.finalize(
+
+    def finalize_shape(
+        self,
+        *,
+        intent_output: IntentOutput,
+        ontology_mapping: dict[str, Any],
+        ontology_path_selection: Any,
+        coreference: dict[str, Any],
+        binding: BindingTrace,
+    ) -> ShapeFinalizationResult:
+        return self.shape_finalizer.finalize(
             intent_output=intent_output,
             ontology_mapping=ontology_mapping,
             ontology_path_selection=ontology_path_selection,
             coreference=coreference,
             binding=binding.to_dict(),
-        )
-        return shape_finalization.logical_plan, OntologyLogicalPlanningTrace(
-            coreference=coreference,
-            binding=binding,
-            shape_finalization=shape_finalization,
         )
 
 
@@ -165,7 +185,7 @@ def _relations_by_id(assets: OntologyAssets) -> dict[str, dict[str, Any]]:
         if relation_id:
             relations[relation_id] = dict(item)
     for entry in assets.entries:
-        if entry.mention_type != "relation_predicate":
+        if entry.mention_type != "RELATION":
             continue
         relation_id = _normalize_relation_id(entry.canonical_id)
         relations.setdefault(

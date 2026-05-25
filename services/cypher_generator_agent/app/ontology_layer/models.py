@@ -71,6 +71,7 @@ class LexerTrace:
     context_signals: tuple[ContextSignal, ...]
     shape_signals: tuple[ContextSignal, ...]
     structured_matches: tuple[dict[str, Any], ...] = ()
+    question_framing: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -87,6 +88,7 @@ class LexerTrace:
             "unmatched_spans": [list(item) for item in self.unmatched_spans],
             "context_signals": [item.to_dict() for item in self.context_signals],
             "shape_signals": [item.to_dict() for item in self.shape_signals],
+            "question_framing": dict(self.question_framing) if self.question_framing is not None else None,
         }
 
 
@@ -157,17 +159,21 @@ class PlanMetric:
     function: str
     node: str
     alias: str
+    attribute: str | None = None
     distinct: bool = False
     condition: tuple[PlanFilter, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "function": self.function,
             "node": self.node,
             "alias": self.alias,
             "distinct": self.distinct,
             "condition": [item.to_dict() for item in self.condition],
         }
+        if self.attribute is not None:
+            payload["attribute"] = self.attribute
+        return payload
 
 
 @dataclass(frozen=True)

@@ -211,6 +211,19 @@ def test_pipeline_accepts_colloquial_statistics_query() -> None:
     assert result["retrieval_question"] == result["core_question"]
 
 
+def test_pipeline_accepts_query_action_variants_from_phrase_rules() -> None:
+    examples = (
+        "计算服务节点延迟属性的总数",
+        "查找所有被服务使用的隧道的源网元",
+        "服务节点总共有多少个",
+    )
+
+    for question in examples:
+        result = preprocess_question(question).to_dict()
+        assert result["accepted"] is True
+        assert result["core_question"] == question
+
+
 def test_pipeline_strips_colloquial_background_anchor() -> None:
     result = preprocess_question("现在要看一下这个数据，怎么说呢，主要还是查一下所有服务的ID和名称。").to_dict()
 

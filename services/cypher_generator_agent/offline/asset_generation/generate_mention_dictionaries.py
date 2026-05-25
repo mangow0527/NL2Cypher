@@ -15,66 +15,68 @@ if str(REPO_ROOT) not in sys.path:
 from services.cypher_generator_agent.offline.asset_generation.validate_mention_dictionaries import validate_dictionaries
 
 
-OUTPUT_FILES = (
-    "business_objects.yaml",
-    "attributes.yaml",
-    "attribute_values.yaml",
-    "relation_predicates.yaml",
-    "operation_intents.yaml",
-    "synonyms.yaml",
-    "uncertain.yaml",
-)
+DICTIONARY_SOURCE_DESCRIPTIONS = {
+    "business_objects": "Business object mention dictionary for first-stage mention extraction.",
+    "attributes": "Attribute mention dictionary for schema-backed object properties.",
+    "attribute_values": "Attribute value mention dictionary for enum-like values declared by schema comments.",
+    "relation_predicates": "Relation predicate mention dictionary for graph edges and join paths.",
+    "operation_cues": "Operation cue mention dictionary for first-stage operation cue extraction.",
+    "synonyms": "Scoped synonym groups for mention normalization. These entries do not emit standalone runtime mentions.",
+}
 
 
 def generate_dictionaries(*, schema_path: Path, rules_path: Path, output_dir: Path) -> dict[str, Any]:
     schema = _load_schema(schema_path)
     rules = _load_rules(rules_path)
     output_dir.mkdir(parents=True, exist_ok=True)
+    dictionary_dir = output_dir / "dictionaries"
+    dictionary_dir.mkdir(parents=True, exist_ok=True)
 
     documents = {
-        "business_objects.yaml": _document(
+        "business_objects": _document(
             schema_path,
-            "Business object mention dictionary for first-stage mention extraction.",
+            DICTIONARY_SOURCE_DESCRIPTIONS["business_objects"],
             _business_objects(schema, rules),
         ),
-        "attributes.yaml": _document(
+        "attributes": _document(
             schema_path,
-            "Attribute mention dictionary for schema-backed object properties.",
+            DICTIONARY_SOURCE_DESCRIPTIONS["attributes"],
             _attributes(schema, rules),
         ),
-        "attribute_values.yaml": _document(
+        "attribute_values": _document(
             schema_path,
-            "Attribute value mention dictionary for enum-like values declared by schema comments.",
+            DICTIONARY_SOURCE_DESCRIPTIONS["attribute_values"],
             _attribute_values(schema, rules),
         ),
-        "relation_predicates.yaml": _document(
+        "relation_predicates": _document(
             schema_path,
-            "Relation predicate mention dictionary for graph edges and join paths.",
+            DICTIONARY_SOURCE_DESCRIPTIONS["relation_predicates"],
             _relations(schema, rules),
         ),
-        "operation_intents.yaml": _document(
+        "operation_cues": _document(
             schema_path,
-            "Operation intent mention dictionary for first-stage operation cue extraction.",
-            list(rules.get("operation_intents", [])),
+            DICTIONARY_SOURCE_DESCRIPTIONS["operation_cues"],
+            list(rules.get("operation_cues", [])),
         ),
-        "synonyms.yaml": _document(
+        "synonyms": _document(
             schema_path,
-            "Scoped synonym groups for mention normalization.",
+            DICTIONARY_SOURCE_DESCRIPTIONS["synonyms"],
             list(rules.get("synonyms", [])),
         ),
-        "uncertain.yaml": {
+        "uncertain": {
             "version": 1,
             "source_schema": _display_path(schema_path),
             "description": "Items that need human review before entering the primary mention dictionaries.",
             "entries": _uncertain_entries(schema, rules),
         },
     }
-    for filename in OUTPUT_FILES:
-        _write_yaml(output_dir / filename, documents[filename])
+    for source in DICTIONARY_SOURCE_DESCRIPTIONS:
+        _write_yaml(dictionary_dir / f"{source}.yaml", documents[source])
+    _write_yaml(output_dir / "uncertain.yaml", documents["uncertain"])
     validation = validate_dictionaries(schema_path=schema_path, dict_dir=output_dir)
     return {
         "output_dir": str(output_dir),
-        "files_written": len(OUTPUT_FILES),
+        "files_written": len(DICTIONARY_SOURCE_DESCRIPTIONS) + 1,
         "canonical_id_count": validation["canonical_id_count"],
     }
 
@@ -89,7 +91,7 @@ def _business_objects(schema: list[dict[str, Any]], rules: dict[str, Any]) -> li
         entries.append(
             {
                 "canonical_id": label,
-                "mention_type": "business_object",
+                "mention_type": "OBJECT",
                 "surface_forms": surface_forms,
                 "description": override.get("description") or item.get("description") or f"{label} business object.",
                 "schema_table": label,
@@ -118,7 +120,7 @@ def _attributes(schema: list[dict[str, Any]], rules: dict[str, Any]) -> list[dic
             entries.append(
                 {
                     "canonical_id": canonical_id,
-                    "mention_type": "attribute",
+                    "mention_type": "ATTRIBUTE",
                     "surface_forms": field_forms,
                     "description": override.get("description") or prop.get("description") or f"{label}.{name} attribute.",
                     "parent_object": label,
@@ -146,7 +148,7 @@ def _attribute_values(schema: list[dict[str, Any]], rules: dict[str, Any]) -> li
                 entries.append(
                     {
                         "canonical_id": f"{enum_name}.{value}",
-                        "mention_type": "attribute_value",
+                        "mention_type": "VALUE",
                         "surface_forms": surface_forms,
                         "description": alias_config.get("description") or f"{field} value {value}.",
                         "constrains_field": field,
@@ -167,7 +169,7 @@ def _relations(schema: list[dict[str, Any]], rules: dict[str, Any]) -> list[dict
             role = override.get("role", _role_from_edge(edge))
             entry = {
                 "canonical_id": f"REL_{edge}",
-                "mention_type": "relation_predicate",
+                "mention_type": "RELATION",
                 "surface_forms": _unique([edge, edge.lower(), *override.get("surface_forms", [])]),
                 "description": override.get("description") or item.get("description") or f"{edge} relation.",
                 "domain": domain,
@@ -203,7 +205,7 @@ def _uncertain_entries(schema: list[dict[str, Any]], rules: dict[str, Any]) -> l
 
 def _document(schema_path: Path, description: str, entries: list[dict[str, Any]]) -> dict[str, Any]:
     return {
-        "version": 1,
+        "version": 2,
         "source_schema": _display_path(schema_path),
         "description": description,
         "entries": entries,

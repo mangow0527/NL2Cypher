@@ -14,6 +14,9 @@ query_signal_fallback_phrases:
   - 查询
   - 查询一下
   - 查一下
+  - 查找
+  - 找出
+  - 计算
   - 看一下
   - 帮我查
   - 返回
@@ -26,10 +29,13 @@ query_signal_fallback_phrases:
   - 想先统计
   - 麻烦统计
   - 麻烦统计一下
+  - 总共有多少
 
 statistical_query_signal:
   verbs:
     - 统计
+    - 计算
+    - 总共有
   result_terms:
     - 数量
     - 总数量

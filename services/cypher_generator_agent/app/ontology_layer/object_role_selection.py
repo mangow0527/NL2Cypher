@@ -9,7 +9,14 @@ from services.cypher_generator_agent.app.intent_layer.models import IntentOutput
 from .models import LexerTrace
 
 
-ALLOWED_OBJECT_ROLES = ("filter_subject", "path_subject", "projection_subject", "return_subject")
+ALLOWED_OBJECT_ROLES = (
+    "filter_subject",
+    "path_subject",
+    "projection_subject",
+    "return_subject",
+    "metric_subject",
+    "group_subject",
+)
 
 
 class ObjectRoleSelectionValidationError(ValueError):
@@ -70,9 +77,10 @@ class SelectedObjectRole:
     evidence_ids: tuple[str, ...]
     selected_by: str
     reason: str
+    class_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "candidate_id": self.candidate_id,
             "mention_id": self.mention_id,
             "roles": list(self.roles),
@@ -80,6 +88,9 @@ class SelectedObjectRole:
             "selected_by": self.selected_by,
             "reason": self.reason,
         }
+        if self.class_id is not None:
+            payload["class_id"] = self.class_id
+        return payload
 
 
 @dataclass(frozen=True)
@@ -149,6 +160,7 @@ class OntologyObjectRoleSelectionService:
         raw_output = str(getattr(selection, "raw_response", ""))
         parsed = _parse_object_role_selection_response(raw_output)
         selected_objects, clarification = validate_object_role_selection(parsed, candidates, lexer_trace)
+        selected_objects = _normalize_roles_for_intent(selected_objects, intent_output)
         return ObjectRoleSelectionTrace(
             object_candidates=candidates,
             allowed_object_roles=ALLOWED_OBJECT_ROLES,
@@ -164,9 +176,11 @@ def build_object_candidates(lexer_trace: LexerTrace) -> tuple[ObjectCandidate, .
     candidates: list[ObjectCandidate] = []
     mention_ids = _mention_ids(lexer_trace)
     evidence_counter = 1
+    explicit_classes: set[str] = set()
     for mention_index, mention in enumerate(lexer_trace.mentions):
         if mention.mention_type == "OBJECT":
             evidence_type = "self_mention"
+            explicit_classes.update(ref for ref in _candidate_refs(mention) if "." not in ref)
         elif mention.mention_type == "RELATION" and _is_role_like_relation(mention):
             evidence_type = "role_surface"
         else:
@@ -216,6 +230,50 @@ def build_object_candidates(lexer_trace: LexerTrace) -> tuple[ObjectCandidate, .
                 lexical_canonical_id=mention.canonical_id,
                 candidate_refs=_candidate_refs(mention),
                 metadata=dict(mention.metadata),
+                evidence=tuple(evidence),
+            )
+        )
+    if candidates:
+        return tuple(candidates)
+
+    inferred_by_class: dict[str, list[tuple[int, Any, str]]] = {}
+    for mention_index, mention in enumerate(lexer_trace.mentions):
+        for class_id, evidence_type in _inferred_owner_classes(mention):
+            if class_id in explicit_classes:
+                continue
+            inferred_by_class.setdefault(class_id, []).append((mention_index, mention, evidence_type))
+
+    for class_id, sources in inferred_by_class.items():
+        if not sources:
+            continue
+        evidence: list[ObjectEvidence] = []
+        for mention_index, mention, evidence_type in sources:
+            evidence.append(
+                ObjectEvidence(
+                    evidence_id=f"E{evidence_counter}",
+                    type=evidence_type,
+                    text=mention.surface,
+                    span=(mention.span_start, mention.span_end),
+                    source_id=mention_ids[mention_index],
+                )
+            )
+            evidence_counter += 1
+        spans = [(mention.span_start, mention.span_end) for _, mention, _ in sources]
+        first_index = min(index for index, _, _ in sources)
+        candidates.append(
+            ObjectCandidate(
+                candidate_id=f"SM{len(candidates) + 1}",
+                mention_id=mention_ids[first_index],
+                mention_type="OBJECT",
+                surface=_class_surface(class_id),
+                span=(min(span[0] for span in spans), max(span[1] for span in spans)),
+                lexical_canonical_id=class_id,
+                candidate_refs=(class_id,),
+                metadata={
+                    "inferred_from": "attribute_or_value_owner",
+                    "inferred_class_id": class_id,
+                    "source_mention_ids": [mention_ids[index] for index, _, _ in sources],
+                },
                 evidence=tuple(evidence),
             )
         )
@@ -271,9 +329,39 @@ def validate_object_role_selection(
                 evidence_ids=tuple(normalized_evidence_ids),
                 selected_by="llm",
                 reason=str(item.get("reason") or ""),
+                class_id=_candidate_class_id(candidate),
             )
         )
     return tuple(selected), None
+
+
+def _normalize_roles_for_intent(
+    selected_objects: tuple[SelectedObjectRole, ...],
+    intent_output: IntentOutput,
+) -> tuple[SelectedObjectRole, ...]:
+    intent = getattr(intent_output, "intent", None)
+    if getattr(intent, "secondary", None) != "attribute_projection_query":
+        return selected_objects
+    normalized: list[SelectedObjectRole] = []
+    for item in selected_objects:
+        roles = [role for role in item.roles if role != "return_subject"]
+        if len(roles) != len(item.roles) and "projection_subject" not in roles:
+            roles.append("projection_subject")
+        if tuple(roles) == item.roles:
+            normalized.append(item)
+            continue
+        normalized.append(
+            SelectedObjectRole(
+                candidate_id=item.candidate_id,
+                mention_id=item.mention_id,
+                roles=tuple(roles),
+                evidence_ids=item.evidence_ids,
+                selected_by=item.selected_by,
+                reason=item.reason,
+                class_id=item.class_id,
+            )
+        )
+    return tuple(normalized)
 
 
 def _nearby_evidence_mentions(mention_index: int, lexer_trace: LexerTrace) -> tuple[tuple[str, Any], ...]:
@@ -438,11 +526,67 @@ def _candidate_context(candidate: ObjectCandidate) -> str:
             fragments.append("它位于返回字段区域附近")
         elif evidence.type == "role_surface":
             fragments.append("它表示路径里的角色对象")
+        elif evidence.type == "owner_attribute":
+            fragments.append(f'字段"{evidence.text}"指向该对象')
+        elif evidence.type == "owner_value":
+            fragments.append(f'取值"{evidence.text}"限定该对象')
         elif evidence.type == "proximal_modifier":
             fragments.append(f'上下文信号"{evidence.text}"支持它')
         elif evidence.type == "shape_signal":
             fragments.append(f'形态信号"{evidence.text}"支持它')
     return "，".join(fragments) if fragments else "无额外上下文"
+
+
+def _inferred_owner_classes(mention: Any) -> tuple[tuple[str, str], ...]:
+    metadata = mention.metadata if isinstance(mention.metadata, dict) else {}
+    result: list[tuple[str, str]] = []
+    if mention.mention_type == "ATTRIBUTE":
+        for class_id in _attribute_owner_classes(mention, metadata):
+            result.append((class_id, "owner_attribute"))
+    elif mention.mention_type == "VALUE":
+        attribute = metadata.get("constrains_field") or metadata.get("constrains_attribute")
+        if isinstance(attribute, str) and "." in attribute:
+            result.append((attribute.split(".", 1)[0], "owner_value"))
+    return tuple((class_id, evidence_type) for class_id, evidence_type in result if class_id)
+
+
+def _attribute_owner_classes(mention: Any, metadata: dict[str, Any]) -> tuple[str, ...]:
+    candidate_refs = metadata.get("candidate_refs")
+    if isinstance(candidate_refs, (list, tuple)) and len(candidate_refs) != 1:
+        return ()
+    owners: list[str] = []
+    parent_object = metadata.get("parent_object")
+    if isinstance(parent_object, str) and parent_object:
+        owners.append(parent_object)
+    belongs_to_hint = metadata.get("belongs_to_hint")
+    if isinstance(belongs_to_hint, (list, tuple)):
+        owners.extend(str(item) for item in belongs_to_hint if str(item))
+    canonical_id = str(getattr(mention, "canonical_id", "") or "")
+    if "." in canonical_id:
+        owners.append(canonical_id.split(".", 1)[0])
+    return tuple(dict.fromkeys(owners))
+
+
+def _candidate_class_id(candidate: ObjectCandidate) -> str | None:
+    inferred = candidate.metadata.get("inferred_class_id")
+    if isinstance(inferred, str) and inferred:
+        return inferred
+    if candidate.mention_type == "OBJECT":
+        ref = next((item for item in candidate.candidate_refs if "." not in item), "")
+        return ref or candidate.lexical_canonical_id
+    return None
+
+
+def _class_surface(class_id: str) -> str:
+    return {
+        "Service": "服务",
+        "Tunnel": "隧道",
+        "NetworkElement": "网元",
+        "Port": "端口",
+        "Protocol": "协议",
+        "Fiber": "光纤",
+        "Link": "链路",
+    }.get(class_id, class_id)
 
 
 def _input_evidence_list(candidates: tuple[ObjectCandidate, ...], lexer_trace: LexerTrace) -> str:

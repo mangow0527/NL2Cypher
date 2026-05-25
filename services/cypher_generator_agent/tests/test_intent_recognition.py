@@ -25,6 +25,7 @@ from services.cypher_generator_agent.app.intent_layer import (
     get_hybrid_intent_recognizer,
     write_embedding_index,
 )
+from services.cypher_generator_agent.app.ontology_layer.models import ContextSignal
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -252,6 +253,37 @@ class RuleBasedIntentRecognizerTest(unittest.TestCase):
                 self.assertEqual(secondary_intent, result.secondary_intent)
                 self.assertEqual("rule", result.source)
                 self.assertEqual("accept", result.decision)
+
+    def test_rule_stage_uses_return_content_atom_aligned_to_attribute(self) -> None:
+        recognizer = RuleBasedIntentRecognizer.from_files(
+            taxonomy_path=INTENT_RESOURCE_DIR / "taxonomy.yaml",
+            rules_path=INTENT_RESOURCE_DIR / "rules.yaml",
+        )
+        shape_signals = (
+            ContextSignal(
+                signal_id="S1",
+                signal_type="SHAPE_SIGNAL",
+                text="类型",
+                span_start=8,
+                span_end=10,
+                supports=("answer_projection_region",),
+            ),
+            ContextSignal(
+                signal_id="S2",
+                signal_type="QUESTION_FRAMING_ATOM",
+                text="元素类型",
+                span_start=6,
+                span_end=10,
+                supports=("question_framing", "QA2", "RETURN_CONTENT"),
+            ),
+        )
+
+        result = recognizer.recognize("查询所有服务的元素类型。", shape_signals=shape_signals)
+
+        self.assertEqual("record_retrieval_query", result.primary_intent)
+        self.assertEqual("attribute_projection_query", result.secondary_intent)
+        self.assertEqual("rule", result.source)
+        self.assertEqual("accept", result.decision)
 
     def test_rule_stage_rejects_complex_breakdown_with_relation_conditions(self) -> None:
         recognizer = RuleBasedIntentRecognizer.from_files(

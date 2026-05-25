@@ -7,6 +7,7 @@ from typing import Any
 import yaml
 
 from services.cypher_generator_agent.app.infrastructure import resource_paths
+from services.cypher_generator_agent.app.lexical_layer.types import normalize_mention_type
 
 from .models import DictionaryEntry
 
@@ -16,7 +17,7 @@ MENTION_DICTIONARY_FILES = (
     "attributes.yaml",
     "attribute_values.yaml",
     "relation_predicates.yaml",
-    "operation_intents.yaml",
+    "operation_cues.yaml",
     "synonyms.yaml",
 )
 
@@ -30,9 +31,8 @@ class OntologyAssets:
 
     @classmethod
     def from_default_resources(cls) -> "OntologyAssets":
-        dictionary_dir = resource_paths.lexical_mention_dictionaries_dir()
         ontology_dir = resource_paths.ontology_resource_dir()
-        return cls.from_dictionary_dir(dictionary_dir, ontology_dir=ontology_dir)
+        return cls.from_dictionary_dir(resource_paths.lexical_dictionaries_dir(), ontology_dir=ontology_dir)
 
     @classmethod
     def from_dictionary_dir(cls, dictionary_dir: Path, *, ontology_dir: Path | None = None) -> "OntologyAssets":
@@ -59,13 +59,13 @@ class OntologyAssets:
 
     def relation(self, relation_id: str) -> DictionaryEntry:
         entry = self.by_id[relation_id]
-        if entry.mention_type != "relation_predicate":
+        if entry.mention_type != "RELATION":
             raise KeyError(f"{relation_id} is not a relation predicate")
         return entry
 
     def attribute(self, attribute_id: str) -> DictionaryEntry:
         entry = self.by_id[attribute_id]
-        if entry.mention_type != "attribute":
+        if entry.mention_type != "ATTRIBUTE":
             raise KeyError(f"{attribute_id} is not an attribute")
         return entry
 
@@ -73,9 +73,10 @@ class OntologyAssets:
 def _entry_from_mapping(item: dict[str, Any], *, dictionary: str) -> DictionaryEntry:
     metadata = {key: value for key, value in item.items() if key not in {"canonical_id", "mention_type", "surface_forms", "description"}}
     metadata.setdefault("dictionary", dictionary)
+    metadata.setdefault("dictionary_source", dictionary)
     return DictionaryEntry(
         canonical_id=str(item["canonical_id"]),
-        mention_type=str(item.get("mention_type", "")),
+        mention_type=normalize_mention_type(str(item.get("mention_type", ""))),
         surface_forms=tuple(str(value) for value in item.get("surface_forms", [])),
         description=str(item.get("description", "")),
         metadata=metadata,

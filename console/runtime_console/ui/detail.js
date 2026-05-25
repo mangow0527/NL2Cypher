@@ -111,7 +111,7 @@ function renderClarificationBlock(clarification) {
       <div class="field-grid">
         ${metricCard('澄清问题', clarification.question_zh || '未记录')}
         ${metricCard('原因代码', clarification.reason_code || '未记录')}
-        ${metricCard('来源层级', clarification.source_stage || '未记录')}
+        ${metricCard('来源层级', clarification.source_stage || clarification.source_step || '未记录')}
         ${metricCard('回答类型', clarification.expected_answer_type || '未记录')}
       </div>
       <h3>澄清选项</h3>
@@ -120,7 +120,11 @@ function renderClarificationBlock(clarification) {
           ? `<div class="clarification-options">${options
               .map((option) => `<span>${escapeHtml(option.label || option.id || option.value || '未命名选项')}</span>`)
               .join('')}</div>`
-          : '<p class="empty">未提供固定选项</p>'
+          : `<p class="empty">${escapeHtml(
+              clarification.no_option_reason
+                ? `未提供固定选项：${clarification.no_option_reason}`
+                : '未提供固定选项',
+            )}</p>`
       }
     </section>
   `;

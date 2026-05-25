@@ -6,11 +6,19 @@ from typing import Any
 class OntologyGenerationError(Exception):
     """Base error for ontology-based Cypher generation."""
 
-    def __init__(self, *, stage: str, message: str, payload: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        stage: str,
+        message: str,
+        payload: dict[str, Any] | None = None,
+        partial_trace: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.stage = stage
         self.message = message
         self.payload = dict(payload or {})
+        self.partial_trace = dict(partial_trace or {})
 
 
 class ResourceMissing(OntologyGenerationError):

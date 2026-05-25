@@ -70,6 +70,7 @@ def _mapping(*mention_rows: dict[str, object]) -> dict[str, object]:
                 {
                     "value_ref_id": item.get("mapping_id", f"OV{index}"),
                     "value_id": item.get("ontology_id"),
+                    **({"raw_value": item["raw_value"]} if "raw_value" in item else {}),
                     "constrains_attribute": item.get("constrains_attribute"),
                     "evidence_refs": [evidence_id],
                     "order": index,
@@ -93,6 +94,7 @@ def _value_mapping(**overrides: object) -> dict[str, object]:
         "span": [2, 4],
         "ontology_kind": "enum_value",
         "ontology_id": "ServiceQuality.Gold",
+        "raw_value": "Gold",
         "constrains_attribute": "Service.quality_of_service",
     }
     payload.update(overrides)
@@ -129,12 +131,41 @@ def test_value_binding_prefers_constrains_attribute_and_sets_filter_level() -> N
         "node": "s1",
         "attribute": "Service.quality_of_service",
         "operator": "equals",
-        "value": "ServiceQuality.Gold",
+        "value": "Gold",
+        "value_id": "ServiceQuality.Gold",
         "value_kind": "enum",
     }
     assert trace.filters[0].selected == "bc_filter_1"
     assert trace.shape_updates["filter_level"].value == "record_filter"
-    assert trace.shape_updates["filter_level"].derived_from == ("ServiceQuality.Gold",)
+    assert trace.shape_updates["filter_level"].derived_from == ("Gold",)
+
+
+def test_enum_value_binding_uses_raw_value_and_keeps_value_id() -> None:
+    trace = OntologyBindingService().bind(
+        ontology_mapping=_mapping(
+            _value_mapping(
+                ontology_id="ServiceType.MPLS-VPN",
+                surface="MPLS-VPN",
+                raw_value="MPLS-VPN",
+                constrains_attribute="Service.elem_type",
+            )
+        ),
+        merged_nodes=_merged_nodes(),
+        candidate_family={},
+        context_signals=(),
+        shape_signals=(),
+        intent_output=_intent_output(),
+        question="查询类型为MPLS-VPN的服务",
+    )
+
+    assert trace.filters[0].result == {
+        "node": "s1",
+        "attribute": "Service.elem_type",
+        "operator": "equals",
+        "value": "MPLS-VPN",
+        "value_id": "ServiceType.MPLS-VPN",
+        "value_kind": "enum",
+    }
 
 
 def test_binding_composes_attribute_operator_literal_predicate_before_enum_binding() -> None:
@@ -160,12 +191,13 @@ def test_binding_composes_attribute_operator_literal_predicate_before_enum_bindi
             },
         ],
         "ontology_values": [
-            {
-                "value_ref_id": "OV1",
-                "value_id": "ServiceQuality.Gold",
-                "constrains_attribute": "Service.quality_of_service",
-                "evidence_refs": ["E4"],
-                "order": 4,
+                {
+                    "value_ref_id": "OV1",
+                    "value_id": "ServiceQuality.Gold",
+                    "raw_value": "Gold",
+                    "constrains_attribute": "Service.quality_of_service",
+                    "evidence_refs": ["E4"],
+                    "order": 4,
             }
         ],
         "evidence": [
@@ -241,11 +273,12 @@ def test_binding_composes_attribute_operator_literal_predicate_before_enum_bindi
         },
         {
             "node": "s1",
-            "attribute": "Service.quality_of_service",
-            "operator": "equals",
-            "value": "ServiceQuality.Gold",
-            "value_kind": "enum",
-        },
+                "attribute": "Service.quality_of_service",
+                "operator": "equals",
+                "value": "Gold",
+                "value_id": "ServiceQuality.Gold",
+                "value_kind": "enum",
+            },
     ]
     assert [item.result for item in trace.projections] == [
         {"node": "s1", "attribute": "Service.id", "alias": "service_id"}
@@ -343,6 +376,58 @@ def test_type_projection_keeps_explicit_source_ne_owner() -> None:
         "attribute": "NetworkElement.elem_type",
         "alias": "source_ne_elem_type",
     }
+
+
+def test_both_sides_elem_type_projection_binds_path_endpoint_owners() -> None:
+    relation_atom = ContextSignal(
+        signal_id="S1",
+        signal_type="QUESTION_FRAMING_ATOM",
+        text="所有服务与隧道之间的连接关系",
+        span_start=2,
+        span_end=16,
+        supports=("question_framing", "QA1", "FIND_OBJECT", "RELATION_PATH"),
+        strength=0.9,
+    )
+    return_atom = ContextSignal(
+        signal_id="S2",
+        signal_type="QUESTION_FRAMING_ATOM",
+        text="双方的元素类型",
+        span_start=20,
+        span_end=27,
+        supports=("question_framing", "QA2", "RETURN_CONTENT"),
+        strength=0.9,
+    )
+
+    trace = OntologyBindingService().bind(
+        ontology_mapping=_mapping(
+            _attribute_mapping(
+                surface="类型",
+                span=[25, 27],
+                ontology_id="Tunnel.elem_type",
+                parent_class="Tunnel",
+                attribute_candidates=[
+                    "Fiber.elem_type",
+                    "Link.elem_type",
+                    "NetworkElement.elem_type",
+                    "Port.elem_type",
+                    "Service.elem_type",
+                    "Tunnel.elem_type",
+                ],
+            )
+        ),
+        merged_nodes=_merged_nodes(),
+        candidate_family={},
+        context_signals=(relation_atom, return_atom),
+        shape_signals=(),
+        intent_output=_intent_output(),
+        question="查询所有服务与隧道之间的连接关系，并返回双方的元素类型。",
+    )
+
+    assert [item.result for item in trace.projections] == [
+        {"node": "s1", "attribute": "Service.elem_type", "alias": "service_elem_type"},
+        {"node": "t1", "attribute": "Tunnel.elem_type", "alias": "tunnel_elem_type"},
+    ]
+    assert trace.unresolved_items == ()
 
 
 def test_attribute_family_is_disambiguated_in_binding_stage() -> None:
@@ -499,6 +584,10 @@ def test_illegal_llm_candidate_or_signal_is_rejected_as_unresolved() -> None:
     assert trace.projections == ()
     assert trace.unresolved_items[0]["reason_code"] == "invalid_llm_binding"
     assert "unknown candidate_id" in trace.unresolved_items[0]["reason"]
+    assert [option["label"] for option in trace.unresolved_items[0]["options"]] == [
+        "名称 -> Service.name",
+        "名称 -> Tunnel.name",
+    ]
 
 
 def test_missing_binding_candidate_is_reported() -> None:
@@ -514,6 +603,8 @@ def test_missing_binding_candidate_is_reported() -> None:
 
     assert trace.filters == ()
     assert trace.unresolved_items[0]["reason_code"] == "missing_binding_candidate"
+    assert trace.unresolved_items[0]["options"] == []
+    assert trace.unresolved_items[0]["no_option_reason"] == "没有可用的绑定候选。"
 
 
 def test_binding_prompt_is_step_3_5_specific_and_accepts_binding_candidate_ids() -> None:

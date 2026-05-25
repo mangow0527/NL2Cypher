@@ -9,6 +9,7 @@ from services.cypher_generator_agent.app.intent_layer.models import Intent, Inte
 from services.cypher_generator_agent.app.ontology_layer.shape_finalization import (
     OntologyShapeFinalizer,
 )
+from services.cypher_generator_agent.app.physical_orchestration.compiler import OntologyPhysicalCompiler
 
 
 def _intent_output(*, pending_relation: bool = True, projection_expected: bool = True) -> IntentOutput:
@@ -40,6 +41,90 @@ def _intent_output(*, pending_relation: bool = True, projection_expected: bool =
         },
         candidates=(),
         rule_signals_used=(),
+        diagnostics={},
+    )
+
+
+def _metric_intent_output() -> IntentOutput:
+    return IntentOutput(
+        intent=Intent(
+            primary="metric_query",
+            secondary="count_metric_query",
+            source="fixture",
+            decision="accept",
+            confidence=0.9,
+        ),
+        planning_prompt_text="用户想统计对象数量。",
+        initial_shape={
+            "answer_type": InitialShapeField("metric", "taxonomy", "accept", 1.0),
+            "projection_expected": InitialShapeField(False, "taxonomy", "accept", 1.0),
+            "aggregation_required": InitialShapeField(True, "taxonomy", "accept", 1.0),
+            "aggregation_functions": InitialShapeField(["count"], "taxonomy", "accept", 1.0),
+            "relation_resolution_expected": InitialShapeField(False, "taxonomy", "accept", 1.0),
+            "path_answer_required": InitialShapeField(False, "taxonomy", "accept", 1.0),
+            "group_by_required": InitialShapeField(False, "taxonomy", "accept", 1.0),
+            "order_required": InitialShapeField(False, "taxonomy", "accept", 1.0),
+            "limit_required": InitialShapeField(False, "taxonomy", "accept", 1.0),
+            "time_grain_required": InitialShapeField(False, "taxonomy", "accept", 1.0),
+        },
+        candidates=(),
+        rule_signals_used=(),
+        diagnostics={},
+    )
+
+
+def _entity_list_count_shape_intent_output() -> IntentOutput:
+    return IntentOutput(
+        intent=Intent(
+            primary="record_retrieval_query",
+            secondary="entity_list_query",
+            source="fixture",
+            decision="accept",
+            confidence=0.9,
+        ),
+        planning_prompt_text="用户想查询对象列表。",
+        initial_shape={
+            "answer_type": InitialShapeField("record_table", "taxonomy", "accept", 1.0),
+            "projection_expected": InitialShapeField(False, "taxonomy", "accept", 1.0),
+            "aggregation_required": InitialShapeField(True, "shape_signal", "accept", 1.0),
+            "aggregation_functions": InitialShapeField(["count"], "shape_signal", "accept", 1.0),
+            "relation_resolution_expected": InitialShapeField(False, "taxonomy", "accept", 1.0),
+            "path_answer_required": InitialShapeField(False, "taxonomy", "accept", 1.0),
+            "group_by_required": InitialShapeField(False, "taxonomy", "accept", 1.0),
+            "order_required": InitialShapeField(False, "taxonomy", "accept", 1.0),
+            "limit_required": InitialShapeField(False, "taxonomy", "accept", 1.0),
+            "time_grain_required": InitialShapeField(False, "taxonomy", "accept", 1.0),
+        },
+        candidates=(),
+        rule_signals_used=("统计", "数量"),
+        diagnostics={},
+    )
+
+
+def _entity_list_projection_intent_output() -> IntentOutput:
+    return IntentOutput(
+        intent=Intent(
+            primary="record_retrieval_query",
+            secondary="entity_list_query",
+            source="fixture",
+            decision="accept",
+            confidence=0.9,
+        ),
+        planning_prompt_text="用户想查询对象列表。",
+        initial_shape={
+            "answer_type": InitialShapeField("record_table", "taxonomy", "accept", 1.0),
+            "projection_expected": InitialShapeField(True, "shape_signal", "accept", 1.0),
+            "aggregation_required": InitialShapeField(False, "taxonomy", "accept", 1.0),
+            "aggregation_functions": InitialShapeField([], "taxonomy", "accept", 1.0),
+            "relation_resolution_expected": InitialShapeField(False, "taxonomy", "accept", 1.0),
+            "path_answer_required": InitialShapeField(False, "taxonomy", "accept", 1.0),
+            "group_by_required": InitialShapeField(False, "taxonomy", "accept", 1.0),
+            "order_required": InitialShapeField(False, "taxonomy", "accept", 1.0),
+            "limit_required": InitialShapeField(False, "taxonomy", "accept", 1.0),
+            "time_grain_required": InitialShapeField(False, "taxonomy", "accept", 1.0),
+        },
+        candidates=(),
+        rule_signals_used=("类型",),
         diagnostics={},
     )
 
@@ -143,6 +228,203 @@ def _finalizer() -> OntologyShapeFinalizer:
     return OntologyShapeFinalizer(OntologyAssets.from_default_resources())
 
 
+def test_count_shape_generates_metric_and_suppresses_entity_return() -> None:
+    result = _finalizer().finalize(
+        intent_output=_entity_list_count_shape_intent_output(),
+        ontology_mapping={
+            "ontology_objects": [
+                {
+                    "object_id": "OO1",
+                    "class_id": "Service",
+                    "selected_roles": ["metric_subject"],
+                    "evidence_refs": ["E1"],
+                    "order": 1,
+                }
+            ],
+            "ontology_relation_hints": [],
+            "ontology_attributes": [],
+            "ontology_values": [],
+            "evidence": [],
+        },
+        ontology_path_selection={"selected_paths": [], "shape_updates": {}, "unresolved_items": []},
+        coreference={"merged_nodes": [{"node_id": "s1", "class_id": "Service", "mapping_ids": ["OM1"]}], "unresolved_items": []},
+        binding={"filters": [], "projections": [], "metric_conditions": [], "shape_updates": {}, "unresolved_items": []},
+    )
+
+    assert result.logical_plan.node_returns == ()
+    assert [(item.function, item.node, item.alias, item.attribute) for item in result.logical_plan.metrics] == [
+        ("count", "s1", "service_count", None)
+    ]
+    assert OntologyPhysicalCompiler().compile(result.logical_plan).cypher == "MATCH (s:Service)\nRETURN count(s) AS service_count"
+
+
+def test_count_metric_uses_explicit_attribute_and_suppresses_projection_column() -> None:
+    result = _finalizer().finalize(
+        intent_output=_metric_intent_output(),
+        ontology_mapping={
+            "ontology_objects": [
+                {
+                    "object_id": "OO1",
+                    "class_id": "Service",
+                    "selected_roles": ["metric_subject"],
+                    "evidence_refs": ["E1"],
+                    "order": 1,
+                }
+            ],
+            "ontology_relation_hints": [],
+            "ontology_attributes": [
+                {
+                    "attribute_ref_id": "OA1",
+                    "attribute_id": "Service.latency",
+                    "parent_class": "Service",
+                    "attribute_candidates": ["Service.latency"],
+                    "evidence_refs": ["E2"],
+                    "order": 2,
+                }
+            ],
+            "ontology_values": [],
+            "evidence": [],
+        },
+        ontology_path_selection={"selected_paths": [], "shape_updates": {}, "unresolved_items": []},
+        coreference={"merged_nodes": [{"node_id": "s1", "class_id": "Service", "mapping_ids": ["OM1"]}], "unresolved_items": []},
+        binding={
+            "filters": [],
+            "projections": [
+                {
+                    "item": "延迟@4-6",
+                    "kind": "projection",
+                    "decision": "accept",
+                    "result": {"node": "s1", "attribute": "Service.latency", "alias": "service_latency"},
+                }
+            ],
+            "metric_conditions": [],
+            "shape_updates": {},
+            "unresolved_items": [],
+        },
+    )
+
+    assert result.logical_plan.projections == ()
+    assert [(item.function, item.node, item.alias, item.attribute) for item in result.logical_plan.metrics] == [
+        ("count", "s1", "total", "latency")
+    ]
+    assert OntologyPhysicalCompiler().compile(result.logical_plan).cypher == "MATCH (s:Service)\nRETURN count(s.latency) AS total"
+
+
+def test_entity_list_with_explicit_projection_does_not_add_node_return() -> None:
+    result = _finalizer().finalize(
+        intent_output=_entity_list_projection_intent_output(),
+        ontology_mapping={
+            "ontology_objects": [
+                {
+                    "object_id": "OO1",
+                    "class_id": "Service",
+                    "selected_roles": ["projection_subject"],
+                    "evidence_refs": ["E1"],
+                    "order": 1,
+                }
+            ],
+            "ontology_relation_hints": [],
+            "ontology_attributes": [
+                {
+                    "attribute_ref_id": "OA1",
+                    "attribute_id": "Service.elem_type",
+                    "parent_class": "Service",
+                    "attribute_candidates": ["Service.elem_type"],
+                    "evidence_refs": ["E2"],
+                    "order": 2,
+                }
+            ],
+            "ontology_values": [],
+            "evidence": [],
+        },
+        ontology_path_selection={"selected_paths": [], "shape_updates": {}, "unresolved_items": []},
+        coreference={"merged_nodes": [{"node_id": "s1", "class_id": "Service", "mapping_ids": ["OM1"]}], "unresolved_items": []},
+        binding={
+            "filters": [],
+            "projections": [
+                {
+                    "item": "元素类型@6-10",
+                    "kind": "projection",
+                    "decision": "accept",
+                    "result": {"node": "s1", "attribute": "Service.elem_type", "alias": "service_elem_type"},
+                }
+            ],
+            "metric_conditions": [],
+            "shape_updates": {},
+            "unresolved_items": [],
+        },
+    )
+
+    assert result.logical_plan.node_returns == ()
+    assert [(item.node, item.attribute, item.alias) for item in result.logical_plan.projections] == [
+        ("s1", "elem_type", "service_elem_type")
+    ]
+
+
+def test_projection_subject_without_bound_fields_returns_terminal_path_node() -> None:
+    result = _finalizer().finalize(
+        intent_output=_intent_output(pending_relation=False, projection_expected=True),
+        ontology_mapping={
+            "ontology_objects": [
+                {
+                    "object_id": "OO1",
+                    "class_id": "Service",
+                    "selected_roles": ["path_subject"],
+                    "evidence_refs": ["E1"],
+                    "order": 1,
+                },
+                {
+                    "object_id": "OO2",
+                    "class_id": "Tunnel",
+                    "selected_roles": ["path_subject"],
+                    "evidence_refs": ["E2"],
+                    "order": 2,
+                },
+                {
+                    "object_id": "OO3",
+                    "class_id": "NetworkElement",
+                    "selected_roles": ["projection_subject", "path_subject"],
+                    "evidence_refs": ["E3"],
+                    "order": 3,
+                },
+            ],
+            "ontology_relation_hints": [],
+            "ontology_attributes": [],
+            "ontology_values": [],
+            "evidence": [],
+        },
+        ontology_path_selection={
+            "selected_paths": [
+                {
+                    "request_id": "PR1",
+                    "path_id": "P1",
+                    "relation_chain": ["SERVICE_USES_TUNNEL", "TUNNEL_SRC"],
+                    "evidence_ids": ["PE1"],
+                }
+            ],
+            "shape_updates": {},
+            "unresolved_items": [],
+        },
+        coreference={
+            "merged_nodes": [
+                {"node_id": "s1", "class_id": "Service", "mapping_ids": ["OO1"]},
+                {"node_id": "t1", "class_id": "Tunnel", "mapping_ids": ["OO2"]},
+                {"node_id": "n1", "class_id": "NetworkElement", "mapping_ids": ["OO3"]},
+            ],
+            "unresolved_items": [],
+        },
+        binding={"filters": [], "projections": [], "metric_conditions": [], "shape_updates": {}, "unresolved_items": []},
+    )
+
+    assert result.precheck_result["passed"] is True
+    assert result.logical_plan.projections == ()
+    assert [(item.node, item.alias) for item in result.logical_plan.node_returns] == [("n1", "ne")]
+    assert (
+        OntologyPhysicalCompiler().compile(result.logical_plan).cypher
+        == "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel)-[:TUNNEL_SRC]->(ne:NetworkElement)\nRETURN ne"
+    )
+
+
 def test_finalize_builds_logical_plan_and_backfills_shape_with_warnings() -> None:
     result = _finalizer().finalize(
         intent_output=_intent_output(),
@@ -232,7 +514,7 @@ def test_blocking_unresolved_preserves_coreference_source_step() -> None:
             unresolved_items=[
                 {
                     "id": "u_coref",
-                    "source_stage": "step_3_4",
+                    "source_stage": "step_3_4_coreference",
                     "type": "ambiguous_coreference",
                     "blocking": True,
                     "message": "两个服务对象是否同指不明确",
@@ -244,9 +526,9 @@ def test_blocking_unresolved_preserves_coreference_source_step() -> None:
         )
 
     assert exc.value.stage == "step_3_6"
-    assert exc.value.clarification["source_step"] == "step_3_4"
+    assert exc.value.clarification["source_step"] == "step_3_4_coreference"
     failure = exc.value.clarification["precheck_result"]["failures"][0]
-    assert failure["source_step"] == "step_3_4"
+    assert failure["source_step"] == "step_3_4_coreference"
     assert failure["reason_code"] == "AMBIGUOUS_COREFERENCE"
 
 
@@ -339,7 +621,7 @@ def test_physical_schema_terms_are_rejected_from_logical_plan() -> None:
 def test_projection_expected_requires_projection() -> None:
     binding = {**_binding(), "projections": []}
 
-    with pytest.raises(EngineeringFailure) as exc:
+    with pytest.raises(ClarificationNeeded) as exc:
         _finalizer().finalize(
             intent_output=_intent_output(projection_expected=True),
             ontology_mapping=_mapping(),
@@ -348,4 +630,94 @@ def test_projection_expected_requires_projection() -> None:
             binding=binding,
         )
 
-    assert exc.value.payload["precheck_result"]["failures"][0]["check"] == "shape_projection_consistency"
+    failure = exc.value.clarification["precheck_result"]["failures"][0]
+    assert failure["check"] == "shape_projection_consistency"
+    assert failure["reason_code"] == "MISSING_PROJECTION_TARGET"
+    assert [item["label"] for item in failure["clarification_options"]] == [
+        "返回 Service 对象",
+        "返回 Tunnel 对象",
+        "返回 NetworkElement 对象",
+    ]
+    assert "no_option_reason" not in failure
+
+
+def test_explicit_projections_override_shape_projection_expected_false() -> None:
+    result = _finalizer().finalize(
+        intent_output=_intent_output(projection_expected=False),
+        ontology_mapping=_mapping(),
+        ontology_path_selection=_ontology_path_selection(),
+        coreference=_coreference(),
+        binding=_binding(),
+    )
+
+    assert result.precheck_result["passed"] is True
+    assert result.logical_plan.shape["projection_expected"].value is True
+    assert result.logical_plan.shape["projection_expected"].source == "shape_finalization.reconciled"
+    assert result.trace["shape_backfilled"]["projection_expected"]["source"] == "shape_finalization.reconciled"
+    assert [item["reason_code"] for item in result.warnings] == ["PROJECTION_EXPECTATION_RECONCILED"]
+
+
+def test_single_node_projection_expected_without_fields_returns_entity() -> None:
+    result = _finalizer().finalize(
+        intent_output=_intent_output(pending_relation=False, projection_expected=True),
+        ontology_mapping={
+            "ontology_objects": [{"object_id": "OO1", "class_id": "Service", "evidence_refs": ["E1"], "order": 1}],
+            "ontology_relation_hints": [],
+            "ontology_attributes": [],
+            "ontology_values": [
+                {
+                    "value_ref_id": "OV1",
+                    "value_id": "ServiceQuality.Gold",
+                    "constrains_attribute": "Service.quality_of_service",
+                    "evidence_refs": ["E2"],
+                    "order": 2,
+                }
+            ],
+            "evidence": [],
+        },
+        ontology_path_selection={"selected_paths": [], "shape_updates": {}, "unresolved_items": []},
+        coreference={"merged_nodes": [{"node_id": "s1", "class_id": "Service", "mapping_ids": ["OM1"]}], "unresolved_items": []},
+        binding={**_binding(), "projections": []},
+    )
+
+    assert result.precheck_result["passed"] is True
+    assert [(item.node, item.alias) for item in result.logical_plan.node_returns] == [("s1", "s")]
+    assert [item["reason_code"] for item in result.warnings] == ["PROJECTION_TARGET_DEFAULTED_TO_ENTITY"]
+
+
+def test_disconnected_explicit_nodes_require_path_clarification() -> None:
+    with pytest.raises(ClarificationNeeded) as exc:
+        _finalizer().finalize(
+            intent_output=_intent_output(pending_relation=False),
+            ontology_mapping=_mapping(),
+            ontology_path_selection={"selected_paths": [], "shape_updates": {}, "unresolved_items": []},
+            coreference=_coreference(),
+            binding=_binding(),
+        )
+
+    failure = exc.value.clarification["precheck_result"]["failures"][0]
+    assert failure["check"] == "no_cartesian_product"
+    assert failure["reason_code"] == "AMBIGUOUS_PATH"
+    assert [item["label"] for item in failure["clarification_options"]] == [
+        "Service -> Tunnel（SERVICE_USES_TUNNEL）",
+        "Tunnel -> NetworkElement（TUNNEL_SRC）",
+        "Tunnel -> NetworkElement（TUNNEL_DST）",
+        "Tunnel -> NetworkElement（PATH_THROUGH）",
+        "Service -> NetworkElement（SERVICE_USES_TUNNEL -> TUNNEL_SRC）",
+    ]
+
+
+def test_metric_query_without_target_object_requires_clarification() -> None:
+    with pytest.raises(ClarificationNeeded) as exc:
+        _finalizer().finalize(
+            intent_output=_metric_intent_output(),
+            ontology_mapping={"ontology_objects": [], "ontology_relation_hints": [], "ontology_attributes": [], "ontology_values": [], "evidence": []},
+            ontology_path_selection={"selected_paths": [], "shape_updates": {}, "unresolved_items": []},
+            coreference={"merged_nodes": [], "unresolved_items": []},
+            binding={"filters": [], "projections": [], "metric_conditions": [], "shape_updates": {}, "unresolved_items": []},
+        )
+
+    assert exc.value.stage == "step_3_6"
+    assert exc.value.clarification["reason_code"] == "MISSING_METRIC_TARGET"
+    assert exc.value.clarification["options"] == []
+    assert exc.value.clarification["no_option_reason"] == "当前 logical plan 中没有可统计的本体对象。"

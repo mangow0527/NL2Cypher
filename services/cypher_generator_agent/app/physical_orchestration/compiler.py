@@ -165,17 +165,28 @@ class OntologyPhysicalCompiler:
             else:
                 bindings[ontology_attribute] = f"{self._node_variable(node)}.{self._attribute_property(node, projection.attribute)}"
         for metric in plan.metrics:
+            node = self._node(plan, metric.node)
+            metric_attribute = getattr(metric, "attribute", None)
+            if metric_attribute:
+                ontology_attribute = f"{node.type}.{metric_attribute}"
+                bindings[ontology_attribute] = f"{self._node_variable(node)}.{self._attribute_property(node, metric_attribute)}"
             for item in metric.condition:
-                node = self._node(plan, item.node)
-                ontology_attribute = f"{node.type}.{item.attr}"
-                bindings[ontology_attribute] = f"{self._node_variable(node)}.{self._attribute_property(node, item.attr)}"
+                condition_node = self._node(plan, item.node)
+                ontology_attribute = f"{condition_node.type}.{item.attr}"
+                bindings[ontology_attribute] = (
+                    f"{self._node_variable(condition_node)}.{self._attribute_property(condition_node, item.attr)}"
+                )
         return bindings
 
     def _metric_expression(self, plan: OntologyLogicalPlan, metric: Any) -> str:
         node = self._node(plan, metric.node)
         if metric.function == "count":
             distinct = "DISTINCT " if metric.distinct else ""
-            return f"count({distinct}{self._node_variable(node)}) AS {metric.alias}"
+            target = self._node_variable(node)
+            metric_attribute = getattr(metric, "attribute", None)
+            if metric_attribute:
+                target = f"{target}.{self._attribute_property(node, metric_attribute)}"
+            return f"count({distinct}{target}) AS {metric.alias}"
         if metric.function == "conditional_count":
             if len(metric.condition) != 1:
                 raise EngineeringFailure(stage="compiler", message=f"conditional_count requires exactly one condition for {metric.alias}")

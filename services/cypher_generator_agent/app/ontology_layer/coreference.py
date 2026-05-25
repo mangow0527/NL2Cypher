@@ -403,6 +403,8 @@ def _selected_role_label(role: str) -> str:
         "path_subject": "参与连接",
         "projection_subject": "返回字段所属对象",
         "return_subject": "作为结果对象返回",
+        "metric_subject": "作为统计对象",
+        "group_subject": "作为分组对象",
     }.get(role, role)
 
 
@@ -492,7 +494,7 @@ def _unresolved_item(
 ) -> dict[str, Any]:
     return {
         "id": f"u_{candidate_pair_id}",
-        "source_stage": "step_3_4",
+        "source_stage": "step_3_4_coreference",
         "type": "ambiguous_coreference",
         "blocking": True,
         "candidate_pair_id": candidate_pair_id,

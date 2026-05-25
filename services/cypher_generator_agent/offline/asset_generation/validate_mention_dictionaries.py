@@ -8,15 +8,31 @@ from typing import Any
 import yaml
 
 
-DICTIONARY_FILES: dict[str, set[str]] = {
-    "business_objects.yaml": {"schema_table", "ontology_class"},
-    "attributes.yaml": {"parent_object", "column", "value_type", "belongs_to_hint"},
-    "attribute_values.yaml": {"constrains_field", "raw_value"},
-    "relation_predicates.yaml": {"domain", "range", "join_path", "is_symmetric"},
-    "operation_intents.yaml": {"intent"},
-    "synonyms.yaml": {"members", "applied_to"},
+DICTIONARY_SOURCES: dict[str, set[str]] = {
+    "business_objects": {"schema_table", "ontology_class"},
+    "attributes": {"parent_object", "column", "value_type", "belongs_to_hint"},
+    "attribute_values": {"constrains_field", "raw_value"},
+    "relation_predicates": {"domain", "range", "join_path", "is_symmetric"},
+    "operation_cues": {"intent_hint"},
+    "synonyms": {"members", "applied_to"},
 }
 REQUIRED_FIELDS = {"canonical_id", "mention_type", "surface_forms", "description"}
+EXPECTED_MENTION_TYPES = {
+    "business_objects": "OBJECT",
+    "attributes": "ATTRIBUTE",
+    "attribute_values": "VALUE",
+    "relation_predicates": "RELATION",
+    "operation_cues": "OPERATION",
+    "synonyms": "SYNONYM_GROUP",
+}
+DICTIONARY_FILES = {
+    "business_objects.yaml": "business_objects",
+    "attributes.yaml": "attributes",
+    "attribute_values.yaml": "attribute_values",
+    "relation_predicates.yaml": "relation_predicates",
+    "operation_cues.yaml": "operation_cues",
+    "synonyms.yaml": "synonyms",
+}
 
 
 class DictionaryValidationError(ValueError):
@@ -29,33 +45,37 @@ def validate_dictionaries(*, schema_path: Path, dict_dir: Path) -> dict[str, Any
     edge_constraints = _edge_constraints(schema)
     errors: list[str] = []
     canonical_ids: dict[str, str] = {}
-    entries_by_file: dict[str, list[dict[str, Any]]] = {}
+    entries_by_source: dict[str, list[dict[str, Any]]] = {source: [] for source in DICTIONARY_SOURCES}
 
-    for filename, extra_fields in DICTIONARY_FILES.items():
-        path = dict_dir / filename
+    dictionary_dir = dict_dir / "dictionaries" if (dict_dir / "dictionaries").exists() else dict_dir
+    for filename, source in DICTIONARY_FILES.items():
+        extra_fields = DICTIONARY_SOURCES[source]
+        path = dictionary_dir / filename
         payload = _load_yaml_mapping(path, errors)
         entries = payload.get("entries")
         if not isinstance(entries, list) or not entries:
             errors.append(f"{filename}: entries must be a non-empty list")
             entries = []
-        entries_by_file[filename] = entries
+        entries_by_source[source] = entries
         for index, entry in enumerate(entries, start=1):
             if not isinstance(entry, dict):
                 errors.append(f"{filename}:{index}: entry must be a mapping")
                 continue
-            _validate_common_entry(filename, index, entry, extra_fields, canonical_ids, errors)
+            _validate_common_entry(filename, index, entry, extra_fields, canonical_ids, errors, source=source)
 
-    _validate_business_objects(entries_by_file["business_objects.yaml"], vertex_properties, errors)
-    _validate_attributes(entries_by_file["attributes.yaml"], vertex_properties, errors)
-    _validate_attribute_values(entries_by_file["attribute_values.yaml"], vertex_properties, errors)
-    _validate_relations(entries_by_file["relation_predicates.yaml"], edge_constraints, errors)
-    _validate_synonyms(entries_by_file["synonyms.yaml"], canonical_ids, errors)
-    _validate_uncertain(dict_dir / "uncertain.yaml", errors)
+    _validate_business_objects(entries_by_source["business_objects"], vertex_properties, errors)
+    _validate_attributes(entries_by_source["attributes"], vertex_properties, errors)
+    _validate_attribute_values(entries_by_source["attribute_values"], vertex_properties, errors)
+    _validate_relations(entries_by_source["relation_predicates"], edge_constraints, errors)
+    _validate_synonyms(entries_by_source["synonyms"], canonical_ids, errors)
+    uncertain_path = dict_dir / "uncertain.yaml"
+    if uncertain_path.exists():
+        _validate_uncertain(uncertain_path, errors)
 
     if errors:
         raise DictionaryValidationError("\n".join(errors))
     return {
-        "files_checked": len(DICTIONARY_FILES) + 1,
+        "files_checked": len(DICTIONARY_FILES) + int(uncertain_path.exists()),
         "canonical_id_count": len(canonical_ids),
         "errors": [],
     }
@@ -68,6 +88,8 @@ def _validate_common_entry(
     extra_fields: set[str],
     canonical_ids: dict[str, str],
     errors: list[str],
+    *,
+    source: str,
 ) -> None:
     missing = (REQUIRED_FIELDS | extra_fields) - set(entry)
     if missing:
@@ -85,15 +107,21 @@ def _validate_common_entry(
         errors.append(f"{filename}:{index}: surface_forms must be a non-empty list of strings")
     if not isinstance(entry.get("description"), str) or not entry["description"]:
         errors.append(f"{filename}:{index}: description must be a non-empty string")
-    if filename == "business_objects.yaml" and not canonical_id[:1].isupper():
+    expected_type = EXPECTED_MENTION_TYPES.get(source)
+    if expected_type and entry.get("mention_type") != expected_type:
+        errors.append(
+            f"{filename}:{index}: {source} entries must use mention_type {expected_type}, "
+            f"got {entry.get('mention_type')!r}"
+        )
+    if source == "business_objects" and not canonical_id[:1].isupper():
         errors.append(f"{filename}:{index}: object canonical_id must use PascalCase: {canonical_id}")
-    if filename == "attributes.yaml" and "." not in canonical_id:
+    if source == "attributes" and "." not in canonical_id:
         errors.append(f"{filename}:{index}: attribute canonical_id must use Object.field: {canonical_id}")
-    if filename == "relation_predicates.yaml" and not canonical_id.startswith("REL_"):
+    if source == "relation_predicates" and not canonical_id.startswith("REL_"):
         errors.append(f"{filename}:{index}: relation canonical_id must start with REL_: {canonical_id}")
-    if filename == "operation_intents.yaml" and not canonical_id.startswith("OP_"):
+    if source == "operation_cues" and not canonical_id.startswith("OP_"):
         errors.append(f"{filename}:{index}: operation canonical_id must start with OP_: {canonical_id}")
-    if filename == "attribute_values.yaml" and "." not in canonical_id:
+    if source == "attribute_values" and "." not in canonical_id:
         errors.append(f"{filename}:{index}: value canonical_id must use EnumName.VALUE: {canonical_id}")
 
 

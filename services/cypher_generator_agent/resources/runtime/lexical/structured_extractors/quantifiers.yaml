@@ -1,0 +1,30 @@
+version: 1
+description: Lexical quantifier extractor rules.
+quantifiers:
+- canonical_id: QUANT_ALL
+  surface_forms:
+  - 所有
+  - 全部
+  - 全量
+  - 全体
+  - 每个
+  - 各个
+  semantic: no_implicit_filter
+  shape_effect: explicit_only_no_implicit
+  affects_intent: false
+- canonical_id: QUANT_ANY
+  surface_forms:
+  - 任意
+  - 任一
+  - 任一个
+  semantic: existential_scope
+  shape_effect: explicit_scope
+  affects_intent: false
+- canonical_id: QUANT_NONE
+  surface_forms:
+  - 没有
+  - 不存在
+  - 无
+  semantic: not_exists
+  shape_effect: absence_scope
+  affects_intent: true

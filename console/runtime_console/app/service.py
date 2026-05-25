@@ -450,13 +450,69 @@ class RuntimeResultsService:
         generation_failure: dict[str, Any] | None,
     ) -> dict[str, Any] | None:
         clarification = (source or {}).get("clarification") or (generation_failure or {}).get("clarification")
-        return clarification if isinstance(clarification, dict) else None
+        if not isinstance(clarification, dict):
+            snapshot = self._decode_generation_snapshot((source or generation_failure or {}).get("input_prompt_snapshot"))
+            if self._looks_like_clarification(snapshot):
+                clarification = snapshot
+            else:
+                snapshot_clarification = snapshot.get("clarification")
+                clarification = snapshot_clarification if isinstance(snapshot_clarification, dict) else None
+        return self._normalize_clarification(clarification)
 
     def _clarification_summary(self, clarification: dict[str, Any] | None) -> str:
         if not clarification:
             return ""
-        question = clarification.get("question_zh")
+        question = clarification.get("question_zh") or clarification.get("user_message") or clarification.get("reason")
         return str(question) if question else ""
+
+    def _normalize_clarification(self, clarification: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not isinstance(clarification, dict):
+            return None
+        result = dict(clarification)
+        question = self._first_text(
+            result,
+            "question_zh",
+            "user_message",
+            "question",
+            "message",
+            "reason",
+        )
+        if question:
+            result["question_zh"] = question
+        source_step = self._first_text(result, "source_step", "source_stage")
+        if source_step:
+            result["source_step"] = source_step
+            result["source_stage"] = source_step
+        options = self._normalize_clarification_options(result.get("options"))
+        result["options"] = options
+        result.setdefault("expected_answer_type", "single_choice" if options else "free_text")
+        return result
+
+    def _looks_like_clarification(self, value: dict[str, Any]) -> bool:
+        return any(key in value for key in ("user_message", "question_zh", "reason_code", "missing_information", "raw_clarification"))
+
+    def _normalize_clarification_options(self, value: Any) -> list[dict[str, str]]:
+        if not isinstance(value, list):
+            return []
+        options: list[dict[str, str]] = []
+        for index, item in enumerate(value, start=1):
+            if isinstance(item, dict):
+                label = self._first_text(item, "label", "summary", "description", "text", "option_id", "id")
+                option_id = self._first_text(item, "id", "option_id", "candidate_id") or f"option_{index}"
+            else:
+                label = str(item).strip()
+                option_id = f"option_{index}"
+            if not label:
+                continue
+            options.append({"id": option_id, "label": label})
+        return options
+
+    def _first_text(self, payload: dict[str, Any], *keys: str) -> str:
+        for key in keys:
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
 
     def _build_generation_section(
         self,
@@ -478,6 +534,7 @@ class RuntimeResultsService:
         )
         prompt_snapshot = source.get("input_prompt_snapshot") or ""
         snapshot = self._decode_generation_snapshot(prompt_snapshot)
+        clarification = self._clarification_from(source, generation_failure)
         trace_schema_version = (
             snapshot.get("schema_version") or "cga_trace_v2" if self._is_cga_trace_v2(snapshot) else None
         )
@@ -492,9 +549,9 @@ class RuntimeResultsService:
             "parsed_cypher": parsed_cypher,
             "gate_passed": gate_passed,
             "failure_reason": failure_reason,
-            "clarification": source.get("clarification") or (generation_failure or {}).get("clarification"),
+            "clarification": clarification,
             "generation_status": generation_status,
-            "trace_profile": "ontology" if self._is_ontology_cga_trace(snapshot) else "legacy",
+            "trace_profile": self._record_trace_profile(source),
             "trace_schema_version": trace_schema_version,
             "trace_layers": self._generation_trace_layers(
                 snapshot=snapshot,
@@ -527,7 +584,9 @@ class RuntimeResultsService:
         return snapshot.get("schema_version") == "cga_trace_v2" or self._is_ontology_cga_trace(snapshot)
 
     def _is_ontology_cga_trace(self, snapshot: dict[str, Any]) -> bool:
-        return snapshot.get("trace_profile") == "ontology" or all(key in snapshot for key in ("preprocessing", "lexer", "intent"))
+        return str(snapshot.get("trace_profile") or "").strip().lower() == "ontology" or all(
+            key in snapshot for key in ("preprocessing", "lexer", "intent")
+        )
 
     def _task_matches_profile(self, task: dict[str, Any]) -> bool:
         profile = str(self._cga_trace_profile or "all").strip().lower()
@@ -542,8 +601,20 @@ class RuntimeResultsService:
         return self._record_trace_profile(record) == profile
 
     def _record_trace_profile(self, record: dict[str, Any]) -> str:
+        explicit_profile = str(record.get("trace_profile") or record.get("cga_trace_profile") or "").strip().lower()
+        if explicit_profile in {"ontology", "legacy"}:
+            return explicit_profile
         snapshot = self._decode_generation_snapshot(record.get("input_prompt_snapshot") or "")
-        return "ontology" if self._is_ontology_cga_trace(snapshot) else "legacy"
+        if self._is_ontology_cga_trace(snapshot):
+            return "ontology"
+        profile = str(self._cga_trace_profile or "all").strip().lower()
+        if (
+            profile == "ontology"
+            and record.get("generation_status") == "clarification_required"
+            and (isinstance(record.get("clarification"), dict) or self._looks_like_clarification(snapshot))
+        ):
+            return "ontology"
+        return "legacy"
 
     def _trace_object(self, value: Any) -> dict[str, Any]:
         return value if isinstance(value, dict) else {}

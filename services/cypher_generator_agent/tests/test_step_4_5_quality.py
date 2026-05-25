@@ -96,7 +96,7 @@ def test_step_5_does_not_duplicate_multi_filter_expression() -> None:
                 type="Service",
                 alias="s",
                 filters=(
-                    PlanFilter(node="s1", attr="quality_of_service", operator="=", value="ServiceQuality.Gold"),
+                    PlanFilter(node="s1", attr="quality_of_service", operator="=", value="Gold"),
                     PlanFilter(node="s1", attr="bandwidth", operator=">", value=100),
                 ),
             ),
@@ -111,4 +111,28 @@ def test_step_5_does_not_duplicate_multi_filter_expression() -> None:
         "MATCH (s:Service)\n"
         "WHERE s.quality_of_service = 'Gold' AND s.bandwidth > 100\n"
         "RETURN s.name AS service_name"
+    )
+
+
+def test_step_5_compiles_network_element_vendor_projection() -> None:
+    plan = OntologyLogicalPlan(
+        root_operation="SELECT",
+        intent=_intent(),
+        shape=_shape(),
+        nodes=(
+            PlanNode(id="t1", type="Tunnel", alias="t"),
+            PlanNode(id="ne1", type="NetworkElement", alias="ne"),
+        ),
+        edges=(PlanEdge(from_node="t1", to_node="ne1", relation="TUNNEL_DST", edge_type="direct"),),
+        projections=(
+            PlanProjection(node="ne1", attribute="vendor", alias="vendor"),
+            PlanProjection(node="t1", attribute="bandwidth", alias="tunnel_bw"),
+        ),
+    )
+
+    cypher = OntologyPhysicalCompiler().compile(plan).cypher
+
+    assert cypher == (
+        "MATCH (t:Tunnel)-[:TUNNEL_DST]->(ne:NetworkElement)\n"
+        "RETURN ne.vendor AS vendor, t.bandwidth AS tunnel_bw"
     )

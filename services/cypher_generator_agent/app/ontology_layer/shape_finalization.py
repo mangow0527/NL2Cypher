@@ -77,8 +77,9 @@ class OntologyShapeFinalizer:
             PlanNode(id=node.id, type=node.type, alias=node.alias, filters=tuple(filters.get(node.id, ()))) for node in nodes
         )
         projections = _normalize_projection_aliases(self._projections(binding_dict, node_by_id), nodes, edges)
-        metrics = self._metrics(intent_output, nodes, binding_dict)
-        node_returns = self._node_returns(intent_output, nodes, projections, metrics)
+        metrics = self._metrics(intent_output, nodes, binding_dict, shape, mapping_dict, projections)
+        projections = _projections_after_metric(intent_output, shape, projections, metrics)
+        node_returns = self._node_returns(intent_output, shape, nodes, projections, metrics, mapping_dict)
         nodes = _prune_unreferenced_nodes(nodes, edges, projections, metrics, node_returns, mapping_dict)
         plan = OntologyLogicalPlan(
             root_operation="SELECT",
@@ -90,6 +91,8 @@ class OntologyShapeFinalizer:
             node_returns=node_returns,
             metrics=metrics,
         )
+        plan, reconciliation_warnings = self._reconcile_projection_contract(plan)
+        nonblocking_warnings = (*nonblocking_warnings, *reconciliation_warnings)
         failures = self._precheck(plan, mapping_dict)
         if failures:
             self._raise_precheck_failure(failures, nonblocking_warnings, plan=plan)
@@ -100,7 +103,7 @@ class OntologyShapeFinalizer:
             warnings=nonblocking_warnings,
             trace={
                 "stage": "step_3_6",
-                "shape_backfilled": {key: value.to_dict() for key, value in shape.items()},
+                "shape_backfilled": {key: value.to_dict() for key, value in plan.shape.items()},
                 "warnings": [dict(item) for item in nonblocking_warnings],
                 "precheck_result": precheck_result,
             },
@@ -132,7 +135,10 @@ class OntologyShapeFinalizer:
         if source_step:
             failure["source_step"] = str(source_step)
         if error_type == "ClarificationNeeded":
-            failure["clarification_options"] = _clarification_options(item.get("candidates") or item.get("options"))
+            options = _clarification_options(item.get("candidates") or item.get("options"))
+            failure["clarification_options"] = options
+            if not options and item.get("no_option_reason"):
+                failure["no_option_reason"] = str(item["no_option_reason"])
         return failure
 
     def _final_shape(
@@ -289,24 +295,113 @@ class OntologyShapeFinalizer:
     def _node_returns(
         self,
         intent_output: Any,
+        shape: dict[str, InitialShapeField],
         nodes: tuple[PlanNode, ...],
         projections: tuple[PlanProjection, ...],
         metrics: tuple[PlanMetric, ...],
+        mapping_dict: dict[str, Any],
     ) -> tuple[PlanNodeReturn, ...]:
         intent = getattr(intent_output, "intent", None)
-        if getattr(intent, "secondary", None) != "entity_detail_query":
+        secondary = getattr(intent, "secondary", None)
+        return_subject_classes = _return_subject_classes(mapping_dict)
+        projection_subject_classes = _projection_subject_classes(mapping_dict)
+        projection_expected = bool(_shape_value(shape, "projection_expected"))
+        if metrics:
             return ()
-        if projections or metrics:
-            return ()
-        return tuple(PlanNodeReturn(node=node.id, alias=node.alias) for node in nodes)
 
-    def _metrics(self, intent_output: Any, nodes: tuple[PlanNode, ...], binding_dict: dict[str, Any]) -> tuple[PlanMetric, ...]:
+        def selected_node_returns(classes: tuple[str, ...] = ()) -> tuple[PlanNodeReturn, ...]:
+            return tuple(
+                PlanNodeReturn(node=node.id, alias=node.alias)
+                for node in nodes
+                if not classes or node.type in classes
+            )
+
+        if return_subject_classes:
+            return selected_node_returns(return_subject_classes)
+        if projection_expected and projection_subject_classes and not projections:
+            return selected_node_returns(projection_subject_classes)
+        if secondary == "entity_detail_query":
+            return selected_node_returns()
+        if secondary == "entity_list_query" and not projections:
+            return selected_node_returns()
+        return ()
+
+    def _reconcile_projection_contract(
+        self,
+        plan: OntologyLogicalPlan,
+    ) -> tuple[OntologyLogicalPlan, tuple[dict[str, Any], ...]]:
+        projection_expected = bool(_shape_value(plan.shape, "projection_expected"))
+        warnings: list[dict[str, Any]] = []
+        shape = plan.shape
+        node_returns = plan.node_returns
+
+        if not projection_expected and plan.projections:
+            previous = plan.shape.get("projection_expected")
+            shape = dict(plan.shape)
+            shape["projection_expected"] = InitialShapeField(
+                True,
+                "shape_finalization.reconciled",
+                "accept",
+                max(float(getattr(previous, "confidence", 0.0) or 0.0), 0.9),
+                derived_from=tuple(
+                    dict.fromkeys(
+                        (
+                            *(getattr(previous, "derived_from", ()) or ()),
+                            "binding.projections",
+                            getattr(previous, "source", "unknown"),
+                        )
+                    )
+                ),
+            )
+            warnings.append(
+                {
+                    "source_step": "step_3_6",
+                    "check": "shape_projection_consistency",
+                    "reason_code": "PROJECTION_EXPECTATION_RECONCILED",
+                    "message": "projection_expected was false but explicit bound projections were present; using projections as the stronger signal",
+                }
+            )
+
+        if projection_expected and not plan.projections and not plan.metrics and not node_returns and len(plan.nodes) == 1 and not plan.edges:
+            node = plan.nodes[0]
+            node_returns = (PlanNodeReturn(node=node.id, alias=node.alias),)
+            warnings.append(
+                {
+                    "source_step": "step_3_6",
+                    "check": "shape_projection_consistency",
+                    "reason_code": "PROJECTION_TARGET_DEFAULTED_TO_ENTITY",
+                    "message": "projection_expected was true but no bound fields were present for a single-object query; returning the entity",
+                }
+            )
+
+        if shape is plan.shape and node_returns is plan.node_returns:
+            return plan, ()
+        return (
+            OntologyLogicalPlan(
+                root_operation=plan.root_operation,
+                intent=plan.intent,
+                shape=shape,
+                nodes=plan.nodes,
+                edges=plan.edges,
+                projections=plan.projections,
+                node_returns=node_returns,
+                metrics=plan.metrics,
+            ),
+            tuple(warnings),
+        )
+
+    def _metrics(
+        self,
+        intent_output: Any,
+        nodes: tuple[PlanNode, ...],
+        binding_dict: dict[str, Any],
+        shape: dict[str, InitialShapeField],
+        mapping_dict: dict[str, Any],
+        projections: tuple[PlanProjection, ...],
+    ) -> tuple[PlanMetric, ...]:
         intent = getattr(intent_output, "intent", None)
         primary = str(getattr(intent, "primary", ""))
         secondary = str(getattr(intent, "secondary", ""))
-        if primary == "metric_query" and secondary == "count_metric_query":
-            target = _metric_target_node(nodes)
-            return (PlanMetric(function="count", node=target.id, alias=f"{_metric_alias_prefix(target.type)}_count"),)
         if primary == "breakdown_query" and secondary == "multi_metric_breakdown_query":
             target = _node_by_type(nodes, "Tunnel") or _metric_target_node(nodes)
             metrics = [PlanMetric(function="count", node=target.id, alias=f"{_metric_alias_prefix(target.type)}_count")]
@@ -321,6 +416,10 @@ class OntologyShapeFinalizer:
                     )
                 )
             return tuple(metrics)
+        aggregation_functions = tuple(str(item) for item in (_shape_value(shape, "aggregation_functions") or ()))
+        count_required = bool(_shape_value(shape, "aggregation_required")) and "count" in aggregation_functions
+        if (primary == "metric_query" and secondary == "count_metric_query") or count_required:
+            return (_count_metric(nodes, mapping_dict, projections),)
         return ()
 
     def _precheck(self, plan: OntologyLogicalPlan, mapping_dict: dict[str, Any]) -> list[dict[str, Any]]:
@@ -364,15 +463,23 @@ class OntologyShapeFinalizer:
                 failures.append(_failure("attribute_owner_exists", "EngineeringFailure", "UNKNOWN_ONTOLOGY_ATTRIBUTE", f"unknown attribute {attribute_id}"))
         projection_expected = bool(_shape_value(plan.shape, "projection_expected"))
         if projection_expected and not plan.projections and not plan.metrics and not plan.node_returns:
+            projection_target_options = _projection_target_clarification_options(plan)
             failures.append(
                 _failure(
                     "shape_projection_consistency",
-                    "EngineeringFailure",
-                    "PROJECTION_EXPECTED_BUT_EMPTY",
-                    "projection_expected is true but plan has no projections",
+                    "ClarificationNeeded",
+                    "MISSING_PROJECTION_TARGET",
+                    "当前问题需要返回字段或对象，但未能确定具体返回内容",
+                    source_step="step_3_5",
+                    clarification_options=projection_target_options,
+                    **(
+                        {}
+                        if projection_target_options
+                        else {"no_option_reason": "当前 logical plan 没有可作为返回目标的本体节点或字段候选。"}
+                    ),
                 )
             )
-        if not projection_expected and (plan.projections or plan.node_returns):
+        if not projection_expected and plan.projections:
             failures.append(
                 _failure(
                     "shape_projection_consistency",
@@ -391,9 +498,11 @@ class OntologyShapeFinalizer:
             failures.append(
                 _failure(
                     "no_cartesian_product",
-                    "EngineeringFailure",
-                    "DISCONNECTED_MATCH_NODES",
-                    "multiple ontology nodes require an explicit selected path",
+                    "ClarificationNeeded",
+                    "AMBIGUOUS_PATH",
+                    "多个查询对象之间缺少明确连接关系，需要确认按哪条业务关系连接",
+                    source_step="step_3_3",
+                    clarification_options=self._path_clarification_options(plan.nodes),
                 )
             )
         if plan.edges:
@@ -411,6 +520,54 @@ class OntologyShapeFinalizer:
                     )
                 )
         return failures
+
+    def _path_clarification_options(self, nodes: tuple[PlanNode, ...]) -> list[dict[str, Any]]:
+        class_ids = {node.type for node in nodes}
+        options: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, tuple[str, ...]]] = set()
+
+        for relation_id, relation in self.relations.items():
+            from_class = str(relation.get("domain") or relation.get("domain_class") or "")
+            to_class = str(relation.get("range") or relation.get("range_class") or "")
+            if from_class not in class_ids or to_class not in class_ids:
+                continue
+            key = (from_class, to_class, (relation_id,))
+            if key in seen:
+                continue
+            seen.add(key)
+            options.append(
+                {
+                    "option_id": f"P{len(options) + 1}",
+                    "label": f"{from_class} -> {to_class}（{relation_id}）",
+                    "from_class": from_class,
+                    "to_class": to_class,
+                    "relation_chain": [relation_id],
+                }
+            )
+
+        default_paths = self.assets.domain_ontology.get("default_paths", [])
+        for item in default_paths if isinstance(default_paths, list) else []:
+            if not isinstance(item, dict):
+                continue
+            from_class = str(item.get("from_class") or "")
+            to_class = str(item.get("to_class") or "")
+            chain = [str(value) for value in item.get("relation_chain", []) if str(value)]
+            if from_class not in class_ids or to_class not in class_ids or not chain:
+                continue
+            key = (from_class, to_class, tuple(chain))
+            if key in seen:
+                continue
+            seen.add(key)
+            options.append(
+                {
+                    "option_id": f"P{len(options) + 1}",
+                    "label": f"{from_class} -> {to_class}（{' -> '.join(chain)}）",
+                    "from_class": from_class,
+                    "to_class": to_class,
+                    "relation_chain": chain,
+                }
+            )
+        return options
 
     def _raise_precheck_failure(
         self,
@@ -494,7 +651,7 @@ def _classes(assets: OntologyAssets) -> set[str]:
     payload = assets.domain_ontology.get("classes", [])
     result = {str(item.get("id")) for item in payload if isinstance(item, dict) and item.get("id")}
     for entry in assets.entries:
-        if entry.mention_type == "business_object":
+        if entry.mention_type == "OBJECT":
             result.add(entry.canonical_id)
     return result
 
@@ -509,7 +666,7 @@ def _relations(assets: OntologyAssets) -> dict[str, dict[str, Any]]:
         if relation_id:
             result[relation_id] = dict(item, id=relation_id)
     for entry in assets.entries:
-        if entry.mention_type != "relation_predicate":
+        if entry.mention_type != "RELATION":
             continue
         relation_id = entry.canonical_id.removeprefix("REL_")
         result.setdefault(
@@ -532,7 +689,7 @@ def _attributes(assets: OntologyAssets) -> set[str]:
     elif isinstance(payload, dict):
         result.update(str(key) for key in payload)
     for entry in assets.entries:
-        if entry.mention_type == "attribute":
+        if entry.mention_type == "ATTRIBUTE":
             result.add(entry.canonical_id)
     return result
 
@@ -558,6 +715,26 @@ def _mapping_node_sources(mapping_dict: dict[str, Any]) -> tuple[dict[str, Any],
         if isinstance(attribute, str) and "." in attribute:
             sources.append({"class_id": attribute.split(".", 1)[0], "source": "value_owner"})
     return tuple(sources)
+
+
+def _return_subject_classes(mapping_dict: dict[str, Any]) -> tuple[str, ...]:
+    return _classes_for_selected_role(mapping_dict, "return_subject")
+
+
+def _projection_subject_classes(mapping_dict: dict[str, Any]) -> tuple[str, ...]:
+    return _classes_for_selected_role(mapping_dict, "projection_subject")
+
+
+def _classes_for_selected_role(mapping_dict: dict[str, Any], role: str) -> tuple[str, ...]:
+    classes: list[str] = []
+    for item in mapping_dict.get("ontology_objects", []):
+        if not isinstance(item, dict):
+            continue
+        roles = item.get("selected_roles")
+        class_id = item.get("class_id")
+        if isinstance(class_id, str) and isinstance(roles, (list, tuple)) and role in roles:
+            classes.append(class_id)
+    return tuple(dict.fromkeys(classes))
 
 
 def _path_node_sources(path_dict: dict[str, Any], relations: dict[str, dict[str, Any]]) -> tuple[dict[str, Any], ...]:
@@ -684,14 +861,76 @@ def _node_by_type(nodes: tuple[PlanNode, ...], node_type: str) -> PlanNode | Non
     return None
 
 
-def _metric_target_node(nodes: tuple[PlanNode, ...]) -> PlanNode:
+def _count_metric(
+    nodes: tuple[PlanNode, ...],
+    mapping_dict: dict[str, Any],
+    projections: tuple[PlanProjection, ...],
+) -> PlanMetric:
+    target = _metric_target_node(nodes, preferred_classes=_classes_for_selected_role(mapping_dict, "metric_subject"))
+    attribute = _count_attribute_from_projections(target, projections)
+    alias = "total" if attribute is not None else f"{_metric_alias_prefix(target.type)}_count"
+    return PlanMetric(function="count", node=target.id, alias=alias, attribute=attribute)
+
+
+def _count_attribute_from_projections(
+    target: PlanNode,
+    projections: tuple[PlanProjection, ...],
+) -> str | None:
+    candidate_attrs = [
+        item.attribute
+        for item in projections
+        if item.node == target.id and item.attribute not in {"__internal_id"}
+    ]
+    if len(candidate_attrs) == 1:
+        return candidate_attrs[0]
+    return None
+
+
+def _projections_after_metric(
+    intent_output: Any,
+    shape: dict[str, InitialShapeField],
+    projections: tuple[PlanProjection, ...],
+    metrics: tuple[PlanMetric, ...],
+) -> tuple[PlanProjection, ...]:
+    if not metrics:
+        return projections
+    if bool(_shape_value(shape, "group_by_required")):
+        return projections
+    intent = getattr(intent_output, "intent", None)
+    primary = str(getattr(intent, "primary", ""))
+    secondary = str(getattr(intent, "secondary", ""))
+    aggregation_functions = tuple(str(item) for item in (_shape_value(shape, "aggregation_functions") or ()))
+    count_metric = (primary == "metric_query" and secondary == "count_metric_query") or (
+        bool(_shape_value(shape, "aggregation_required")) and "count" in aggregation_functions
+    )
+    if count_metric and all(item.function == "count" for item in metrics):
+        return ()
+    return projections
+
+
+def _metric_target_node(nodes: tuple[PlanNode, ...], *, preferred_classes: tuple[str, ...] = ()) -> PlanNode:
+    for preferred in preferred_classes:
+        node = _node_by_type(nodes, preferred)
+        if node is not None:
+            return node
     for preferred in ("Tunnel", "Service", "NetworkElement", "Port"):
         node = _node_by_type(nodes, preferred)
         if node is not None:
             return node
     if nodes:
         return nodes[-1]
-    raise EngineeringFailure(stage="step_3_6", message="metric query has no ontology node to count")
+    raise ClarificationNeeded(
+        stage="step_3_6",
+        message="metric query has no ontology node to count",
+        clarification={
+            "source_step": "step_3_6",
+            "reason_code": "MISSING_METRIC_TARGET",
+            "reason": "当前问题是统计类查询，但未能确定要统计的对象。",
+            "missing_information": "用户需要明确要统计服务、隧道、网元、端口或其他对象。",
+            "options": [],
+            "no_option_reason": "当前 logical plan 中没有可统计的本体对象。",
+        },
+    )
 
 
 def _metric_alias_prefix(class_id: str) -> str:
@@ -786,6 +1025,24 @@ def _clarification_options(value: Any) -> list[dict[str, Any]]:
             option_id = f"O{index}"
             label = str(item)
         options.append({"option_id": option_id, "label": label})
+    return options
+
+
+def _projection_target_clarification_options(plan: OntologyLogicalPlan) -> list[dict[str, Any]]:
+    options: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for node in plan.nodes:
+        if node.type in seen:
+            continue
+        seen.add(node.type)
+        options.append(
+            {
+                "option_id": f"N{len(options) + 1}",
+                "label": f"返回 {node.type} 对象",
+                "node": node.id,
+                "class_id": node.type,
+            }
+        )
     return options
 
 

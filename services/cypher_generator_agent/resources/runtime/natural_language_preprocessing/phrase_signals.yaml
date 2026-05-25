@@ -83,6 +83,12 @@ phrase_groups:
         text: 查询一下
       - id: query_intro_find
         text: 查一下
+      - id: query_intro_lookup
+        text: 查找
+      - id: query_intro_find_out
+        text: 找出
+      - id: query_intro_calculate
+        text: 计算
       - id: query_intro_look
         text: 看一下
       - id: query_intro_help_find
@@ -101,6 +107,8 @@ phrase_groups:
         text: 麻烦统计
       - id: query_intro_please_stat_once
         text: 麻烦统计一下
+      - id: query_intro_how_many_total
+        text: 总共有多少
 
   self_correction_markers:
     kind: self_correction_marker

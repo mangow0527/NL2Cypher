@@ -28,14 +28,14 @@ class FakeMentionVectorRetriever:
         expected_mention_type: str | None,
         top_k: int,
     ) -> list[MentionVectorCandidate]:
-        if fragment != "穿越" or expected_mention_type != "relation_predicate":
+        if fragment != "穿越" or expected_mention_type != "RELATION":
             return []
         return [
             MentionVectorCandidate(
                 id="mention.REL_PATH_THROUGH.穿过",
                 text="经过 途经 穿过 path through",
                 canonical_id="REL_PATH_THROUGH",
-                mention_type="relation_predicate",
+                mention_type="RELATION",
                 surface="穿过",
                 score=0.91,
                 metadata={"dictionary": "synonyms", "via_synonym_group": "SYN_PathThrough"},
@@ -173,23 +173,28 @@ def test_lexer_scans_core_question_directly_without_matcher_preparation_trace() 
     assert "offset_map" not in lexer
 
 
-def test_lexer_does_not_perform_literal_extraction() -> None:
+def test_lexer_extracts_runtime_identifier_as_literal_not_dictionary_value() -> None:
     pipeline = _pipeline()
 
     lexer = pipeline.lexer.run("查询各服务的带宽，统计源网元为NetworkElement_003的数量").to_dict()
 
     all_hits = [*lexer["ac_matches"], *lexer["selected_hits"]]
-    assert not any(hit["match_source"] == "literal_extract" for hit in all_hits)
     assert not any(hit["canonical_id"].startswith("LiteralValue.") for hit in all_hits)
     assert not any(
         mention["surface"] == "NetworkElement_003" and mention["mention_type"] == "VALUE"
         for mention in lexer["mentions"]
     )
+    assert any(
+        hit["surface"] == "NetworkElement_003"
+        and hit["canonical_id"] == "LITERAL_IDENTIFIER"
+        and hit["match_source"] == "literal_extract"
+        for hit in all_hits
+    )
     assert not any(
         mention["surface"] == "NetworkElement" and mention["mention_type"] == "OBJECT"
         for mention in lexer["mentions"]
     )
-    assert any(item["surface"] == "NetworkElement_003" for item in lexer["unmatched_fragments"])
+    assert not any(item["surface"] == "NetworkElement_003" for item in lexer["unmatched_fragments"])
 
 
 def test_lexer_keeps_dictionary_canonical_ids_without_contextual_rewrite() -> None:
@@ -240,38 +245,29 @@ def test_lexer_selects_complete_exact_ip_address_surface_without_bare_ip_alias()
     )
 
 
-def test_dictionary_priority_table_covers_used_mention_types_and_limits_overrides() -> None:
+def test_overlap_resolution_uses_code_owned_generic_priorities_without_canonical_overrides() -> None:
     assets = OntologyAssets.from_default_resources()
-    priorities = DictionaryPriorities.from_default_resources()
+    priorities = DictionaryPriorities.default()
 
-    used_types = {entry.mention_type for entry in assets.entries if entry.mention_type != "synonym_group"}
-    role_relations = {
-        entry.canonical_id
-        for entry in assets.entries
-        if re.match(r"^REL_.*_(SRC|DST|PRIMARY|BACKUP|IN|OUT|START|END)$", entry.canonical_id)
-    }
+    used_types = {entry.mention_type for entry in assets.entries if entry.mention_type != "SYNONYM_GROUP"}
 
-    assert priorities.override_semantics == "replace"
-    assert priorities.match_source_priorities["literal_extract"] == 110
     assert priorities.match_source_priorities["operator_extract"] == 108
     assert priorities.match_source_priorities["quantifier_extract"] == 105
     assert priorities.match_source_priorities["ac_exact"] == 100
+    assert priorities.match_source_priorities["vector_recall"] == 50
+    assert priorities.match_source_priorities["literal_extract"] == 40
     assert used_types <= set(priorities.by_type)
-    assert "synonym_group" not in priorities.by_type
-    assert "OP_RETURN_FIELD" not in priorities.by_canonical_id
-    assert role_relations <= set(priorities.by_canonical_id)
-    assert all(priorities.by_canonical_id[item] >= 105 for item in role_relations)
-    assert len(priorities.by_canonical_id) <= priorities.max_overrides
-    assert priorities.max_overrides == 10
+    assert "SYNONYM_GROUP" not in priorities.by_type
+    assert priorities.by_canonical_id == {}
 
 
-def test_synonym_group_hits_are_normalized_before_overlap_resolution() -> None:
+def test_synonym_group_entries_do_not_emit_runtime_mentions() -> None:
     pipeline = _pipeline()
 
     lexer = pipeline.lexer.run("查询网络服务使用的网络隧道名称").to_dict()
 
     assert not any(hit["canonical_id"].startswith("SYN_") for hit in lexer["ac_matches"])
-    assert not any(hit["mention_type"] == "synonym_group" for hit in lexer["ac_matches"])
+    assert not any(hit["mention_type"] == "SYNONYM_GROUP" for hit in lexer["ac_matches"])
 
 
 def test_return_projection_marker_is_selected_without_priority_override() -> None:
@@ -279,7 +275,7 @@ def test_return_projection_marker_is_selected_without_priority_override() -> Non
 
     lexer = pipeline.lexer.run("查询金牌服务，返回隧道名称").to_dict()
 
-    assert "OP_RETURN_FIELD" not in DictionaryPriorities.from_default_resources().by_canonical_id
+    assert "OP_RETURN_FIELD" not in DictionaryPriorities.default().by_canonical_id
     assert not any(
         hit["canonical_id"] == "OP_QUERY" and hit["surface"] == "返回"
         for hit in lexer["ac_matches"]
@@ -373,9 +369,9 @@ def test_generic_attribute_mentions_keep_candidate_refs_and_binding_uses_context
     assert "NetworkElement.name" in candidate_refs
     assert "Service.name" in candidate_refs
     assert "Fiber.name" in candidate_refs
-    with pytest.raises(ClarificationNeeded) as exc_info:
-        pipeline.generate("查询路由器名称", trace_id="trace-router-name")
-    assert exc_info.value.stage == "step_3_1"
+    result = pipeline.generate("查询路由器名称", trace_id="trace-router-name")
+
+    assert result.cypher == "MATCH (ne:NetworkElement)\nWHERE ne.elem_type = 'router'\nRETURN ne.name AS source_ne_name"
 
 
 def test_multi_target_synonym_mentions_keep_candidate_family() -> None:
@@ -403,9 +399,9 @@ def test_type_value_and_object_attribute_composition_survives_overlap_resolution
         (mention["canonical_id"], mention["surface"], mention["mention_type"])
         for mention in lexer["mentions"]
     ]
-    with pytest.raises(ClarificationNeeded) as exc_info:
-        pipeline.generate("查询物理端口名称", trace_id="trace-physical-port-name")
-    assert exc_info.value.stage == "step_3_1"
+    result = pipeline.generate("查询物理端口名称", trace_id="trace-physical-port-name")
+
+    assert result.cypher == "MATCH (p:Port)\nWHERE p.elem_type = 'physical'\nRETURN p.name AS port_name"
 
 
 def test_intent_classifier_uses_taxonomy_rules_and_embedding_not_hardcoded_pair() -> None:
@@ -465,7 +461,7 @@ def test_validator_uses_constraints_and_cardinality_assets() -> None:
     )
 
 
-def test_grouped_service_bandwidth_query_no_longer_extracts_runtime_literal_in_lexer() -> None:
+def test_grouped_service_bandwidth_query_keeps_runtime_literal_out_of_dictionary_values() -> None:
     pipeline = _pipeline()
 
     result = pipeline.generate(
