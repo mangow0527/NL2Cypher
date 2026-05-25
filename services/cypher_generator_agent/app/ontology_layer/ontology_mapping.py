@@ -315,10 +315,11 @@ def _ontology_mapping_ir(mention_rows: list[MappedMention]) -> OntologyMapping:
             )
         elif mapped.ontology_kind == "relation":
             relation_hint_index += 1
+            relation_hint_id = f"ORH{relation_hint_index}"
             ontology_relation_hints.append(
                 _without_none(
                     {
-                        "relation_hint_id": f"ORH{relation_hint_index}",
+                        "relation_hint_id": relation_hint_id,
                         "relation_id": mapped.ontology_id,
                         "from_class": mapped.domain_class,
                         "to_class": mapped.range_class,
@@ -329,6 +330,32 @@ def _ontology_mapping_ir(mention_rows: list[MappedMention]) -> OntologyMapping:
                     }
                 )
             )
+            target_class = mapped.range_class
+            if (
+                target_class
+                and mapped.object_candidate_id
+                and _relation_target_object_roles(mapped.selected_roles)
+                and (target_class, mapped.object_candidate_id) not in synthetic_object_keys
+            ):
+                object_index += 1
+                synthetic_object_keys.add((target_class, mapped.object_candidate_id))
+                ontology_objects.append(
+                    _without_none(
+                        {
+                            "object_id": f"OO{object_index}",
+                            "class_id": target_class,
+                            "object_candidate_id": mapped.object_candidate_id,
+                            "selected_roles": list(mapped.selected_roles),
+                            "relation_target_hint": {
+                                "relation_hint_id": relation_hint_id,
+                                "relation_id": mapped.ontology_id,
+                                "source_class": mapped.domain_class,
+                            },
+                            "evidence_refs": evidence_refs,
+                            "order": order,
+                        }
+                    )
+                )
         elif mapped.ontology_kind == "relation_role":
             relation_hint_index += 1
             relation_hint_id = f"ORH{relation_hint_index}"
@@ -459,6 +486,10 @@ def _selected_object_class(mapped: MappedMention) -> str | None:
     if isinstance(class_id, str) and class_id:
         return class_id
     return None
+
+
+def _relation_target_object_roles(selected_roles: tuple[str, ...]) -> bool:
+    return bool({"return_subject", "projection_subject"}.intersection(selected_roles))
 
 
 def _evidence_record(mapped: MappedMention, evidence_id: str) -> dict[str, Any]:

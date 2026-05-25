@@ -268,6 +268,118 @@ def test_clarification_service_normalizes_metric_target_clarification() -> None:
     assert selector.calls[0]["missing_information"] == payload["missing_information"]
 
 
+def test_clarification_service_enriches_semantic_failure_prompt_from_trace() -> None:
+    selector = _FakeClarificationSelector("您能说明一下如何判断当前缺失的条件信息吗？")
+    service = ClarificationQuestionService(llm_selector=selector)
+    exc = ClarificationNeeded(
+        stage="step_4",
+        message="semantic validation failed",
+        clarification={
+            "core_question": "查询所有服务使用的隧道对应的源端网元",
+            "source_step": "step_4_semantic_validation",
+            "reason_code": "SEMANTIC_VALIDATION_FAILED",
+            "reason": "relation_cardinality_policy 未通过语义校验。",
+            "failed_checks": [
+                {
+                    "check": "relation_cardinality_policy",
+                    "relation": "FIBER_DST",
+                    "accepted": False,
+                }
+            ],
+        },
+        partial_trace={
+            "lexer": {
+                "mentions": [
+                    {"canonical_id": "Service", "mention_type": "OBJECT", "surface": "服务"},
+                    {
+                        "canonical_id": "REL_SERVICE_USES_TUNNEL",
+                        "mention_type": "RELATION",
+                        "surface": "使用的隧道",
+                        "metadata": {
+                            "join_path": [{"edge": "SERVICE_USES_TUNNEL", "from": "Service", "to": "Tunnel"}]
+                        },
+                    },
+                    {
+                        "canonical_id": "REL_FIBER_DST",
+                        "mention_type": "RELATION",
+                        "surface": "对应",
+                        "metadata": {"join_path": [{"edge": "FIBER_DST", "from": "Fiber", "to": "Port"}]},
+                    },
+                    {
+                        "canonical_id": "REL_TUNNEL_SRC",
+                        "mention_type": "RELATION",
+                        "surface": "源端网元",
+                        "metadata": {"join_path": [{"edge": "TUNNEL_SRC", "from": "Tunnel", "to": "NetworkElement"}]},
+                    },
+                ]
+            },
+            "ontology_path_selection": {
+                "path_requests": [
+                    {
+                        "request_id": "PR1",
+                        "from_class": "Service",
+                        "to_class": "Tunnel",
+                        "relation_hint": "SERVICE_USES_TUNNEL",
+                    },
+                    {
+                        "request_id": "PR2",
+                        "from_class": "Fiber",
+                        "to_class": "Port",
+                        "relation_hint": "FIBER_DST",
+                    },
+                    {
+                        "request_id": "PR3",
+                        "from_class": "Tunnel",
+                        "to_class": "NetworkElement",
+                        "relation_hint": "TUNNEL_SRC",
+                    },
+                ],
+                "candidate_paths": [
+                    {
+                        "path_id": "P1",
+                        "request_id": "PR1",
+                        "from_class": "Service",
+                        "to_class": "Tunnel",
+                        "relation_chain": ["SERVICE_USES_TUNNEL"],
+                    },
+                    {
+                        "path_id": "P2",
+                        "request_id": "PR2",
+                        "from_class": "Fiber",
+                        "to_class": "Port",
+                        "relation_chain": ["FIBER_DST"],
+                    },
+                    {
+                        "path_id": "P3",
+                        "request_id": "PR3",
+                        "from_class": "Tunnel",
+                        "to_class": "NetworkElement",
+                        "relation_chain": ["TUNNEL_SRC"],
+                    },
+                ],
+                "selected_paths": [
+                    {"request_id": "PR1", "path_id": "P1", "relation_chain": ["SERVICE_USES_TUNNEL"]},
+                    {"request_id": "PR2", "path_id": "P2", "relation_chain": ["FIBER_DST"]},
+                    {"request_id": "PR3", "path_id": "P3", "relation_chain": ["TUNNEL_SRC"]},
+                ],
+            },
+        },
+    )
+
+    payload = service.build(exc, original_question="查询所有服务使用的隧道对应的源端网元")
+
+    assert "“对应”" in payload["business_context"]
+    assert "光纤目的端口" in payload["business_context"]
+    assert "服务 -> 使用的隧道 -> 源端网元" in payload["suggested_question"]
+    assert payload["options"] == [
+        "按 服务 -> 使用的隧道 -> 源端网元 查询",
+        "不是，请重新说明“对应”指哪种业务关系",
+    ]
+    assert payload["user_message"] == "你是想按“服务 -> 使用的隧道 -> 源端网元”这条业务路径查询吗？"
+    assert "“对应”" in selector.calls[0]["business_context"]
+    assert selector.calls[0]["suggested_question"] == payload["suggested_question"]
+
+
 @pytest.mark.asyncio
 async def test_api_uses_unified_clarification_wording_for_outgoing_report() -> None:
     class Pipeline:

@@ -4,8 +4,38 @@ import pytest
 
 from services.cypher_generator_agent.app.infrastructure import resource_paths
 from services.cypher_generator_agent.app.lexical_layer.lexer import OntologyLexer
+from services.cypher_generator_agent.app.lexical_layer.mention_vector_recall import MentionVectorCandidate
 from services.cypher_generator_agent.app.lexical_layer.types import normalize_mention_type
 from services.cypher_generator_agent.app.ontology_layer.assets import OntologyAssets
+
+
+class _NodeSuffixVectorRetriever:
+    provider = "fake_node_suffix_vector"
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def search(
+        self,
+        fragment: str,
+        *,
+        expected_mention_type: str | None,
+        top_k: int,
+    ) -> list[MentionVectorCandidate]:
+        self.calls.append(fragment)
+        if fragment != "节点":
+            return []
+        return [
+            MentionVectorCandidate(
+                id="mention.REL_TUNNEL_SRC.节点",
+                text="节点 tunnel source endpoint",
+                canonical_id="REL_TUNNEL_SRC",
+                mention_type="RELATION",
+                surface="源网元",
+                score=0.94,
+                metadata={"dictionary": "relation_predicates"},
+            )
+        ]
 
 
 def test_lexer_groups_projection_attributes_under_same_owner_and_keeps_all_scope_as_filter_signal() -> None:
@@ -142,6 +172,22 @@ def test_lexer_extracts_runtime_identifier_literal_for_attribute_predicate() -> 
         and {"Service.name", "OP_EQ", "Service_002", "LITERAL_IDENTIFIER"}.issubset(set(signal.supports))
         for signal in lexer_trace.context_signals
     )
+
+
+def test_lexer_treats_bare_node_suffix_as_generic_return_modifier_not_vector_relation() -> None:
+    assets = OntologyAssets.from_default_resources()
+    retriever = _NodeSuffixVectorRetriever()
+    lexer_trace = OntologyLexer(assets, vector_retriever=retriever).run("查询所有业务使用的隧道节点。")
+
+    assert "节点" not in retriever.calls
+    assert not any(mention.canonical_id == "REL_TUNNEL_SRC" for mention in lexer_trace.mentions)
+    assert [(mention.surface, mention.canonical_id) for mention in lexer_trace.mentions] == [
+        ("查询", "OP_QUERY"),
+        ("所有", "QUANT_ALL"),
+        ("业务", "Service"),
+        ("使用的隧道", "REL_SERVICE_USES_TUNNEL"),
+    ]
+    assert any(signal.text == "节点" and signal.supports == ("node_return_hint",) for signal in lexer_trace.shape_signals)
 
 
 def test_runtime_lexical_resources_keep_dictionary_categories_split() -> None:

@@ -241,6 +241,102 @@ class _RelationPathStructuralVectorRetriever:
         return []
 
 
+class _NodeSuffixVectorRetriever:
+    provider = "fake_node_suffix_vector"
+
+    def search(
+        self,
+        fragment: str,
+        *,
+        expected_mention_type: str | None,
+        top_k: int,
+    ) -> list[MentionVectorCandidate]:
+        if fragment != "节点":
+            return []
+        return [
+            MentionVectorCandidate(
+                id="mention.REL_TUNNEL_SRC.节点",
+                text="节点 tunnel source endpoint",
+                canonical_id="REL_TUNNEL_SRC",
+                mention_type="RELATION",
+                surface="源网元",
+                score=0.94,
+                metadata={"dictionary": "relation_predicates"},
+            )
+        ]
+
+
+class _TunnelNodeObjectRoleSelectionSelector:
+    def select(self, prompt_name: str, variables: dict[str, object]):
+        question = str(variables.get("question") or "")
+        candidate_lines = str(variables.get("object_candidate_list") or "")
+        rows: list[str] = []
+        for line in candidate_lines.splitlines():
+            match = re.match(r"- (SM\d+)：\"(.+?)\"", line)
+            if match is None:
+                continue
+            candidate_id, surface = match.groups()
+            if surface in {"服务", "业务"}:
+                roles = "path_subject"
+            elif surface == "使用的隧道":
+                if "网络设备" in question:
+                    roles = "path_subject"
+                elif "名称" in question or "ID" in question:
+                    roles = "path_subject、projection_subject"
+                else:
+                    roles = "path_subject、return_subject"
+            elif surface == "网络设备":
+                roles = "path_subject、return_subject"
+            elif surface in {"目的网元", "源网元"}:
+                roles = "path_subject、return_subject"
+            else:
+                roles = "path_subject"
+            rows.append(f"选择 {candidate_id}：{roles}。理由：fixture")
+
+        class Selection:
+            raw_response = "\n".join(rows)
+
+        assert prompt_name == "object_role_selection"
+        return Selection()
+
+
+class _ConservativeTunnelNodeObjectRoleSelectionSelector:
+    def select(self, prompt_name: str, variables: dict[str, object]):
+        candidate_lines = str(variables.get("object_candidate_list") or "")
+        rows: list[str] = []
+        for line in candidate_lines.splitlines():
+            match = re.match(r"- (SM\d+)：\"(.+?)\"", line)
+            if match is None:
+                continue
+            candidate_id, _surface = match.groups()
+            rows.append(f"选择 {candidate_id}：path_subject。理由：fixture")
+
+        class Selection:
+            raw_response = "\n".join(rows)
+
+        assert prompt_name == "object_role_selection"
+        return Selection()
+
+
+class _ConflictingTunnelNodeObjectRoleSelectionSelector:
+    def select(self, prompt_name: str, variables: dict[str, object]):
+        candidate_lines = str(variables.get("object_candidate_list") or "")
+        rows: list[str] = []
+        for line in candidate_lines.splitlines():
+            match = re.match(r"- (SM\d+)：\"(.+?)\"", line)
+            if match is None:
+                continue
+            candidate_id, surface = match.groups()
+            roles = "path_subject、return_subject" if surface in {"服务", "业务"} else "path_subject、projection_subject"
+            rows.append(f"选择 {candidate_id}：{roles}。理由：fixture")
+
+        class Selection:
+            raw_response = "\n".join(rows)
+
+        assert prompt_name == "object_role_selection"
+        return Selection()
+
+
 class _ProjectionAttributeIntentClassifier:
     def run(self, *, core_question: str, shape_signals: tuple[ContextSignal, ...]) -> IntentOutput:
         return IntentOutput(
@@ -328,6 +424,10 @@ class _RecordingExplicitLogicalPlanningService:
 
 
 def _binding_candidate_id(question: str, candidate_lines: str, signal_lines: str) -> str:
+    if "隧道" in question and "ID" in question:
+        candidate_id = _candidate_for_attribute(candidate_lines, "Tunnel.id")
+        if candidate_id is not None:
+            return candidate_id
     for keyword, attribute in (
         ("源网元", "NetworkElement.ip_address"),
         ("IP", "NetworkElement.ip_address"),
@@ -521,6 +621,38 @@ def _service_tunnel_both_sides_pipeline(
         object_role_selection_service=OntologyObjectRoleSelectionService(
             llm_selector=_FixtureObjectRoleSelectionSelector()
         ),
+        logical_planning_service=OntologyLogicalPlanningService(
+            assets=assets,
+            coreference_service=OntologyCoreferenceService(llm_selector=_SameInstanceCoreferenceSelector()),
+            binding_service=OntologyBindingService(llm_selector=_FixtureBindingSelector()),
+        ),
+    )
+
+
+def _tunnel_node_pipeline() -> OntologyGenerationPipeline:
+    assets = OntologyAssets.from_default_resources()
+    return OntologyGenerationPipeline(
+        assets=assets,
+        lexer=OntologyLexer(assets, vector_retriever=_NodeSuffixVectorRetriever()),
+        intent_layer=IntentLayer(),
+        object_role_selection_service=OntologyObjectRoleSelectionService(
+            llm_selector=_TunnelNodeObjectRoleSelectionSelector()
+        ),
+        logical_planning_service=OntologyLogicalPlanningService(
+            assets=assets,
+            coreference_service=OntologyCoreferenceService(llm_selector=_SameInstanceCoreferenceSelector()),
+            binding_service=OntologyBindingService(llm_selector=_FixtureBindingSelector()),
+        ),
+    )
+
+
+def _tunnel_node_pipeline_with_selector(selector: object) -> OntologyGenerationPipeline:
+    assets = OntologyAssets.from_default_resources()
+    return OntologyGenerationPipeline(
+        assets=assets,
+        lexer=OntologyLexer(assets, vector_retriever=_NodeSuffixVectorRetriever()),
+        intent_layer=IntentLayer(),
+        object_role_selection_service=OntologyObjectRoleSelectionService(llm_selector=selector),
         logical_planning_service=OntologyLogicalPlanningService(
             assets=assets,
             coreference_service=OntologyCoreferenceService(llm_selector=_SameInstanceCoreferenceSelector()),
@@ -728,6 +860,114 @@ def test_ontology_generation_pipeline_keeps_detail_node_with_explicit_projection
         ("quality_of_service", "service_quality_of_service"),
     ]
     assert [(item.node, item.alias) for item in result.logical_plan.node_returns] == [("s1", "s")]
+
+
+def test_pipeline_returns_tunnel_node_for_service_used_tunnel_node_info() -> None:
+    pipeline = _tunnel_node_pipeline()
+
+    result = pipeline.generate("查询所有业务使用的隧道节点信息。", trace_id="trace-service-used-tunnel-node-info")
+
+    assert result.status == "generated"
+    assert result.cypher == "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel)\nRETURN t"
+    assert [(item.type, item.alias) for item in result.logical_plan.nodes] == [("Service", "s"), ("Tunnel", "t")]
+    assert [edge.relation for edge in result.logical_plan.edges] == ["SERVICE_USES_TUNNEL"]
+    assert [(item.node, item.alias) for item in result.logical_plan.node_returns] == [("t1", "t")]
+
+
+def test_pipeline_returns_tunnel_node_for_service_used_tunnel_node_without_endpoint_noise() -> None:
+    pipeline = _tunnel_node_pipeline()
+
+    result = pipeline.generate("查询所有业务使用的隧道节点。", trace_id="trace-service-used-tunnel-node")
+
+    assert result.status == "generated"
+    assert result.cypher == "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel)\nRETURN t"
+    assert not any(mention.canonical_id == "REL_TUNNEL_SRC" for mention in result.trace.lexer.mentions)
+    assert [edge.relation for edge in result.logical_plan.edges] == ["SERVICE_USES_TUNNEL"]
+    assert [(item.node, item.alias) for item in result.logical_plan.node_returns] == [("t1", "t")]
+
+
+def test_pipeline_keeps_tunnel_detail_node_with_tunnel_projection_fields() -> None:
+    pipeline = _tunnel_node_pipeline()
+
+    result = pipeline.generate(
+        "查询所有服务使用的隧道的名称、ID及详细信息。",
+        trace_id="trace-service-used-tunnel-fields-and-detail",
+    )
+
+    assert result.status == "generated"
+    assert result.cypher == (
+        "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel)\n"
+        "RETURN t.name AS tunnel_name, t.id AS tunnel_id, t"
+    )
+    assert [(item.attribute, item.alias) for item in result.logical_plan.projections] == [
+        ("name", "tunnel_name"),
+        ("id", "tunnel_id"),
+    ]
+    assert [(item.node, item.alias) for item in result.logical_plan.node_returns] == [("t1", "t")]
+
+
+def test_pipeline_returns_path_through_network_devices_without_source_endpoint_noise() -> None:
+    pipeline = _tunnel_node_pipeline()
+
+    result = pipeline.generate(
+        "查询所有服务使用的隧道所经过的网络设备节点。",
+        trace_id="trace-service-used-tunnel-path-through-devices",
+    )
+
+    assert result.status == "generated"
+    assert result.cypher == (
+        "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel)-[:PATH_THROUGH]->(ne:NetworkElement)\n"
+        "RETURN ne"
+    )
+    assert not any(mention.canonical_id == "REL_TUNNEL_SRC" for mention in result.trace.lexer.mentions)
+    assert [edge.relation for edge in result.logical_plan.edges] == ["SERVICE_USES_TUNNEL", "PATH_THROUGH"]
+    assert [(item.node, item.alias) for item in result.logical_plan.node_returns] == [("n1", "ne")]
+
+
+def test_pipeline_defaults_node_detail_return_to_terminal_tunnel_when_roles_are_conservative() -> None:
+    pipeline = _tunnel_node_pipeline_with_selector(_ConservativeTunnelNodeObjectRoleSelectionSelector())
+
+    result = pipeline.generate("查询所有业务使用的隧道节点信息。", trace_id="trace-conservative-tunnel-node-info")
+
+    assert result.status == "generated"
+    assert result.cypher == "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel)\nRETURN t"
+    assert [(item.node, item.alias) for item in result.logical_plan.node_returns] == [("t1", "t")]
+
+
+def test_pipeline_defaults_bare_node_return_to_terminal_tunnel_when_roles_are_conservative() -> None:
+    pipeline = _tunnel_node_pipeline_with_selector(_ConservativeTunnelNodeObjectRoleSelectionSelector())
+
+    result = pipeline.generate("查询所有业务使用的隧道节点。", trace_id="trace-conservative-tunnel-node")
+
+    assert result.status == "generated"
+    assert result.cypher == "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel)\nRETURN t"
+    assert [(item.node, item.alias) for item in result.logical_plan.node_returns] == [("t1", "t")]
+
+
+def test_pipeline_defaults_node_return_to_terminal_network_device_when_roles_are_conservative() -> None:
+    pipeline = _tunnel_node_pipeline_with_selector(_ConservativeTunnelNodeObjectRoleSelectionSelector())
+
+    result = pipeline.generate(
+        "查询所有服务使用的隧道所经过的网络设备节点。",
+        trace_id="trace-conservative-path-through-devices",
+    )
+
+    assert result.status == "generated"
+    assert result.cypher == (
+        "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel)-[:PATH_THROUGH]->(ne:NetworkElement)\n"
+        "RETURN ne"
+    )
+    assert [(item.node, item.alias) for item in result.logical_plan.node_returns] == [("n1", "ne")]
+
+
+def test_pipeline_prefers_projection_subject_target_over_anchor_return_subject_for_node_detail() -> None:
+    pipeline = _tunnel_node_pipeline_with_selector(_ConflictingTunnelNodeObjectRoleSelectionSelector())
+
+    result = pipeline.generate("查询所有服务使用的隧道节点信息。", trace_id="trace-conflicting-tunnel-node-info")
+
+    assert result.status == "generated"
+    assert result.cypher == "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel)\nRETURN t"
+    assert [(item.node, item.alias) for item in result.logical_plan.node_returns] == [("t1", "t")]
 
 
 def test_ontology_generation_pipeline_uses_physical_raw_value_for_service_type_filter() -> None:

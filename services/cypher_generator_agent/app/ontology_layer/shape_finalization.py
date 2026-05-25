@@ -79,7 +79,7 @@ class OntologyShapeFinalizer:
         projections = _normalize_projection_aliases(self._projections(binding_dict, node_by_id), nodes, edges)
         metrics = self._metrics(intent_output, nodes, binding_dict, shape, mapping_dict, projections)
         projections = _projections_after_metric(intent_output, shape, projections, metrics)
-        node_returns = self._node_returns(intent_output, shape, nodes, projections, metrics, mapping_dict)
+        node_returns = self._node_returns(intent_output, shape, nodes, edges, projections, metrics, mapping_dict)
         nodes = _prune_unreferenced_nodes(nodes, edges, projections, metrics, node_returns, mapping_dict)
         plan = OntologyLogicalPlan(
             root_operation="SELECT",
@@ -297,6 +297,7 @@ class OntologyShapeFinalizer:
         intent_output: Any,
         shape: dict[str, InitialShapeField],
         nodes: tuple[PlanNode, ...],
+        edges: tuple[PlanEdge, ...],
         projections: tuple[PlanProjection, ...],
         metrics: tuple[PlanMetric, ...],
         mapping_dict: dict[str, Any],
@@ -306,6 +307,7 @@ class OntologyShapeFinalizer:
         return_subject_classes = _return_subject_classes(mapping_dict)
         projection_subject_classes = _projection_subject_classes(mapping_dict)
         projection_expected = bool(_shape_value(shape, "projection_expected"))
+        node_return_hint = _has_node_return_hint(intent_output)
         if metrics:
             return ()
 
@@ -316,10 +318,21 @@ class OntologyShapeFinalizer:
                 if not classes or node.type in classes
             )
 
+        def terminal_node_returns() -> tuple[PlanNodeReturn, ...]:
+            outgoing_node_ids = {edge.from_node for edge in edges}
+            terminal_nodes = tuple(node for node in nodes if node.id not in outgoing_node_ids)
+            if terminal_nodes:
+                return tuple(PlanNodeReturn(node=node.id, alias=node.alias) for node in terminal_nodes)
+            return selected_node_returns()
+
+        if node_return_hint and projection_subject_classes:
+            return selected_node_returns(projection_subject_classes)
         if return_subject_classes:
             return selected_node_returns(return_subject_classes)
         if projection_expected and projection_subject_classes and not projections:
             return selected_node_returns(projection_subject_classes)
+        if node_return_hint:
+            return terminal_node_returns()
         if secondary == "entity_detail_query":
             return selected_node_returns()
         if secondary == "entity_list_query" and not projections:
@@ -735,6 +748,21 @@ def _classes_for_selected_role(mapping_dict: dict[str, Any], role: str) -> tuple
         if isinstance(class_id, str) and isinstance(roles, (list, tuple)) and role in roles:
             classes.append(class_id)
     return tuple(dict.fromkeys(classes))
+
+
+def _has_node_return_hint(intent_output: Any) -> bool:
+    intent = getattr(intent_output, "intent", None)
+    if getattr(intent, "secondary", None) == "entity_detail_query":
+        return True
+    texts: list[str] = []
+    planning_prompt = getattr(intent_output, "planning_prompt_text", "")
+    if isinstance(planning_prompt, str):
+        texts.append(planning_prompt)
+    rule_signals = getattr(intent_output, "rule_signals_used", ())
+    if isinstance(rule_signals, (list, tuple)):
+        texts.extend(str(item) for item in rule_signals)
+    detail_terms = ("详细信息", "详情", "完整信息", "全部信息", "节点", "节点信息", "对象信息")
+    return any(term in text for text in texts for term in detail_terms)
 
 
 def _path_node_sources(path_dict: dict[str, Any], relations: dict[str, dict[str, Any]]) -> tuple[dict[str, Any], ...]:

@@ -150,6 +150,83 @@ def test_candidate_refs_are_preserved_as_candidate_family_and_validated() -> Non
     assert attribute["attribute_candidates"] == ["Protocol.standard", "Tunnel.ietf_standard"]
 
 
+def test_relation_selected_as_return_subject_backfills_target_object() -> None:
+    service = OntologyMappingService(OntologyAssets.from_default_resources())
+    trace = LexerTrace(
+        question="查询所有业务使用的隧道节点信息",
+        matcher="test",
+        ac_matches=(),
+        selected_hits=(),
+        discarded_hits=(),
+        resolution_summary={},
+        unmatched_fragments=(),
+        vector_recalls=(),
+        mentions=(
+            _mention("Service", "OBJECT", "业务", (4, 6)),
+            _mention(
+                "REL_SERVICE_USES_TUNNEL",
+                "RELATION",
+                "使用的隧道",
+                (6, 11),
+                {"domain": "Service", "range": "Tunnel"},
+            ),
+        ),
+        unmatched_spans=(),
+        context_signals=(),
+        shape_signals=(),
+    )
+
+    mapping = service.map(
+        lexer_trace=trace,
+        object_role_selection=ObjectRoleSelection(
+            selected_objects=(
+                SelectedObjectRole(
+                    candidate_id="SM1",
+                    mention_id="m_service_1",
+                    roles=("path_subject",),
+                    evidence_ids=("E1",),
+                    selected_by="llm",
+                    reason="业务是路径起点",
+                    class_id="Service",
+                ),
+                SelectedObjectRole(
+                    candidate_id="SM2",
+                    mention_id="m_rel_service_uses_tunnel_1",
+                    roles=("path_subject", "return_subject"),
+                    evidence_ids=("E2",),
+                    selected_by="llm",
+                    reason="使用的隧道是返回对象",
+                    class_id="Tunnel",
+                ),
+            )
+        ),
+    )
+    payload = mapping.to_dict()
+
+    assert [(item["class_id"], item.get("selected_roles")) for item in payload["ontology_objects"]] == [
+        ("Service", ["path_subject"]),
+        ("Tunnel", ["path_subject", "return_subject"]),
+    ]
+    tunnel = payload["ontology_objects"][1]
+    assert tunnel["relation_target_hint"] == {
+        "relation_hint_id": "ORH1",
+        "relation_id": "SERVICE_USES_TUNNEL",
+        "source_class": "Service",
+    }
+    assert payload["ontology_relation_hints"] == [
+        {
+            "relation_hint_id": "ORH1",
+            "relation_id": "SERVICE_USES_TUNNEL",
+            "from_class": "Service",
+            "to_class": "Tunnel",
+            "object_candidate_id": "SM2",
+            "selected_roles": ["path_subject", "return_subject"],
+            "evidence_refs": ["E2"],
+            "order": 2,
+        }
+    ]
+
+
 def test_value_mapping_preserves_enum_raw_value_separately_from_value_id() -> None:
     service = OntologyMappingService(OntologyAssets.from_default_resources())
     trace = LexerTrace(

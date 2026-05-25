@@ -497,6 +497,19 @@ class OntologyLexer:
                     )
                 )
                 next_id += 1
+            if mention.canonical_id == "OP_DETAIL":
+                shape.append(
+                    ContextSignal(
+                        signal_id=f"S{next_id}",
+                        signal_type="SHAPE_SIGNAL",
+                        text=mention.surface,
+                        span_start=mention.span_start,
+                        span_end=mention.span_end,
+                        supports=("entity_detail_hint", "node_return_hint"),
+                        strength=1.0,
+                    )
+                )
+                next_id += 1
             if mention.mention_type == "VALUE":
                 target = _nearest_right_object(mention, mentions)
                 if target is not None:
@@ -786,6 +799,22 @@ def _append_question_shape_signals(question: str, shape: list[ContextSignal], ne
         )
         seen_supports.add(supports)
         next_id += 1
+    if ("node_return_hint",) not in seen_supports and not any("node_return_hint" in supports for supports in seen_supports):
+        node_match = _terminal_node_return_match(question)
+        if node_match is not None:
+            text, start, end = node_match
+            shape.append(
+                ContextSignal(
+                    signal_id=f"S{next_id}",
+                    signal_type="SHAPE_SIGNAL",
+                    text=text,
+                    span_start=start,
+                    span_end=end,
+                    supports=("node_return_hint",),
+                    strength=1.0,
+                )
+            )
+            next_id += 1
     if ("limit_hint",) not in seen_supports:
         limit_match = re.search(r"前\s*\d+\s*(?:条|个)?|top\s*\d+", question, re.IGNORECASE)
         if limit_match is not None:
@@ -802,6 +831,13 @@ def _append_question_shape_signals(question: str, shape: list[ContextSignal], ne
             )
             next_id += 1
     return next_id
+
+
+def _terminal_node_return_match(question: str) -> tuple[str, int, int] | None:
+    match = re.search(r"节点(?=[。？！?!，,\s]*$)", question)
+    if match is None:
+        return None
+    return match.group(0), match.start(), match.end()
 
 
 def _append_predicate_group_signals(
@@ -1280,13 +1316,13 @@ def _is_generic_node_return_atom(text: str) -> bool:
     compact = re.sub(r"\s+", "", text)
     if not compact:
         return False
-    generic_terms = ("信息", "详情", "详细信息", "完整信息", "节点信息", "对象信息", "服务信息", "业务信息")
+    generic_terms = ("信息", "详情", "详细信息", "完整信息", "节点", "节点信息", "对象信息", "服务信息", "业务信息")
     return any(term in compact for term in generic_terms) and not _is_explicit_attribute_return_atom(compact)
 
 
 def _is_generic_node_return_fragment(fragment: str) -> bool:
     compact = re.sub(r"\s+", "", fragment)
-    return compact in {"信息", "详情", "详细信息", "完整信息", "节点信息", "对象信息", "服务信息", "业务信息"}
+    return compact in {"信息", "详情", "详细信息", "完整信息", "节点", "节点信息", "对象信息", "服务信息", "业务信息"}
 
 
 def _is_metric_functional_vector_fragment(

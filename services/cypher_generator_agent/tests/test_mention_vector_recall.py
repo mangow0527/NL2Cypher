@@ -387,7 +387,7 @@ def test_find_object_atom_does_not_force_compound_fragments_to_object_recall() -
         for call in retriever.calls
         if call["fragment"] in {"节点", "属性"}
     }
-    assert recall_types == {"节点": None}
+    assert recall_types == {}
     assert not any(call["fragment"] == "属性" for call in retriever.calls)
     assert not any(
         mention["canonical_id"] == "Protocol" and mention["mention_type"] == "OBJECT"
