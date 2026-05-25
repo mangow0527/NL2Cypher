@@ -188,6 +188,7 @@ class OntologyLexer:
         )
         vector_recalls, vector_matches = self._vector_recall(
             vector_fragments,
+            question=question,
             question_framing=question_framing,
             existing_matches=raw_matches,
         )
@@ -339,6 +340,7 @@ class OntologyLexer:
         self,
         unmatched_fragments: tuple[dict[str, Any], ...],
         *,
+        question: str,
         question_framing: QuestionFramingTrace | None = None,
         existing_matches: tuple[_RawMatch, ...] = (),
     ) -> tuple[list[dict[str, Any]], list[_RawMatch]]:
@@ -352,6 +354,23 @@ class OntologyLexer:
             if len(fragment) < 2:
                 continue
             if fragment in {"地址", "名称", "标准", "类型", "状态", "元素", "IP", "RFC"}:
+                continue
+            if _is_metric_functional_vector_fragment(
+                fragment,
+                fragment_start,
+                fragment_end,
+                question_framing=question_framing,
+                existing_matches=existing_matches,
+            ):
+                continue
+            if _is_attribute_possession_functional_fragment(
+                fragment,
+                fragment_start,
+                fragment_end,
+                question_framing=question_framing,
+                existing_matches=existing_matches,
+                question=question,
+            ):
                 continue
             if _is_generic_node_return_fragment(fragment):
                 continue
@@ -1201,7 +1220,14 @@ def _expected_mention_type_from_question_framing(
             return None
         return "ATTRIBUTE"
     if QuestionFramingRole.FIND_OBJECT in roles and QuestionFramingRole.FILTER_CONDITION not in roles:
-        return "OBJECT"
+        atoms = _question_framing_atoms_for_span(question_framing, start, end)
+        if any(
+            atom.span == (start, end)
+            and QuestionFramingRole.FIND_OBJECT in atom.roles
+            and QuestionFramingRole.FILTER_CONDITION not in atom.roles
+            for atom in atoms
+        ):
+            return "OBJECT"
     if QuestionFramingRole.AGG_SORT_TIME in roles:
         return "OPERATION"
     return None
@@ -1261,6 +1287,89 @@ def _is_generic_node_return_atom(text: str) -> bool:
 def _is_generic_node_return_fragment(fragment: str) -> bool:
     compact = re.sub(r"\s+", "", fragment)
     return compact in {"信息", "详情", "详细信息", "完整信息", "节点信息", "对象信息", "服务信息", "业务信息"}
+
+
+def _is_metric_functional_vector_fragment(
+    fragment: str,
+    start: int,
+    end: int,
+    *,
+    question_framing: QuestionFramingTrace | None,
+    existing_matches: tuple[_RawMatch, ...],
+) -> bool:
+    compact = re.sub(r"\s+", "", fragment)
+    if not compact:
+        return False
+    functional_terms = {
+        "属性",
+        "字段",
+        "记录",
+        "数量",
+        "总数量",
+        "总数",
+        "属性记录",
+        "属性非空",
+        "属性非空记录",
+        "属性非空的记录",
+        "记录数量",
+    }
+    if compact not in functional_terms and not re.fullmatch(r"(?:属性|字段)?非空(?:的)?记录", compact):
+        return False
+    if compact in {"数量", "总数量", "总数", "记录数量"}:
+        return True
+    if question_framing is not None:
+        roles = set(question_framing.roles_for_span(start, end))
+        if roles.intersection(
+            {
+                QuestionFramingRole.RETURN_CONTENT,
+                QuestionFramingRole.AGG_SORT_TIME,
+                QuestionFramingRole.FILTER_CONDITION,
+                QuestionFramingRole.RELATION_PATH,
+            }
+        ):
+            return True
+    return any(
+        normalize_mention_type(match.mention_type) == "ATTRIBUTE"
+        and (0 <= start - match.span_end <= 4 or 0 <= match.span_start - end <= 4)
+        for match in existing_matches
+    )
+
+
+def _is_attribute_possession_functional_fragment(
+    fragment: str,
+    start: int,
+    end: int,
+    *,
+    question_framing: QuestionFramingTrace | None,
+    existing_matches: tuple[_RawMatch, ...],
+    question: str,
+) -> bool:
+    compact = re.sub(r"\s+", "", fragment)
+    if compact not in {"拥有", "中拥有", "具有", "中具有", "带有", "中带有", "具备", "中具备"}:
+        return False
+    next_attributes = [
+        match
+        for match in existing_matches
+        if normalize_mention_type(match.mention_type) == "ATTRIBUTE" and 0 <= match.span_start - end <= 2
+    ]
+    if not next_attributes:
+        return False
+    local_window = question[start : min(len(question), max(match.span_end for match in next_attributes) + 4)]
+    if "属性" not in local_window and "字段" not in local_window:
+        return False
+    if question_framing is None:
+        return True
+    roles = set(question_framing.roles_for_span(start, end))
+    return bool(
+        roles.intersection(
+            {
+                QuestionFramingRole.FILTER_CONDITION,
+                QuestionFramingRole.RETURN_CONTENT,
+                QuestionFramingRole.AGG_SORT_TIME,
+                QuestionFramingRole.RELATION_PATH,
+            }
+        )
+    )
 
 
 def _is_relation_path_structural_fragment(

@@ -212,6 +212,123 @@ class FakeRelationPathStructuralVectorRetriever:
         return []
 
 
+class FakeFindObjectNoiseVectorRetriever:
+    provider = "fake_find_object_noise_vector"
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def search(
+        self,
+        fragment: str,
+        *,
+        expected_mention_type: str | None,
+        top_k: int,
+    ) -> list[MentionVectorCandidate]:
+        self.calls.append(
+            {
+                "fragment": fragment,
+                "expected_mention_type": expected_mention_type,
+                "top_k": top_k,
+            }
+        )
+        if fragment not in {"节点", "属性"} or expected_mention_type != "OBJECT":
+            return []
+        return [
+            MentionVectorCandidate(
+                id=f"mention.Protocol.Protocol.{fragment}",
+                text=f"{fragment} protocol object",
+                canonical_id="Protocol",
+                mention_type="OBJECT",
+                surface=fragment,
+                score=0.91,
+                metadata={"dictionary": "objects"},
+            )
+        ]
+
+
+class FakeMetricFunctionalNoiseVectorRetriever:
+    provider = "fake_metric_functional_noise_vector"
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def search(
+        self,
+        fragment: str,
+        *,
+        expected_mention_type: str | None,
+        top_k: int,
+    ) -> list[MentionVectorCandidate]:
+        self.calls.append(
+            {
+                "fragment": fragment,
+                "expected_mention_type": expected_mention_type,
+                "top_k": top_k,
+            }
+        )
+        if fragment == "属性":
+            return [
+                MentionVectorCandidate(
+                    id="mention.NetworkElement.location.属性",
+                    text="属性 location NetworkElement.location",
+                    canonical_id="NetworkElement.location",
+                    mention_type="ATTRIBUTE",
+                    surface="位置",
+                    score=0.93,
+                    metadata={"dictionary": "attributes"},
+                )
+            ]
+        if fragment == "属性非空的记录":
+            return [
+                MentionVectorCandidate(
+                    id="mention.Link.admin_status.属性非空的记录",
+                    text="属性非空的记录 Link.admin_status",
+                    canonical_id="Link.admin_status",
+                    mention_type="ATTRIBUTE",
+                    surface="管理状态",
+                    score=0.93,
+                    metadata={"dictionary": "attributes"},
+                )
+            ]
+        return []
+
+
+class FakeAttributePossessionRelationNoiseVectorRetriever:
+    provider = "fake_attribute_possession_relation_noise_vector"
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def search(
+        self,
+        fragment: str,
+        *,
+        expected_mention_type: str | None,
+        top_k: int,
+    ) -> list[MentionVectorCandidate]:
+        self.calls.append(
+            {
+                "fragment": fragment,
+                "expected_mention_type": expected_mention_type,
+                "top_k": top_k,
+            }
+        )
+        if fragment != "中拥有":
+            return []
+        return [
+            MentionVectorCandidate(
+                id="mention.REL_HAS_PORT.拥有端口",
+                text="拥有端口 HAS_PORT",
+                canonical_id="REL_HAS_PORT",
+                mention_type="RELATION",
+                surface="拥有端口",
+                score=0.93,
+                metadata={"dictionary": "relation_predicates"},
+            )
+        ]
+
+
 def test_lexer_uses_mention_vector_retriever_for_unmatched_fragments() -> None:
     assets = OntologyAssets.from_default_resources()
     retriever = FakeMentionVectorRetriever()
@@ -234,6 +351,173 @@ def test_lexer_uses_mention_vector_retriever_for_unmatched_fragments() -> None:
     ) in [
         (mention["canonical_id"], mention["surface"], mention["mention_type"])
         for mention in trace["mentions"]
+    ]
+
+
+def test_find_object_atom_does_not_force_compound_fragments_to_object_recall() -> None:
+    assets = OntologyAssets.from_default_resources()
+    retriever = FakeFindObjectNoiseVectorRetriever()
+    lexer = OntologyLexer(assets, vector_retriever=retriever)
+    question = "计算服务节点延迟属性的总数"
+    framing = QuestionFramingTrace(
+        question=question,
+        raw_response="fixture",
+        atoms=(
+            QuestionAtom(
+                atom_id="QA1",
+                text="服务节点延迟属性",
+                roles=(QuestionFramingRole.FIND_OBJECT,),
+                span_start=2,
+                span_end=10,
+            ),
+            QuestionAtom(
+                atom_id="QA2",
+                text="总数",
+                roles=(QuestionFramingRole.AGG_SORT_TIME, QuestionFramingRole.RETURN_CONTENT),
+                span_start=11,
+                span_end=13,
+            ),
+        ),
+    )
+
+    trace = lexer.run(question, question_framing=framing).to_dict()
+
+    recall_types = {
+        call["fragment"]: call["expected_mention_type"]
+        for call in retriever.calls
+        if call["fragment"] in {"节点", "属性"}
+    }
+    assert recall_types == {"节点": None}
+    assert not any(call["fragment"] == "属性" for call in retriever.calls)
+    assert not any(
+        mention["canonical_id"] == "Protocol" and mention["mention_type"] == "OBJECT"
+        for mention in trace["mentions"]
+    )
+
+
+def test_metric_attribute_function_words_do_not_vector_recall_as_business_attributes() -> None:
+    assets = OntologyAssets.from_default_resources()
+    retriever = FakeMetricFunctionalNoiseVectorRetriever()
+    lexer = OntologyLexer(assets, vector_retriever=retriever)
+    question = "统计所有服务中服务质量属性的数量。"
+    framing = QuestionFramingTrace(
+        question=question,
+        raw_response="fixture",
+        atoms=(
+            QuestionAtom(
+                atom_id="QA1",
+                text="所有服务",
+                roles=(QuestionFramingRole.FIND_OBJECT,),
+                span_start=2,
+                span_end=6,
+            ),
+            QuestionAtom(
+                atom_id="QA2",
+                text="服务质量属性",
+                roles=(QuestionFramingRole.RELATION_PATH,),
+                span_start=7,
+                span_end=13,
+            ),
+            QuestionAtom(
+                atom_id="QA3",
+                text="数量",
+                roles=(QuestionFramingRole.RETURN_CONTENT, QuestionFramingRole.AGG_SORT_TIME),
+                span_start=14,
+                span_end=16,
+            ),
+        ),
+    )
+
+    trace = lexer.run(question, question_framing=framing).to_dict()
+
+    assert not any(call["fragment"] == "属性" for call in retriever.calls)
+    assert not any(mention["canonical_id"] == "NetworkElement.location" for mention in trace["mentions"])
+    assert [mention["canonical_id"] for mention in trace["mentions"] if mention["mention_type"] == "ATTRIBUTE"] == [
+        "Service.quality_of_service"
+    ]
+
+
+def test_non_null_record_function_phrase_does_not_vector_recall_as_attribute_noise() -> None:
+    assets = OntologyAssets.from_default_resources()
+    retriever = FakeMetricFunctionalNoiseVectorRetriever()
+    lexer = OntologyLexer(assets, vector_retriever=retriever)
+    question = "统计所有服务中延迟属性非空的记录数量。"
+    framing = QuestionFramingTrace(
+        question=question,
+        raw_response="fixture",
+        atoms=(
+            QuestionAtom(
+                atom_id="QA1",
+                text="所有服务",
+                roles=(QuestionFramingRole.FIND_OBJECT,),
+                span_start=2,
+                span_end=6,
+            ),
+            QuestionAtom(
+                atom_id="QA2",
+                text="延迟属性非空",
+                roles=(QuestionFramingRole.FILTER_CONDITION, QuestionFramingRole.AGG_SORT_TIME),
+                span_start=7,
+                span_end=13,
+            ),
+            QuestionAtom(
+                atom_id="QA3",
+                text="记录数量",
+                roles=(QuestionFramingRole.RETURN_CONTENT, QuestionFramingRole.AGG_SORT_TIME),
+                span_start=14,
+                span_end=18,
+            ),
+        ),
+    )
+
+    trace = lexer.run(question, question_framing=framing).to_dict()
+
+    assert not any(call["fragment"] == "属性非空的记录" for call in retriever.calls)
+    assert not any(mention["canonical_id"] == "Link.admin_status" for mention in trace["mentions"])
+    assert [mention["canonical_id"] for mention in trace["mentions"] if mention["mention_type"] == "ATTRIBUTE"] == [
+        "Service.latency"
+    ]
+
+
+def test_attribute_possession_phrase_does_not_vector_recall_as_schema_relation() -> None:
+    assets = OntologyAssets.from_default_resources()
+    retriever = FakeAttributePossessionRelationNoiseVectorRetriever()
+    lexer = OntologyLexer(assets, vector_retriever=retriever)
+    question = "统计所有服务中拥有延迟属性的数量。"
+    framing = QuestionFramingTrace(
+        question=question,
+        raw_response="fixture",
+        atoms=(
+            QuestionAtom(
+                atom_id="QA1",
+                text="所有服务",
+                roles=(QuestionFramingRole.FIND_OBJECT,),
+                span_start=2,
+                span_end=6,
+            ),
+            QuestionAtom(
+                atom_id="QA2",
+                text="拥有延迟属性",
+                roles=(QuestionFramingRole.FILTER_CONDITION,),
+                span_start=7,
+                span_end=13,
+            ),
+            QuestionAtom(
+                atom_id="QA3",
+                text="数量",
+                roles=(QuestionFramingRole.RETURN_CONTENT, QuestionFramingRole.AGG_SORT_TIME),
+                span_start=14,
+                span_end=16,
+            ),
+        ),
+    )
+
+    trace = lexer.run(question, question_framing=framing).to_dict()
+
+    assert not any(call["fragment"] == "中拥有" for call in retriever.calls)
+    assert not any(mention["canonical_id"] == "REL_HAS_PORT" for mention in trace["mentions"])
+    assert [mention["canonical_id"] for mention in trace["mentions"] if mention["mention_type"] == "ATTRIBUTE"] == [
+        "Service.latency"
     ]
 
 

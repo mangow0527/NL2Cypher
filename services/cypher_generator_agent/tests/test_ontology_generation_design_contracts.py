@@ -43,6 +43,31 @@ class FakeMentionVectorRetriever:
         ]
 
 
+class FakeAttributePossessionRelationNoiseVectorRetriever:
+    provider = "fake_attribute_possession_relation_noise_vector"
+
+    def search(
+        self,
+        fragment: str,
+        *,
+        expected_mention_type: str | None,
+        top_k: int,
+    ) -> list[MentionVectorCandidate]:
+        if fragment != "中拥有":
+            return []
+        return [
+            MentionVectorCandidate(
+                id="mention.REL_HAS_PORT.拥有端口",
+                text="拥有端口 HAS_PORT",
+                canonical_id="REL_HAS_PORT",
+                mention_type="RELATION",
+                surface="拥有端口",
+                score=0.93,
+                metadata={"dictionary": "relation_predicates"},
+            )
+        ]
+
+
 class FixtureObjectRoleSelector:
     def select(self, prompt_name: str, variables: dict[str, object]):
         assert prompt_name == "object_role_selection"
@@ -76,6 +101,30 @@ class FixtureBindingSelector:
         candidate_id = _question_preferred_candidate(candidate_lines, question)
         if candidate_id is None:
             candidate_id = _first_supported_binding_candidate(signal_lines)
+        if candidate_id is None:
+            candidate_id = _first_binding_candidate(candidate_lines)
+
+        class Selection:
+            raw_response = f"选择 {candidate_id}。理由：fixture"
+
+        return Selection()
+
+
+class MetricAttributeBindingSelector:
+    def select(self, prompt_name: str, variables: dict[str, object]):
+        assert prompt_name == "binding_selection"
+        candidate_lines = str(variables.get("binding_candidate_list_with_ids") or "")
+        question = str(variables.get("question") or "")
+        candidate_id = None
+        for keyword, attribute in (
+            ("延迟", "Service.latency"),
+            ("服务质量", "Service.quality_of_service"),
+            ("名称", "Service.name"),
+        ):
+            if keyword in question:
+                candidate_id = _candidate_for_attribute(candidate_lines, attribute)
+                if candidate_id is not None:
+                    break
         if candidate_id is None:
             candidate_id = _first_binding_candidate(candidate_lines)
 
@@ -136,6 +185,20 @@ def _pipeline(*, assets: OntologyAssets | None = None, lexer: OntologyLexer | No
             assets=assets,
             coreference_service=OntologyCoreferenceService(llm_selector=FixtureCoreferenceSelector()),
             binding_service=OntologyBindingService(llm_selector=FixtureBindingSelector()),
+        ),
+    )
+
+
+def _metric_attribute_pipeline(*, lexer: OntologyLexer | None = None) -> OntologyGenerationPipeline:
+    assets = lexer.assets if lexer is not None else OntologyAssets.from_default_resources()
+    return OntologyGenerationPipeline(
+        assets=assets,
+        lexer=lexer,
+        object_role_selection_service=OntologyObjectRoleSelectionService(llm_selector=FixtureObjectRoleSelector()),
+        logical_planning_service=OntologyLogicalPlanningService(
+            assets=assets,
+            coreference_service=OntologyCoreferenceService(llm_selector=FixtureCoreferenceSelector()),
+            binding_service=OntologyBindingService(llm_selector=MetricAttributeBindingSelector()),
         ),
     )
 
@@ -415,6 +478,56 @@ def test_intent_classifier_uses_taxonomy_rules_and_embedding_not_hardcoded_pair(
     assert intent.source in {"rule", "embedding"}
     assert "RETURN count(t) AS tunnel_count" in result.cypher
     assert result.trace.to_dict()["intent"]["diagnostics"]["taxonomy_version"] == 3
+
+
+def test_pipeline_counts_service_attribute_quantity_instead_of_projecting_field() -> None:
+    pipeline = _metric_attribute_pipeline()
+
+    result = pipeline.generate("统计Service节点的名称数量", trace_id="trace-service-name-count")
+
+    assert result.trace.intent.intent.primary == "metric_query"
+    assert result.trace.intent.intent.secondary == "count_metric_query"
+    assert result.cypher == "MATCH (s:Service)\nRETURN count(s.name) AS total"
+    assert result.logical_plan.projections == ()
+    assert [(item.function, item.node, item.attribute) for item in result.logical_plan.metrics] == [
+        ("count", "s1", "name")
+    ]
+
+
+def test_pipeline_counts_non_null_service_latency_attribute_quantity() -> None:
+    pipeline = _metric_attribute_pipeline()
+
+    result = pipeline.generate(
+        "统计所有服务中拥有延迟属性的数量",
+        trace_id="trace-service-latency-attribute-count",
+    )
+
+    assert result.trace.intent.intent.primary == "metric_query"
+    assert result.trace.intent.intent.secondary == "count_metric_query"
+    assert result.cypher == "MATCH (s:Service)\nRETURN count(s.latency) AS total"
+    assert result.logical_plan.projections == ()
+    assert [(item.function, item.node, item.attribute) for item in result.logical_plan.metrics] == [
+        ("count", "s1", "latency")
+    ]
+
+
+def test_pipeline_ignores_relation_vector_noise_for_attribute_possession_count() -> None:
+    assets = OntologyAssets.from_default_resources()
+    pipeline = _metric_attribute_pipeline(
+        lexer=OntologyLexer(assets, vector_retriever=FakeAttributePossessionRelationNoiseVectorRetriever()),
+    )
+
+    result = pipeline.generate(
+        "统计所有服务中拥有延迟属性的数量",
+        trace_id="trace-service-latency-attribute-count-relation-noise",
+    )
+
+    trace = result.trace.to_dict()
+    assert result.cypher == "MATCH (s:Service)\nRETURN count(s.latency) AS total"
+    assert not any(
+        mention["canonical_id"] == "REL_HAS_PORT"
+        for mention in trace["lexer"]["mentions"]
+    )
 
 
 def test_logical_planning_fills_dynamic_multihop_path_from_relation_dictionary() -> None:

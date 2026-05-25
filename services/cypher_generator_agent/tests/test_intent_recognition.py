@@ -94,6 +94,26 @@ class RuleBasedIntentRecognizerTest(unittest.TestCase):
         self.assertEqual("rule", result.source)
         self.assertEqual("accept", result.decision)
 
+    def test_rule_stage_treats_attribute_quantity_phrases_as_count_metric(self) -> None:
+        recognizer = RuleBasedIntentRecognizer.from_files(
+            taxonomy_path=INTENT_RESOURCE_DIR / "taxonomy.yaml",
+            rules_path=INTENT_RESOURCE_DIR / "rules.yaml",
+        )
+
+        questions = [
+            "统计Service节点的名称数量",
+            "统计所有服务中拥有延迟属性的数量",
+            "统计所有服务中延迟属性非空的记录数量",
+        ]
+
+        for question in questions:
+            with self.subTest(question=question):
+                result = recognizer.recognize(question)
+                self.assertEqual("metric_query", result.primary_intent)
+                self.assertEqual("count_metric_query", result.secondary_intent)
+                self.assertEqual("rule", result.source)
+                self.assertEqual("accept", result.decision)
+
     def test_rule_stage_accepts_stable_related_count_as_metric(self) -> None:
         recognizer = RuleBasedIntentRecognizer.from_files(
             taxonomy_path=INTENT_RESOURCE_DIR / "taxonomy.yaml",

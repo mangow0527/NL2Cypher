@@ -311,6 +311,49 @@ def test_infers_object_candidate_from_attribute_and_value_owners() -> None:
     assert {item.type for item in candidates[0].evidence} == {"owner_attribute", "owner_value"}
 
 
+def test_infers_attribute_owner_even_when_role_like_relation_candidate_exists() -> None:
+    lexer_trace = LexerTrace(
+        question="统计服务质量等级字段的总数量",
+        matcher="test",
+        ac_matches=(),
+        selected_hits=(),
+        discarded_hits=(),
+        resolution_summary={},
+        unmatched_fragments=(),
+        vector_recalls=(),
+        mentions=(
+            _mention("OP_COUNT", "OPERATION", "统计", (0, 2)),
+            _mention(
+                "Service.quality_of_service",
+                "ATTRIBUTE",
+                "服务质量等级",
+                (2, 8),
+                {"parent_object": "Service"},
+            ),
+            _mention(
+                "REL_FIBER_SRC",
+                "RELATION",
+                "字段",
+                (8, 10),
+                {"domain": "Fiber", "range": "Port", "role": "source"},
+            ),
+            _mention("OP_COUNT", "OPERATION", "总数量", (11, 14)),
+        ),
+        unmatched_spans=(),
+        context_signals=(),
+        shape_signals=(),
+    )
+
+    candidates = build_object_candidates(lexer_trace)
+
+    assert [(item.mention_type, item.surface, item.lexical_canonical_id) for item in candidates] == [
+        ("RELATION", "字段", "REL_FIBER_SRC"),
+        ("OBJECT", "服务", "Service"),
+    ]
+    assert candidates[1].metadata["inferred_from"] == "attribute_or_value_owner"
+    assert candidates[1].evidence[0].type == "owner_attribute"
+
+
 @pytest.mark.parametrize(
     "raw,error_part",
     [

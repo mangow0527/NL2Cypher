@@ -176,11 +176,10 @@ def build_object_candidates(lexer_trace: LexerTrace) -> tuple[ObjectCandidate, .
     candidates: list[ObjectCandidate] = []
     mention_ids = _mention_ids(lexer_trace)
     evidence_counter = 1
-    explicit_classes: set[str] = set()
+    represented_classes: set[str] = set()
     for mention_index, mention in enumerate(lexer_trace.mentions):
         if mention.mention_type == "OBJECT":
             evidence_type = "self_mention"
-            explicit_classes.update(ref for ref in _candidate_refs(mention) if "." not in ref)
         elif mention.mention_type == "RELATION" and _is_role_like_relation(mention):
             evidence_type = "role_surface"
         else:
@@ -233,13 +232,14 @@ def build_object_candidates(lexer_trace: LexerTrace) -> tuple[ObjectCandidate, .
                 evidence=tuple(evidence),
             )
         )
-    if candidates:
+        represented_classes.update(_represented_classes_for_candidate(candidates[-1]))
+    if any(candidate.mention_type == "OBJECT" for candidate in candidates):
         return tuple(candidates)
 
     inferred_by_class: dict[str, list[tuple[int, Any, str]]] = {}
     for mention_index, mention in enumerate(lexer_trace.mentions):
         for class_id, evidence_type in _inferred_owner_classes(mention):
-            if class_id in explicit_classes:
+            if class_id in represented_classes:
                 continue
             inferred_by_class.setdefault(class_id, []).append((mention_index, mention, evidence_type))
 
@@ -560,7 +560,7 @@ def _attribute_owner_classes(mention: Any, metadata: dict[str, Any]) -> tuple[st
         owners.append(parent_object)
     belongs_to_hint = metadata.get("belongs_to_hint")
     if isinstance(belongs_to_hint, (list, tuple)):
-        owners.extend(str(item) for item in belongs_to_hint if str(item))
+        owners.extend(str(item) for item in belongs_to_hint if str(item) and not str(item).startswith("REL_"))
     canonical_id = str(getattr(mention, "canonical_id", "") or "")
     if "." in canonical_id:
         owners.append(canonical_id.split(".", 1)[0])
@@ -575,6 +575,21 @@ def _candidate_class_id(candidate: ObjectCandidate) -> str | None:
         ref = next((item for item in candidate.candidate_refs if "." not in item), "")
         return ref or candidate.lexical_canonical_id
     return None
+
+
+def _represented_classes_for_candidate(candidate: ObjectCandidate) -> tuple[str, ...]:
+    if candidate.mention_type == "OBJECT":
+        class_id = _candidate_class_id(candidate)
+        return (class_id,) if class_id else ()
+    if candidate.mention_type != "RELATION":
+        return ()
+    metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
+    classes: list[str] = []
+    for key in ("target_class", "range_class", "range"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value:
+            classes.append(value)
+    return tuple(dict.fromkeys(classes))
 
 
 def _class_surface(class_id: str) -> str:
