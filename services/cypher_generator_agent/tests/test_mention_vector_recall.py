@@ -329,6 +329,65 @@ class FakeAttributePossessionRelationNoiseVectorRetriever:
         ]
 
 
+class FakeRetrievalPlanVectorRetriever:
+    provider = "fake_retrieval_plan_vector"
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def search(
+        self,
+        fragment: str,
+        *,
+        expected_mention_type: str | None,
+        top_k: int,
+    ) -> list[MentionVectorCandidate]:
+        self.calls.append(
+            {
+                "fragment": fragment,
+                "expected_mention_type": expected_mention_type,
+                "top_k": top_k,
+            }
+        )
+        if fragment == "所有服务 使用的隧道":
+            return [
+                MentionVectorCandidate(
+                    id="mention.REL_SERVICE_USES_TUNNEL.使用隧道",
+                    text="服务 使用 隧道 SERVICE_USES_TUNNEL",
+                    canonical_id="REL_SERVICE_USES_TUNNEL",
+                    mention_type="RELATION",
+                    surface="使用隧道",
+                    score=0.92,
+                    metadata={"dictionary": "relation_predicates"},
+                )
+            ]
+        if fragment in {"使用的隧道", "及其使用的隧道"}:
+            return [
+                MentionVectorCandidate(
+                    id="mention.REL_TUNNEL_DST.使用的隧道",
+                    text="noisy tunnel dst",
+                    canonical_id="REL_TUNNEL_DST",
+                    mention_type="RELATION",
+                    surface="目的端",
+                    score=0.93,
+                    metadata={"dictionary": "relation_predicates"},
+                )
+            ]
+        if fragment == "对应":
+            return [
+                MentionVectorCandidate(
+                    id="mention.REL_TUNNEL_DST.对应",
+                    text="对应 tunnel dst noisy connector",
+                    canonical_id="REL_TUNNEL_DST",
+                    mention_type="RELATION",
+                    surface="目的端",
+                    score=0.93,
+                    metadata={"dictionary": "relation_predicates"},
+                )
+            ]
+        return []
+
+
 def test_lexer_uses_mention_vector_retriever_for_unmatched_fragments() -> None:
     assets = OntologyAssets.from_default_resources()
     retriever = FakeMentionVectorRetriever()
@@ -352,6 +411,74 @@ def test_lexer_uses_mention_vector_retriever_for_unmatched_fragments() -> None:
         (mention["canonical_id"], mention["surface"], mention["mention_type"])
         for mention in trace["mentions"]
     ]
+
+
+def test_retrieval_plan_path_query_replaces_covered_fragment_vector_recall() -> None:
+    assets = OntologyAssets.from_default_resources()
+    retriever = FakeRetrievalPlanVectorRetriever()
+    lexer = OntologyLexer(assets, vector_retriever=retriever)
+    question = "查询所有服务及其使用的隧道名称。"
+    framing = QuestionFramingTrace(
+        question=question,
+        raw_response="fixture",
+        atoms=(
+            QuestionAtom(
+                atom_id="QA1",
+                text="所有服务",
+                roles=(QuestionFramingRole.FIND_OBJECT,),
+                span_start=2,
+                span_end=6,
+            ),
+            QuestionAtom(
+                atom_id="QA2",
+                text="及其使用的隧道",
+                roles=(QuestionFramingRole.RELATION_PATH,),
+                span_start=6,
+                span_end=13,
+            ),
+            QuestionAtom(
+                atom_id="QA3",
+                text="隧道名称",
+                roles=(QuestionFramingRole.RETURN_CONTENT,),
+                span_start=11,
+                span_end=15,
+            ),
+        ),
+        retrieval_plan={
+            "version": "question_framing_retrieval_plan_v1",
+            "path_queries": [
+                {
+                    "query_id": "PQ1",
+                    "retrieval_text": "所有服务 使用的隧道",
+                    "grounding_spans": [[2, 6], [6, 13]],
+                    "generic_connectors": [],
+                }
+            ],
+            "return_targets": [{"text": "隧道名称", "span": [11, 15]}],
+        },
+    )
+
+    trace = lexer.run(question, question_framing=framing).to_dict()
+
+    assert retriever.calls == [
+        {"fragment": "所有服务 使用的隧道", "expected_mention_type": None, "top_k": 5}
+    ]
+    assert trace["vector_recalls"][0]["source"] == "question_framing_retrieval_plan"
+    assert trace["vector_recalls"][0]["fragment"] == "所有服务 使用的隧道"
+    assert trace["vector_recalls"][0]["candidates"][0]["canonical_id"] == "REL_SERVICE_USES_TUNNEL"
+    assert not any(call["fragment"] in {"使用的隧道", "及其使用的隧道"} for call in retriever.calls)
+
+
+def test_generic_connector_fragment_does_not_independently_vector_recall() -> None:
+    assets = OntologyAssets.from_default_resources()
+    retriever = FakeRetrievalPlanVectorRetriever()
+    lexer = OntologyLexer(assets, vector_retriever=retriever)
+
+    trace = lexer.run("查询服务对应的隧道。").to_dict()
+
+    assert "对应" in [item["surface"] for item in trace["unmatched_fragments"]]
+    assert not any(call["fragment"] == "对应" for call in retriever.calls)
+    assert not any(mention["canonical_id"] == "REL_TUNNEL_DST" for mention in trace["mentions"])
 
 
 def test_find_object_atom_does_not_force_compound_fragments_to_object_recall() -> None:

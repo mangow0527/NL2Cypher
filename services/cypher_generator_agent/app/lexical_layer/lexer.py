@@ -70,6 +70,23 @@ SHAPE_SIGNAL_SPECS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     ),
 )
 
+GENERIC_STANDALONE_VECTOR_FRAGMENTS: set[str] = {
+    "对应",
+    "相关",
+    "之间",
+    "连接",
+    "连接关系",
+    "关联",
+    "关联关系",
+    "关系",
+    "属性",
+    "信息",
+    "记录",
+    "拥有",
+    "及其",
+    "各自",
+}
+
 @dataclass(frozen=True)
 class _StructuredOperatorRule:
     canonical_id: str
@@ -184,6 +201,7 @@ class OntologyLexer:
         vector_fragments = _unmatched_fragments_from_matches(
             question,
             raw_matches,
+            ignored_spans=_retrieval_plan_vector_covered_spans(question_framing),
             question_framing=question_framing,
         )
         vector_recalls, vector_matches = self._vector_recall(
@@ -348,10 +366,13 @@ class OntologyLexer:
         matches: list[_RawMatch] = []
         if self._vector_retriever is None:
             return recalls, matches
+        recalls.extend(self._retrieval_plan_vector_recalls(question_framing))
         for unmatched_fragment in unmatched_fragments:
             fragment = str(unmatched_fragment["surface"])
             fragment_start, fragment_end = unmatched_fragment["span"]
             if len(fragment) < 2:
+                continue
+            if _is_generic_standalone_vector_fragment(fragment):
                 continue
             if fragment in {"地址", "名称", "标准", "类型", "状态", "元素", "IP", "RFC"}:
                 continue
@@ -446,6 +467,45 @@ class OntologyLexer:
                 )
             )
         return recalls, matches
+
+    def _retrieval_plan_vector_recalls(
+        self,
+        question_framing: QuestionFramingTrace | None,
+    ) -> list[dict[str, Any]]:
+        recalls: list[dict[str, Any]] = []
+        if question_framing is None:
+            return recalls
+        for path_query in _retrieval_plan_path_queries(question_framing):
+            retrieval_text = str(path_query.get("retrieval_text") or "").strip()
+            if len(retrieval_text) < 2:
+                continue
+            candidates = self._registered_vector_candidates(
+                retrieval_text,
+                expected_mention_type=None,
+            )
+            if not candidates:
+                continue
+            recalls.append(
+                {
+                    "fragment": retrieval_text,
+                    "span": _retrieval_plan_query_span(path_query),
+                    "expected_mention_type": None,
+                    "provider": self._vector_retriever.provider,  # type: ignore[union-attr]
+                    "source": "question_framing_retrieval_plan",
+                    "query_id": str(path_query.get("query_id") or ""),
+                    "candidates": [
+                        {
+                            "candidate_id": candidate.id,
+                            "canonical_id": candidate.canonical_id,
+                            "mention_type": normalize_mention_type(candidate.mention_type),
+                            "score": round(candidate.score, 6),
+                            "matched_surface": candidate.surface,
+                        }
+                        for candidate in candidates
+                    ],
+                }
+            )
+        return recalls
 
     def _registered_vector_candidates(
         self,
@@ -686,6 +746,59 @@ def _unmatched_fragments_from_matches(
             }
         )
     return tuple(fragments)
+
+
+def _retrieval_plan_path_queries(question_framing: QuestionFramingTrace | None) -> tuple[dict[str, Any], ...]:
+    if question_framing is None:
+        return ()
+    retrieval_plan = getattr(question_framing, "retrieval_plan", None)
+    if not isinstance(retrieval_plan, dict):
+        return ()
+    raw_queries = retrieval_plan.get("path_queries")
+    if not isinstance(raw_queries, list):
+        return ()
+    return tuple(item for item in raw_queries if isinstance(item, dict))
+
+
+def _retrieval_plan_vector_covered_spans(question_framing: QuestionFramingTrace | None) -> tuple[tuple[int, int], ...]:
+    spans: list[tuple[int, int]] = []
+    for path_query in _retrieval_plan_path_queries(question_framing):
+        raw_spans = path_query.get("grounding_spans")
+        if not isinstance(raw_spans, list):
+            continue
+        for raw_span in raw_spans:
+            span = _coerce_span(raw_span)
+            if span is not None:
+                spans.append(span)
+    return tuple(spans)
+
+
+def _retrieval_plan_query_span(path_query: dict[str, Any]) -> list[int] | None:
+    raw_spans = path_query.get("grounding_spans")
+    if not isinstance(raw_spans, list):
+        return None
+    spans = [span for span in (_coerce_span(raw_span) for raw_span in raw_spans) if span is not None]
+    if not spans:
+        return None
+    return [min(start for start, _ in spans), max(end for _, end in spans)]
+
+
+def _coerce_span(raw_span: Any) -> tuple[int, int] | None:
+    if not isinstance(raw_span, (list, tuple)) or len(raw_span) != 2:
+        return None
+    try:
+        start = int(raw_span[0])
+        end = int(raw_span[1])
+    except (TypeError, ValueError):
+        return None
+    if start < 0 or end <= start:
+        return None
+    return (start, end)
+
+
+def _is_generic_standalone_vector_fragment(fragment: str) -> bool:
+    compact = re.sub(r"\s+", "", fragment)
+    return compact in GENERIC_STANDALONE_VECTOR_FRAGMENTS
 
 
 def _append_question_framing_signals(
