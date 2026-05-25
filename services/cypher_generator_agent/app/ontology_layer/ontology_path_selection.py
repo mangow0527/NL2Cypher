@@ -11,6 +11,10 @@ from .assets import OntologyAssets
 from .prompts import PromptOutputValidationError, _parse_ontology_path_selection_text
 
 
+_RETRIEVAL_PLAN_RELATION_SCORE_THRESHOLD = 0.4
+_RETRIEVAL_PLAN_EVIDENCE_TYPE = "retrieval_plan_relation_candidate"
+
+
 class OntologyPathSelectionValidationError(ValueError):
     pass
 
@@ -140,11 +144,19 @@ class OntologyPathSelectionService:
         self.assets = assets
         self.llm_selector = llm_selector
 
-    def fill(self, *, ontology_mapping: dict[str, Any], question: str) -> OntologyPathSelectionTrace:
+    def fill(
+        self,
+        *,
+        ontology_mapping: dict[str, Any],
+        question: str,
+        lexer_trace: Any | None = None,
+    ) -> OntologyPathSelectionTrace:
         path_requests = build_path_requests(ontology_mapping, assets=self.assets)
         candidate_paths = build_candidate_paths(path_requests, self.assets)
+        candidate_paths = _add_retrieval_plan_evidence(candidate_paths, lexer_trace)
         candidates_by_request = _candidates_by_request(candidate_paths)
         auto_selected = _auto_single_candidate_paths(path_requests, candidates_by_request)
+        plan_selected = _auto_retrieval_plan_supported_paths(path_requests, candidates_by_request, auto_selected)
         clarification_options = build_needs_review_clarification_options(path_requests, self.assets)
         clarification = _service_clarification_for_unselectable_requests(
             path_requests,
@@ -156,8 +168,12 @@ class OntologyPathSelectionService:
         llm_selected: tuple[SelectedPath, ...] = ()
 
         if clarification is None:
+            auto_selected_request_ids = {selected.request_id for selected in (*auto_selected, *plan_selected)}
             llm_requests = tuple(
-                request for request in path_requests if len(candidates_by_request.get(request.request_id, ())) > 1
+                request
+                for request in path_requests
+                if request.request_id not in auto_selected_request_ids
+                and len(candidates_by_request.get(request.request_id, ())) > 1
             )
             if llm_requests:
                 llm_candidate_paths = tuple(
@@ -182,7 +198,7 @@ class OntologyPathSelectionService:
                 parsed = _parse_path_selection_response(raw_output)
                 llm_selected, clarification = validate_path_selection(parsed, llm_requests, llm_candidate_paths)
 
-        selected_paths = _merge_selected_paths(path_requests, (*auto_selected, *llm_selected))
+        selected_paths = _merge_selected_paths(path_requests, (*auto_selected, *plan_selected, *llm_selected))
         return OntologyPathSelectionTrace(
             path_requests=path_requests,
             candidate_paths=candidate_paths,
@@ -327,6 +343,92 @@ def build_candidate_paths(path_requests: tuple[PathRequest, ...], assets: Ontolo
         )
         for index, item in enumerate(candidates, start=1)
     )
+
+
+def _add_retrieval_plan_evidence(
+    candidate_paths: tuple[CandidatePath, ...],
+    lexer_trace: Any | None,
+) -> tuple[CandidatePath, ...]:
+    plan_relation_ids = _retrieval_plan_relation_ids(lexer_trace)
+    if not plan_relation_ids:
+        return candidate_paths
+    enriched: list[CandidatePath] = []
+    evidence_counter = 1
+    for candidate in candidate_paths:
+        relation_ids = tuple(
+            relation_id
+            for relation_id in candidate.relation_chain
+            if relation_id in plan_relation_ids
+            and not _candidate_has_plan_evidence_for_relation(candidate, relation_id)
+        )
+        if not relation_ids:
+            enriched.append(candidate)
+            continue
+        evidence_items: list[PathEvidence] = list(candidate.evidence)
+        for relation_id in relation_ids:
+            evidence_items.append(
+                PathEvidence(
+                    evidence_id=f"PE_RP{evidence_counter}",
+                    type=_RETRIEVAL_PLAN_EVIDENCE_TYPE,
+                    source_id=relation_id,
+                )
+            )
+            evidence_counter += 1
+        enriched.append(
+            CandidatePath(
+                path_id=candidate.path_id,
+                request_id=candidate.request_id,
+                relation_chain=candidate.relation_chain,
+                from_class=candidate.from_class,
+                to_class=candidate.to_class,
+                source=candidate.source,
+                evidence=tuple(evidence_items),
+            )
+        )
+    return tuple(enriched)
+
+
+def _retrieval_plan_relation_ids(lexer_trace: Any | None) -> set[str]:
+    if lexer_trace is None:
+        return set()
+    raw_recalls = getattr(lexer_trace, "vector_recalls", None)
+    if not isinstance(raw_recalls, (list, tuple)):
+        return set()
+    relation_ids: set[str] = set()
+    for recall in raw_recalls:
+        if not isinstance(recall, dict):
+            continue
+        if recall.get("source") != "question_framing_retrieval_plan":
+            continue
+        candidates = recall.get("candidates")
+        if not isinstance(candidates, (list, tuple)):
+            continue
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            if str(candidate.get("mention_type") or "").upper() != "RELATION":
+                continue
+            score = _float_or_zero(candidate.get("score"))
+            if score < _RETRIEVAL_PLAN_RELATION_SCORE_THRESHOLD:
+                continue
+            relation_id = _normalize_relation_id(str(candidate.get("canonical_id") or "").removeprefix("REL_"))
+            if relation_id:
+                relation_ids.add(relation_id)
+    return relation_ids
+
+
+def _candidate_has_plan_evidence_for_relation(candidate: CandidatePath, relation_id: str) -> bool:
+    return any(
+        evidence.type == _RETRIEVAL_PLAN_EVIDENCE_TYPE and evidence.source_id == relation_id
+        for evidence in candidate.evidence
+    )
+
+
+def _float_or_zero(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def build_needs_review_clarification_options(
@@ -952,6 +1054,47 @@ def _auto_single_candidate_paths(
     return tuple(selected)
 
 
+def _auto_retrieval_plan_supported_paths(
+    path_requests: tuple[PathRequest, ...],
+    candidates_by_request: dict[str, tuple[CandidatePath, ...]],
+    already_selected: tuple[SelectedPath, ...],
+) -> tuple[SelectedPath, ...]:
+    selected_request_ids = {selected.request_id for selected in already_selected}
+    selected: list[SelectedPath] = []
+    for request in path_requests:
+        if request.request_id in selected_request_ids:
+            continue
+        candidates = candidates_by_request.get(request.request_id, ())
+        if len(candidates) <= 1:
+            continue
+        supported_candidates = tuple(
+            candidate for candidate in candidates if _retrieval_plan_evidence_covers_chain(candidate)
+        )
+        if len(supported_candidates) != 1:
+            continue
+        candidate = supported_candidates[0]
+        selected.append(
+            SelectedPath(
+                request_id=request.request_id,
+                path_id=candidate.path_id,
+                relation_chain=candidate.relation_chain,
+                evidence_ids=tuple(evidence.evidence_id for evidence in candidate.evidence),
+                selected_by="auto_retrieval_plan_relation",
+                reason="结构化检索计划只支持这一条候选路径，服务层自动接受。",
+            )
+        )
+    return tuple(selected)
+
+
+def _retrieval_plan_evidence_covers_chain(candidate: CandidatePath) -> bool:
+    plan_relation_ids = {
+        str(evidence.source_id)
+        for evidence in candidate.evidence
+        if evidence.type == _RETRIEVAL_PLAN_EVIDENCE_TYPE and evidence.source_id
+    }
+    return bool(plan_relation_ids) and all(relation_id in plan_relation_ids for relation_id in candidate.relation_chain)
+
+
 def _service_clarification_for_unselectable_requests(
     path_requests: tuple[PathRequest, ...],
     candidates_by_request: dict[str, tuple[CandidatePath, ...]],
@@ -1118,6 +1261,8 @@ def _role_object_label(role: str, to_label: str) -> str:
 def _candidate_clues(candidate: CandidatePath, evidence_index: dict[str, dict[str, Any]], assets: OntologyAssets) -> str:
     clues: list[str] = []
     for evidence in candidate.evidence:
+        if evidence.type == _RETRIEVAL_PLAN_EVIDENCE_TYPE and evidence.source_id:
+            clues.append(f"结构化检索计划召回关系 {evidence.source_id}")
         for evidence_ref in evidence.evidence_refs:
             surface = evidence_index.get(evidence_ref, {}).get("surface")
             if surface:

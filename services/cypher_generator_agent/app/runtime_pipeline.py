@@ -201,6 +201,7 @@ class OntologyGenerationPipeline:
             ontology_path_selection = self.path_selection_service.fill(
                 ontology_mapping=ontology_mapping_payload,
                 question=preprocessing_result.core_question,
+                lexer_trace=lexer_trace,
             )
         except OntologyPathSelectionValidationError as exc:
             raise ClarificationNeeded(

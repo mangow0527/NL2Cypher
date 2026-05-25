@@ -474,6 +474,70 @@ def test_calls_llm_only_for_multi_candidate_requests_with_local_cards() -> None:
     assert "review_default_path_options" not in card_text
 
 
+def test_retrieval_plan_relation_candidate_auto_selects_unique_multi_candidate_path() -> None:
+    class Selector:
+        def select(self, prompt_name: str, variables: dict[str, object]):
+            raise AssertionError("unique retrieval-plan-supported path should not call the LLM")
+
+    service = OntologyPathSelectionService(assets=OntologyAssets.from_default_resources(), llm_selector=Selector())
+    mapping = {
+        "ontology_objects": [
+            {
+                "object_id": "OO1",
+                "class_id": "Tunnel",
+                "selected_roles": ["path_subject"],
+                "evidence_refs": ["E1"],
+                "order": 1,
+            },
+            {
+                "object_id": "OO2",
+                "class_id": "NetworkElement",
+                "selected_roles": ["path_subject", "return_subject"],
+                "evidence_refs": ["E2"],
+                "order": 2,
+            },
+        ],
+        "ontology_relation_hints": [],
+        "ontology_attributes": [],
+        "ontology_values": [],
+        "evidence": [
+            {"evidence_id": "E1", "surface": "隧道"},
+            {"evidence_id": "E2", "surface": "源端网元"},
+        ],
+    }
+    lexer_trace = SimpleNamespace(
+        vector_recalls=(
+            {
+                "source": "question_framing_retrieval_plan",
+                "query_id": "PQ1",
+                "fragment": "服务 使用的隧道 源端网元",
+                "candidates": [
+                    {
+                        "candidate_id": "vc_tunnel_src",
+                        "canonical_id": "REL_TUNNEL_SRC",
+                        "mention_type": "RELATION",
+                        "score": 0.83,
+                    }
+                ],
+            },
+        )
+    )
+
+    trace = service.fill(
+        ontology_mapping=mapping,
+        question="查询所有服务使用的隧道对应的源端网元",
+        lexer_trace=lexer_trace,
+    )
+
+    assert trace.llm_raw_output == ""
+    assert [(item.relation_chain, item.selected_by) for item in trace.selected_paths] == [
+        (("TUNNEL_SRC",), "auto_retrieval_plan_relation")
+    ]
+    selected = trace.selected_paths[0]
+    candidate = next(item for item in trace.candidate_paths if item.path_id == selected.path_id)
+    assert any(evidence.type == "retrieval_plan_relation_candidate" for evidence in candidate.evidence)
+
+
 def test_needs_review_default_path_generates_service_clarification_without_prompting() -> None:
     class Selector:
         def __init__(self) -> None:

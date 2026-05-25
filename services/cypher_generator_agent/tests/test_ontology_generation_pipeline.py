@@ -469,11 +469,18 @@ class _RecordingPathSelectionService:
         self.trace = trace
         self.calls: list[dict[str, object]] = []
 
-    def fill(self, *, ontology_mapping: dict[str, object], question: str) -> OntologyPathSelectionTrace:
+    def fill(
+        self,
+        *,
+        ontology_mapping: dict[str, object],
+        question: str,
+        lexer_trace: object | None = None,
+    ) -> OntologyPathSelectionTrace:
         self.calls.append(
             {
                 "ontology_mapping": ontology_mapping,
                 "question": question,
+                "lexer_trace": lexer_trace,
             }
         )
         return self.trace
@@ -1133,7 +1140,8 @@ def test_runtime_pipeline_calls_step_3_3_path_selection_service() -> None:
     assert result.status == "generated"
     assert len(path_selection.calls) == 1
     assert path_selection.calls[0]["question"] == "查询金牌服务使用的隧道名称"
-    assert set(path_selection.calls[0]) == {"ontology_mapping", "question"}
+    assert set(path_selection.calls[0]) == {"ontology_mapping", "question", "lexer_trace"}
+    assert path_selection.calls[0]["lexer_trace"] is not None
     mapped = path_selection.calls[0]["ontology_mapping"]
     assert isinstance(mapped, dict)
     assert mapped["ontology_objects"]
