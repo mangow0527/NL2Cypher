@@ -5,10 +5,8 @@ from fastapi.responses import Response
 import uvicorn
 
 from .models import IntentRecognitionRequest, QAQuestionRequest, SemanticParseRequest
-from .service import get_generator_status, get_workflow_service
+from .service import build_io_stub_trace, get_generator_status, get_workflow_service
 from services.cypher_generator_agent.app.infrastructure.config import get_settings
-from services.cypher_generator_agent.app.intent_layer import get_hybrid_intent_recognizer
-from services.cypher_generator_agent.app.runtime_pipeline import OntologyGenerationPipeline
 
 
 app = FastAPI(title="cypher-generator-agent", version="1.0.0")
@@ -32,21 +30,26 @@ async def ingest_question(request: QAQuestionRequest) -> Response:
 
 @app.post("/api/v1/intents/recognize")
 async def recognize_intent(request: IntentRecognitionRequest) -> Dict[str, object]:
-    result = get_hybrid_intent_recognizer().recognize(request.question)
-    return result.to_dict()
+    return {
+        "status": "stubbed",
+        "input": {"question": request.question},
+        "output": {"intent": {}},
+        "internal_flow": {},
+    }
 
 
 @app.post("/api/v1/semantic/parse")
 async def parse_semantics(request: SemanticParseRequest) -> Dict[str, object]:
-    result = OntologyGenerationPipeline.from_default_resources().generate(
-        request.question,
+    trace = build_io_stub_trace(
+        qa_id=request.id,
+        question=request.question,
         trace_id=request.generation_run_id or request.id or "api",
     )
     return {
-        "status": result.status,
-        "cypher": result.cypher,
-        "logical_plan": result.logical_plan.to_dict(),
-        "trace": result.trace.to_dict(),
+        "status": "generated",
+        "cypher": "",
+        "logical_plan": {},
+        "trace": trace,
     }
 
 

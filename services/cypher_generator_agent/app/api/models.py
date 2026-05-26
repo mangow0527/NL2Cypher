@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 GenerationFailureReason = Literal[
@@ -48,26 +48,6 @@ class SemanticParseRequest(BaseModel):
     id: Optional[str] = Field(default=None, description="Optional QA sample identifier for traceability.")
     question: str = Field(..., description="Natural language question to parse into semantic plan and Cypher.")
     generation_run_id: Optional[str] = Field(default=None, description="Optional generation run identifier for traceability.")
-
-
-class PreflightCheck(BaseModel):
-    accepted: bool
-    reason: Optional[GenerationFailureReason] = None
-
-    @model_validator(mode="after")
-    def validate_reason_matches_acceptance(self) -> "PreflightCheck":
-        if self.accepted and self.reason is not None:
-            raise ValueError("accepted preflight_check must not include reason")
-        if not self.accepted and self.reason is None:
-            raise ValueError("rejected preflight_check must include reason")
-        return self
-
-    @model_serializer
-    def serialize(self) -> dict[str, object]:
-        payload: dict[str, object] = {"accepted": self.accepted}
-        if self.reason is not None:
-            payload["reason"] = self.reason
-        return payload
 
 
 class GeneratedCypherSubmissionRequest(BaseModel):

@@ -1,1 +1,0 @@
-"""Physical Cypher rendering orchestration."""

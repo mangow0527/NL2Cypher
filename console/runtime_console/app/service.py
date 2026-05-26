@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-import yaml
 from pydantic import ValidationError
 
 from services.repair_agent.app.models import RepairAnalysisRecord
@@ -1516,41 +1515,51 @@ class RuntimeResultsService:
         ]
 
     def _intent_taxonomy_details(self, primary: str, secondary: str) -> dict[str, Any]:
-        taxonomy_path = (
-            Path(__file__).resolve().parents[3]
-            / "services"
-            / "cypher_generator_agent"
-            / "resources"
-            / "runtime"
-            / "intent"
-            / "taxonomy.yaml"
-        )
-        try:
-            taxonomy = yaml.safe_load(taxonomy_path.read_text(encoding="utf-8")) or {}
-        except (OSError, yaml.YAMLError):
-            taxonomy = {}
+        taxonomy = {
+            "record_retrieval_query": {
+                "name_zh": "明细/清单查询",
+                "description_zh": "返回实体、资源、记录或属性明细，不以统计值、路径结构或布尔判断为最终答案。",
+                "secondary": {
+                    "entity_list_query": {
+                        "name_zh": "实体列表查询",
+                        "description_zh": "返回实体、资源或记录列表。",
+                    },
+                    "entity_detail_query": {
+                        "name_zh": "实体详情查询",
+                        "description_zh": "返回实体完整信息或较完整字段集合。",
+                    },
+                    "attribute_projection_query": {
+                        "name_zh": "属性投影查询",
+                        "description_zh": "返回实体的指定属性。",
+                    },
+                    "related_record_query": {
+                        "name_zh": "关联明细查询",
+                        "description_zh": "沿关系或固定路径返回相关实体或属性明细，但不把图结构本身作为答案。",
+                    },
+                },
+            },
+            "relationship_path_query": {
+                "name_zh": "关系/路径查询",
+                "description_zh": "返回关系、路径、可达结果或拓扑结构，图结构本身是答案的一部分。",
+                "secondary": {},
+            },
+        }
         primary_payload: dict[str, Any] = {}
         secondary_payload: dict[str, Any] = {}
-        intent_items = taxonomy.get("intents")
-        if not isinstance(intent_items, list):
-            intent_items = []
-        for item in intent_items:
-            if not isinstance(item, dict) or item.get("primary_intent") != primary:
-                continue
+        item = taxonomy.get(primary)
+        if isinstance(item, dict):
             primary_payload = {
                 "field": primary,
                 "name_zh": item.get("name_zh"),
-                "description_zh": item.get("description"),
+                "description_zh": item.get("description_zh"),
             }
-            for secondary_item in item.get("secondary_intents", []) or []:
-                if isinstance(secondary_item, dict) and secondary_item.get("secondary_intent") == secondary:
-                    secondary_payload = {
-                        "field": secondary,
-                        "name_zh": secondary_item.get("name_zh"),
-                        "description_zh": secondary_item.get("description"),
-                    }
-                    break
-            break
+            secondary_item = self._trace_object(self._trace_object(item.get("secondary")).get(secondary))
+            if secondary_item:
+                secondary_payload = {
+                    "field": secondary,
+                    "name_zh": secondary_item.get("name_zh"),
+                    "description_zh": secondary_item.get("description_zh"),
+                }
         return {
             "primary_name_zh": primary_payload.get("name_zh") or "未记录",
             "secondary_name_zh": secondary_payload.get("name_zh") or "未记录",

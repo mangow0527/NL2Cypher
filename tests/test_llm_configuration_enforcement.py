@@ -6,24 +6,24 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pydantic import ValidationError
 
-from services.cypher_generator_agent.app.infrastructure.clients import (
-    CypherLLMClient,
-    OpenAIChatCompletionCypherGenerator,
-)
 from services.cypher_generator_agent.app.infrastructure.config import Settings as CypherGeneratorAgentSettings
 from services.repair_agent.app.config import Settings as RepairServiceSettings
 from services.testing_agent.app.clients import LLMEvaluationClient
 from services.testing_agent.app.config import Settings as TestingServiceSettings
 
 
-def test_cypher_generator_agent_requires_complete_llm_configuration(monkeypatch: pytest.MonkeyPatch):
+def test_cypher_generator_agent_io_stub_allows_missing_llm_configuration(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("CYPHER_GENERATOR_AGENT_LLM_ENABLED", raising=False)
     monkeypatch.delenv("CYPHER_GENERATOR_AGENT_LLM_BASE_URL", raising=False)
     monkeypatch.delenv("CYPHER_GENERATOR_AGENT_LLM_API_KEY", raising=False)
     monkeypatch.delenv("CYPHER_GENERATOR_AGENT_LLM_MODEL", raising=False)
 
-    with pytest.raises(ValidationError):
-        CypherGeneratorAgentSettings(_env_file=None)
+    settings = CypherGeneratorAgentSettings(_env_file=None)
+
+    assert "llm_enabled" not in CypherGeneratorAgentSettings.model_fields
+    assert "llm_base_url" not in CypherGeneratorAgentSettings.model_fields
+    assert "llm_api_key" not in CypherGeneratorAgentSettings.model_fields
+    assert "llm_model" not in CypherGeneratorAgentSettings.model_fields
 
 
 def test_testing_service_requires_complete_llm_configuration(monkeypatch: pytest.MonkeyPatch):
@@ -44,67 +44,6 @@ def test_repair_service_requires_current_model_env_name(monkeypatch: pytest.Monk
 
     with pytest.raises(ValidationError):
         RepairServiceSettings(_env_file=None)
-
-
-@pytest.mark.asyncio
-async def test_cypher_generator_agent_raises_when_llm_call_fails():
-    llm_generator = AsyncMock(spec=OpenAIChatCompletionCypherGenerator)
-    llm_generator.generate_from_prompt.side_effect = RuntimeError("llm offline")
-    client = CypherLLMClient(llm_generator=llm_generator)
-
-    with pytest.raises(RuntimeError, match="llm offline"):
-        await client.generate_from_prompt(
-            task_id="qa-001",
-            question_text="统计网元数量",
-            llm_prompt="Generate Cypher",
-        )
-
-
-@pytest.mark.asyncio
-async def test_cypher_generator_agent_logs_exact_llm_call_evidence(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture):
-    client = OpenAIChatCompletionCypherGenerator(
-        base_url="https://example.com/v1",
-        api_key="secret",
-        model="qwen-test",
-        timeout_seconds=5,
-        temperature=0.1,
-    )
-
-    mock_response = MagicMock()
-    mock_response.raise_for_status = MagicMock()
-    mock_response.json.return_value = {
-        "choices": [{"message": {"content": '{"cypher":"MATCH (n) RETURN n"}'}}]
-    }
-    mock_response.headers = {"x-request-id": "req-qg-123"}
-
-    mock_ctx = AsyncMock()
-    mock_ctx.post.return_value = mock_response
-    mock_ctx.__aenter__.return_value = mock_ctx
-    mock_ctx.__aexit__.return_value = False
-    monkeypatch.setattr("httpx.AsyncClient", lambda *args, **kwargs: mock_ctx)
-
-    caplog.set_level(logging.INFO, logger="cypher_generator_agent")
-
-    await client.generate_from_prompt(
-        task_id="qa-001",
-        question_text="统计网元数量",
-        llm_prompt="Generate Cypher",
-    )
-
-    start = next(record for record in caplog.records if record.message.startswith("llm_call_started"))
-    success = next(record for record in caplog.records if record.message.startswith("llm_call_succeeded"))
-
-    assert start.qa_id == "qa-001"
-    assert start.model == "qwen-test"
-    assert start.target == "cypher_generator_agent.llm"
-    assert "qa_id=qa-001" in start.message
-    assert "model=qwen-test" in start.message
-    assert success.qa_id == "qa-001"
-    assert success.model == "qwen-test"
-    assert success.target == "cypher_generator_agent.llm"
-    assert success.request_id == "req-qg-123"
-    assert success.elapsed_ms >= 0
-    assert "request_id=req-qg-123" in success.message
 
 
 @pytest.mark.asyncio

@@ -6,7 +6,6 @@ Production service code should use service-local models.
 from services.cypher_generator_agent.app.api.models import (
     GeneratedCypherSubmissionRequest,
     GenerationRunResult,
-    PreflightCheck,
     QAQuestionRequest,
 )
 from services.repair_agent.app.models import KnowledgeRepairSuggestionRequest, KnowledgeType, RepairAnalysisRecord, RepairIssueTicketResponse
@@ -34,7 +33,6 @@ __all__ = [
     "KnowledgeType",
     "GeneratedCypherSubmissionRequest",
     "GenerationRunResult",
-    "PreflightCheck",
     "QAGoldenRequest",
     "QAGoldenResponse",
     "QAQuestionRequest",

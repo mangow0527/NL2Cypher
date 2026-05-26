@@ -2,28 +2,20 @@ from __future__ import annotations
 
 import json
 from functools import lru_cache
-from typing import Dict, Protocol
+from typing import Dict, Optional, Protocol
 from uuid import uuid4
 
 from .models import (
-    CgaGenerationNonSuccessReport,
     GeneratedCypherSubmissionRequest,
     GenerationRunResult,
     QAQuestionRequest,
 )
-from services.cypher_generator_agent.app.clarification_layer.errors import ClarificationNeeded
-from services.cypher_generator_agent.app.clarification_layer.service import ClarificationQuestionService
 from services.cypher_generator_agent.app.infrastructure.clients import TestingAgentClient
 from services.cypher_generator_agent.app.infrastructure.config import get_settings
-from services.cypher_generator_agent.app.infrastructure.errors import OntologyGenerationError
-from services.cypher_generator_agent.app.runtime_pipeline import OntologyGenerationPipeline
 
 
 class GeneratedCypherSubmitter(Protocol):
     async def submit(self, payload: GeneratedCypherSubmissionRequest) -> Dict[str, object]:
-        ...
-
-    async def submit_generation_failure(self, payload: CgaGenerationNonSuccessReport) -> Dict[str, object]:
         ...
 
 
@@ -32,86 +24,23 @@ class CypherGeneratorAgentService:
         self,
         *,
         testing_client: GeneratedCypherSubmitter,
-        pipeline: OntologyGenerationPipeline | None = None,
-        clarification_service: ClarificationQuestionService | None = None,
     ) -> None:
         self.testing_client = testing_client
-        self.pipeline = pipeline or OntologyGenerationPipeline.from_default_resources()
-        self.clarification_service = clarification_service or ClarificationQuestionService.from_default_resources()
 
     async def ingest_question(self, request: QAQuestionRequest) -> GenerationRunResult:
         generation_run_id = str(uuid4())
-        try:
-            result = self.pipeline.generate(request.question, trace_id=generation_run_id)
-        except ClarificationNeeded as exc:
-            clarification = self.clarification_service.build(exc, original_question=request.question)
-            clarification_snapshot = dict(exc.partial_trace)
-            clarification_snapshot.update(
-                {
-                    "schema_version": "cga_trace_v2",
-                    "trace_profile": "ontology",
-                    "question": request.question,
-                    "generation_run_id": generation_run_id,
-                    "generation_status": "clarification_required",
-                    "clarification": clarification,
-                }
-            )
-            clarification_snapshot.setdefault("trace_id", generation_run_id)
-            await self.testing_client.submit_generation_failure(
-                CgaGenerationNonSuccessReport(
-                    id=request.id,
-                    question=request.question,
-                    generation_run_id=generation_run_id,
-                    generation_status="clarification_required",
-                    input_prompt_snapshot=json.dumps(clarification_snapshot, ensure_ascii=False, indent=2),
-                    clarification=clarification,
-                )
-            )
-            return GenerationRunResult(
-                generation_run_id=generation_run_id,
-                generation_status="clarification_required",
-            )
-        except OntologyGenerationError as exc:
-            failure_snapshot = dict(exc.partial_trace)
-            failure_snapshot.update(
-                {
-                    "schema_version": "cga_trace_v2",
-                    "trace_profile": "ontology",
-                    "question": request.question,
-                    "generation_run_id": generation_run_id,
-                    "generation_status": "service_failed",
-                    "failure": {
-                        "stage": exc.stage,
-                        "message": exc.message,
-                        "payload": exc.payload,
-                    },
-                }
-            )
-            failure_snapshot.setdefault("trace_id", generation_run_id)
-            await self.testing_client.submit_generation_failure(
-                CgaGenerationNonSuccessReport(
-                    id=request.id,
-                    question=request.question,
-                    generation_run_id=generation_run_id,
-                    generation_status="service_failed",
-                    input_prompt_snapshot=json.dumps(failure_snapshot, ensure_ascii=False, indent=2),
-                    failure_reason="semantic_contract_unaligned",
-                )
-            )
-            return GenerationRunResult(
-                generation_run_id=generation_run_id,
-                generation_status="service_failed",
-                reason="semantic_contract_unaligned",
-            )
-
-        snapshot = json.dumps(result.trace.to_dict(), ensure_ascii=False, indent=2)
+        snapshot = build_io_stub_trace(
+            qa_id=request.id,
+            question=request.question,
+            trace_id=generation_run_id,
+        )
         await self.testing_client.submit(
             GeneratedCypherSubmissionRequest(
                 id=request.id,
                 question=request.question,
                 generation_run_id=generation_run_id,
-                generated_cypher=result.cypher,
-                input_prompt_snapshot=snapshot,
+                generated_cypher="",
+                input_prompt_snapshot=json.dumps(snapshot, ensure_ascii=False, indent=2),
             )
         )
         return GenerationRunResult(
@@ -120,12 +49,22 @@ class CypherGeneratorAgentService:
         )
 
 
+def build_io_stub_trace(*, question: str, trace_id: str, qa_id: Optional[str] = None) -> Dict[str, object]:
+    input_payload = {"id": qa_id, "question": question} if qa_id is not None else {"question": question}
+    return {
+        "schema_version": "cga_io_stub_v1",
+        "trace_id": trace_id,
+        "input": input_payload,
+        "output": {"generated_cypher": ""},
+        "internal_flow": {},
+    }
+
+
 def get_generator_status() -> Dict[str, object]:
-    settings = get_settings()
     return {
         "status": "ok",
-        "pipeline": "runtime_pipeline",
-        "data_dir": settings.data_dir,
+        "pipeline": "io_stub",
+        "internal_flow": {},
     }
 
 

@@ -14,51 +14,24 @@ class DeploymentDefaultsTest(unittest.TestCase):
         env_example = Path("deploy/remote.env.example").read_text(encoding="utf-8")
 
         self.assertIn("CYPHER_GENERATOR_AGENT_TESTING_AGENT_URL=", env_example)
-        self.assertIn("CYPHER_GENERATOR_AGENT_KNOWLEDGE_DOCS_DIR=", env_example)
-        self.assertIn("CYPHER_GENERATOR_AGENT_LLM_BASE_URL=", env_example)
+        self.assertNotIn("CYPHER_GENERATOR_AGENT_KNOWLEDGE_DOCS_DIR=", env_example)
+        self.assertNotIn("CYPHER_GENERATOR_AGENT_LLM_BASE_URL=", env_example)
+        self.assertNotIn("NL2CYPHER_INTENT_", env_example)
+        self.assertNotIn("NL2CYPHER_MENTION_", env_example)
         self.assertNotIn("QUERY_GENERATOR_LLM_", env_example)
         self.assertNotIn("QUERY_GENERATOR_TESTING_SERVICE_URL", env_example)
         self.assertNotIn("REPAIR_SERVICE_CGS_BASE_URL", env_example)
         self.assertNotIn("REPAIR_SERVICE_TUGRAPH_URL", env_example)
         self.assertNotIn("REPAIR_SERVICE_MOCK_TUGRAPH", env_example)
 
-    def test_cypher_generator_agent_defaults_keep_local_service_routing(self):
-        with patch.dict(
-            "os.environ",
-            {
-                "CYPHER_GENERATOR_AGENT_LLM_ENABLED": "true",
-                "CYPHER_GENERATOR_AGENT_LLM_BASE_URL": "https://example.com/v1",
-                "CYPHER_GENERATOR_AGENT_LLM_API_KEY": "secret",
-                "CYPHER_GENERATOR_AGENT_LLM_MODEL": "glm-4.5",
-            },
-            clear=False,
-        ):
-            settings = CypherGeneratorAgentSettings(_env_file=None)
+    def test_cypher_generator_agent_defaults_keep_only_io_stub_settings(self):
+        settings = CypherGeneratorAgentSettings(_env_file=None)
 
         self.assertEqual(settings.testing_agent_url, "http://127.0.0.1:8003")
-        self.assertEqual(settings.knowledge_docs_dir, "knowledge")
-        self.assertEqual(settings.knowledge_context_source, "file")
-        self.assertEqual(settings.rag_service_url, "http://127.0.0.1:8004")
-        self.assertEqual(settings.rag_retrieval_limit, 12)
-        self.assertEqual(settings.service_public_base_url, "http://127.0.0.1:8000")
-        self.assertNotIn("knowledge_agent_url", CypherGeneratorAgentSettings.model_fields)
-        self.assertIn("knowledge_docs_dir", CypherGeneratorAgentSettings.model_fields)
-
-    def test_cypher_generator_agent_knowledge_docs_dir_env_override(self):
-        with patch.dict(
-            "os.environ",
-            {
-                "CYPHER_GENERATOR_AGENT_LLM_ENABLED": "true",
-                "CYPHER_GENERATOR_AGENT_LLM_BASE_URL": "https://example.com/v1",
-                "CYPHER_GENERATOR_AGENT_LLM_API_KEY": "secret",
-                "CYPHER_GENERATOR_AGENT_LLM_MODEL": "glm-4.5",
-                "CYPHER_GENERATOR_AGENT_KNOWLEDGE_DOCS_DIR": "/tmp/custom-knowledge",
-            },
-            clear=False,
-        ):
-            settings = CypherGeneratorAgentSettings(_env_file=None)
-
-        self.assertEqual(settings.knowledge_docs_dir, "/tmp/custom-knowledge")
+        self.assertEqual(
+            set(CypherGeneratorAgentSettings.model_fields),
+            {"app_name", "host", "port", "testing_agent_url", "request_timeout_seconds"},
+        )
 
     def test_cypher_generator_agent_service_failure_reason_uses_local_context_name(self):
         self.assertIn("knowledge_context_unavailable", ServiceFailureReason.__args__)
