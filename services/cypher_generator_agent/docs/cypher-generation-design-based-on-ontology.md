@@ -117,15 +117,100 @@ LLM 输出边界：
 - 不生成本体 canonical，不选择图库 label / edge / property，不生成 Cypher。
 - 不使用内部术语描述结果，例如 `OBJECT`、`RELATION`、`ATTRIBUTE`、`projection`、`filter`、`expected_mention_type`。
 
+当前运行提示词如下，代码来源为 `services/cypher_generator_agent/app/question_framing_layer/service.py` 中的 `QUESTION_FRAMING_PROMPT_TEMPLATE`。其中 `{question}` 由运行时替换为 `core_question`：
+
+```text
+请把下面的问题拆成几个原子性小问题，并标明每个小问题在整个问题里负责什么。
+我们最终会把问题转换成图数据库 Cypher 查询，所以你只需要帮助理解问题结构。
+不要生成查询语句，不要使用数据库字段名，不要解释原因。
+
+角色只能使用下面这些：
+- 找什么对象
+- 用什么条件筛选
+- 通过什么关系继续找
+- 最后返回什么
+- 是否涉及统计、排序或时间
+- 不确定
+
+要求：
+1. 每个原子小问题只表达一个查询动作。
+2. 原子小问题必须尽量使用原问题里的连续短语，不要用“该对象”“这些服务”等指代词替换原词。
+3. 不要补充原问题没有的信息。
+4. 一个原子小问题可以有多个角色，用“ + ”连接。
+5. 如果问题很简单，也可以只拆成一个原子小问题。
+6. 如果不确定某个片段的作用，角色写“不确定”。
+7. “A 与 B 之间的连接/关系/关联/连接关系”表示两类对象之间的关系路径，标为“通过什么关系继续找”，不要把“连接/关系/之间”拆成要返回的对象或字段。
+8. “通过什么关系继续找”只描述从一个对象到另一个对象的路径动作和对象短语。
+9. 如果一个片段同时包含“关系动作”和“最终要展示的字段”，要拆开，不要合成一个原子问题。
+10. 出现“返回/并返回/输出/列出”后面的内容，优先标为“最后返回什么”，不要继续并入 RELATION_PATH。
+11. 返回内容里有多个字段、多个对象字段或“各自/双方/两端”的字段时，必须按每个返回目标拆成多个“最后返回什么”原子问题。
+
+输出格式必须是：
+原子问题：
+1. xxx ｜ 角色
+2. xxx ｜ 角色
+
+示例1：
+问题：查询名称为 Service_002 的服务的 ID、名称和服务质量
+原子问题：
+1. 名称为 Service_002 的服务 ｜ 找什么对象 + 用什么条件筛选
+2. ID、名称和服务质量 ｜ 最后返回什么
+
+示例2：
+问题：查询金牌服务经过的隧道及其源网元，返回隧道的IETF标准和源网元的IP地址
+原子问题：
+1. 金牌服务 ｜ 找什么对象 + 用什么条件筛选
+2. 经过的隧道及其源网元 ｜ 通过什么关系继续找
+3. 隧道的IETF标准和源网元的IP地址 ｜ 最后返回什么
+
+示例3：
+问题：查询所有服务与隧道之间的连接关系，并返回双方的元素类型
+原子问题：
+1. 所有服务与隧道之间的连接关系 ｜ 找什么对象 + 通过什么关系继续找
+2. 双方的元素类型 ｜ 最后返回什么
+
+示例4：
+问题：查询所有服务使用的隧道，返回服务名称、隧道名称以及各自的延迟
+原子问题：
+1. 所有服务使用的隧道 ｜ 找什么对象 + 通过什么关系继续找
+2. 服务名称 ｜ 最后返回什么
+3. 隧道名称 ｜ 最后返回什么
+4. 各自的延迟 ｜ 最后返回什么
+
+反例修正：
+问题：查询对象A的名称及其使用的对象B的名称和标准
+不要这样拆：
+1. 对象A的名称及其使用的对象B的名称和标准 ｜ 通过什么关系继续找
+应该这样拆：
+1. 对象A的名称 ｜ 最后返回什么
+2. 使用的对象B ｜ 通过什么关系继续找
+3. 对象B的名称和标准 ｜ 最后返回什么
+
+问题：{question}
+原子问题：
+```
+
 ### 输出契约
 
 LLM 原始文本不直接进入后续层。代码层负责解析 LLM 文本，并包装成内部 `question_framing.atoms`。解析失败时不要求 LLM 重试到成功；失败会进入降级策略。
 
-内部 atom 的建议结构如下：
+内部 trace 会保留完整 `prompt`、`raw_response`、解析后的 `atoms`、派生的 `retrieval_plan` 和 `diagnostics`。`prompt` 与 `raw_response` 只用于运行中心回放、审计和错例定位；Step 1 只消费结构化后的 `atoms` 和 `retrieval_plan`。
+
+内部结构如下：
 
 ```yaml
 question_framing:
   enabled: true
+  prompt: |
+    请把下面的问题拆成几个原子性小问题，并标明每个小问题在整个问题里负责什么。
+    ...
+    问题：查询金牌服务经过的隧道及其源网元，返回隧道的IETF标准和源网元的IP地址
+    原子问题：
+  raw_response: |
+    原子问题：
+    1. 金牌服务 ｜ 找什么对象 + 用什么条件筛选
+    2. 经过的隧道及其源网元 ｜ 通过什么关系继续找
+    3. 隧道的IETF标准和源网元的IP地址 ｜ 最后返回什么
   atoms:
     - atom_id: QA1
       text: 金牌服务
@@ -133,6 +218,33 @@ question_framing:
       span: [2, 6]
       confidence: 0.82
       raw_role_text: 找什么对象 + 用什么条件筛选
+  retrieval_plan:
+    version: question_framing_retrieval_plan_v1
+    question: 查询金牌服务经过的隧道及其源网元，返回隧道的IETF标准和源网元的IP地址
+    path_queries:
+      - query_id: PQ1
+        atom_ids: [QA1, QA2]
+        source_text: 金牌服务
+        path_text: 经过的隧道及其源网元
+        retrieval_text: 金牌服务 经过的隧道及其源网元
+        roles: [FIND_OBJECT, FILTER_CONDITION, RELATION_PATH]
+        grounding_spans:
+          - [2, 6]
+          - [6, 16]
+        generic_connectors: []
+    return_targets:
+      - atom_id: QA3
+        text: 隧道的IETF标准和源网元的IP地址
+        roles: [RETURN_CONTENT]
+        span: [19, 37]
+    attribute_queries:
+      - atom_id: QA3
+        text: 隧道的IETF标准和源网元的IP地址
+        roles: [RETURN_CONTENT]
+        span: [19, 37]
+    metric_queries: []
+    generic_connectors: []
+    diagnostics: []
   diagnostics: []
 ```
 
@@ -140,11 +252,14 @@ question_framing:
 
 | 字段 | 说明 |
 |---|---|
+| `prompt` | Step 0 实际发送给 LLM 的提示词文本，已替换当前 `core_question`；仅用于 trace 和回放。 |
+| `raw_response` | LLM 原始文本输出；不直接进入后续层，必须先由代码解析。 |
 | `text` | atom 对应的自然语言片段，来自 LLM 输出并尽量贴近原问。 |
 | `roles` | atom 的内部规范化角色枚举；一个 atom 可以有多个角色。 |
 | `span` | 代码层回填的原问字符范围；LLM 不输出 span。 |
 | `confidence` | 代码层根据解析质量、span 命中方式、是否存在多重匹配等信号生成的置信度。 |
 | `raw_role_text` | LLM 输出中的原始中文角色文本，仅用于 trace 和诊断，不作为 Step 1 决策枚举。 |
+| `retrieval_plan` | 由代码根据 atoms 派生的词法召回计划，包含路径短查询、返回目标、属性候选区域、统计/排序/时间片段和诊断信息。 |
 | `diagnostics` | 解析、对齐和降级诊断信息，用于 trace 和错例分析。 |
 
 `roles` 只允许以下内部枚举；中文只出现在 LLM 原始输出和 `raw_role_text` 中：
@@ -159,6 +274,15 @@ question_framing:
 | `UNKNOWN` | `不确定` |
 
 span 回填优先使用原问中的精确片段；如果 LLM 轻微改写导致无法精确命中，可以尝试归一化匹配或基于相邻片段的弱对齐。弱对齐成功时需要降低 `confidence` 并写入 `diagnostics`。如果 span 找不到，则该 atom 不作为强 hint 参与词法层决策。
+
+`retrieval_plan` 的生成规则：
+
+- `path_queries`：每个 `RELATION_PATH` atom 都会和它之前最近的 `FIND_OBJECT` atom 组合，生成一条路径召回短查询；`retrieval_text` 用于 Step 1 路径近义词召回，避免用整句做无边界召回。
+- `return_targets`：所有 `RETURN_CONTENT` atom 原样进入返回目标列表，供 Step 1 / Step 3 回溯题干明确要求返回的片段。
+- `attribute_queries`：看起来像字段或属性的 `RETURN_CONTENT` atom 会额外进入属性候选区域，用于帮助属性召回和 owner 绑定。
+- `metric_queries`：`AGG_SORT_TIME` atom 进入统计、排序或时间片段列表，用于后续 shape 和 metric 线索。
+- `generic_connectors`：代码会记录 `连接/关系/之间/双方/各自` 等泛化连接词；这些词只能作为路径结构线索，不能直接当作业务对象或字段。
+- `diagnostics`：如果有 atoms 但没有路径 atom，会记录 `no_relation_path_atoms`；如果路径片段被清理掉泛化噪声，也会记录对应诊断。
 
 ### 与词法层的协作
 
