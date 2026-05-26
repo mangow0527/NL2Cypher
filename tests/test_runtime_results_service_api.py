@@ -81,6 +81,8 @@ def test_runtime_results_detail_script_puts_cypher_comparison_in_overview():
     assert "语义视图匹配：受控 LLM 消歧" in script
     assert "renderOntologyLayerPrompts(layer.key" in script
     assert "renderStructuredTraceSection" in script
+    assert "renderTraceTable" in script
+    assert "trace-table" in script
     assert "const standalonePrompts = isOntologyCgaSection(section)" in script
     assert "ontology_path_selection', '3.3 本体路径选择 LLM 输入提示词" not in script
     assert "一层意图 LLM 原始输出" in script
@@ -109,6 +111,27 @@ def test_runtime_results_task_table_uses_chinese_clarification_status():
     script = (Path(__file__).resolve().parents[1] / "console" / "runtime_console" / "ui" / "app.js").read_text(encoding="utf-8")
 
     assert "clarification_required: '需要澄清'" in script
+
+
+def test_runtime_results_tables_have_stable_column_widths():
+    root = Path(__file__).resolve().parents[1]
+    index_html = (root / "console" / "runtime_console" / "ui" / "index.html").read_text(encoding="utf-8")
+    detail_js = (root / "console" / "runtime_console" / "ui" / "detail.js").read_text(encoding="utf-8")
+    styles = (root / "console" / "runtime_console" / "ui" / "styles.css").read_text(encoding="utf-8")
+
+    assert '<table class="task-table">' in index_html
+    assert '<col style="width: 220px" />' in index_html
+    assert '<col style="width: 180px" />' in index_html
+    assert '<col style="width: 430px" />' in index_html
+    assert '<col style="width: 474px" />' in index_html
+    assert "const colgroup = columns" in detail_js
+    assert '<col style="width: ${width}px" />' in detail_js
+    assert ".task-table" in styles
+    assert "min-width: 2060px" in styles
+    assert ".status-pill" in styles
+    assert "white-space: nowrap" in styles
+    assert "min-width: 112px" in styles
+    assert "min-width: max(100%, 960px)" in styles
 
 
 def test_runtime_results_service_status_endpoint_returns_five_service_cards(monkeypatch, tmp_path: Path):
@@ -1651,8 +1674,108 @@ def test_runtime_results_generator_section_parses_ontology_cga_trace(monkeypatch
         },
         "lexer": {
             "question": "查询金牌服务使用的隧道名称",
+            "question_framing": {
+                "enabled": True,
+                "question": "查询金牌服务使用的隧道名称",
+                "prompt": "Step 0 完整提示词",
+                "raw_response": "原子问题：\n1. 金牌服务 ｜ 找什么对象 + 用什么条件筛选\n2. 使用的隧道 ｜ 通过什么关系继续找\n3. 隧道名称 ｜ 最后返回什么",
+                "atoms": [
+                    {
+                        "atom_id": "QA1",
+                        "text": "金牌服务",
+                        "roles": ["FIND_OBJECT", "FILTER_CONDITION"],
+                        "span": [2, 6],
+                        "confidence": 0.9,
+                        "raw_role_text": "找什么对象 + 用什么条件筛选",
+                    },
+                    {
+                        "atom_id": "QA2",
+                        "text": "使用的隧道",
+                        "roles": ["RELATION_PATH"],
+                        "span": [6, 11],
+                        "confidence": 0.9,
+                        "raw_role_text": "通过什么关系继续找",
+                    },
+                    {
+                        "atom_id": "QA3",
+                        "text": "隧道名称",
+                        "roles": ["RETURN_CONTENT"],
+                        "span": [9, 13],
+                        "confidence": 0.9,
+                        "raw_role_text": "最后返回什么",
+                    },
+                ],
+                "retrieval_plan": {
+                    "version": "question_framing_retrieval_plan_v1",
+                    "question": "查询金牌服务使用的隧道名称",
+                    "path_queries": [
+                        {
+                            "query_id": "PQ1",
+                            "atom_ids": ["QA1", "QA2"],
+                            "source_text": "金牌服务",
+                            "path_text": "使用的隧道",
+                            "retrieval_text": "金牌服务 使用的隧道",
+                            "roles": ["FIND_OBJECT", "FILTER_CONDITION", "RELATION_PATH"],
+                            "grounding_spans": [[2, 6], [6, 11]],
+                            "generic_connectors": [],
+                        }
+                    ],
+                    "return_targets": [{"atom_id": "QA3", "text": "隧道名称"}],
+                    "attribute_queries": [{"atom_id": "QA3", "text": "隧道名称"}],
+                    "metric_queries": [],
+                    "diagnostics": [],
+                },
+                "diagnostics": [],
+            },
+            "vector_recalls": [
+                {
+                    "fragment": "金牌服务 使用的隧道",
+                    "span": [2, 11],
+                    "provider": "fixture",
+                    "source": "question_framing_retrieval_plan",
+                    "query_id": "PQ1",
+                    "candidates": [
+                        {
+                            "candidate_id": "VC1",
+                            "canonical_id": "REL_SERVICE_USES_TUNNEL",
+                            "mention_type": "RELATION",
+                            "score": 0.92,
+                            "matched_surface": "服务使用隧道",
+                        }
+                    ],
+                }
+            ],
+            "ac_matches": [
+                {
+                    "canonical_id": "ServiceQuality.Gold",
+                    "mention_type": "VALUE",
+                    "surface": "金牌",
+                    "span": [2, 4],
+                    "hit_id": "ac-1",
+                    "match_source": "ac_exact",
+                    "score": 1.0,
+                }
+            ],
+            "structured_matches": [
+                {
+                    "canonical_id": "OP_QUERY",
+                    "mention_type": "OPERATION",
+                    "surface": "查询",
+                    "span": [0, 2],
+                    "hit_id": "struct-1",
+                    "match_source": "operation_cue",
+                    "score": 1.0,
+                }
+            ],
+            "unmatched_fragments": [{"surface": "使用的", "span": [6, 9], "expected_mention_type": "RELATION"}],
             "mentions": [
-                {"canonical_id": "ServiceQuality.Gold", "mention_type": "VALUE", "surface": "金牌", "span": [2, 4]},
+                {
+                    "canonical_id": "ServiceQuality.Gold",
+                    "mention_type": "VALUE",
+                    "surface": "金牌",
+                    "span": [2, 4],
+                    "metadata": {"enum_class": "ServiceQuality"},
+                },
                 {"canonical_id": "Service", "mention_type": "OBJECT", "surface": "服务", "span": [4, 6]},
                 {"canonical_id": "Tunnel.name", "mention_type": "ATTRIBUTE", "surface": "隧道名称", "span": [9, 13]},
             ],
@@ -1751,6 +1874,7 @@ def test_runtime_results_generator_section_parses_ontology_cga_trace(monkeypatch
     assert generator["trace_schema_version"] == "cga_trace_v2"
     assert [layer["key"] for layer in generator["trace_layers"]] == [
         "preprocessing",
+        "question_framing",
         "lexical",
         "intent_shape",
         "ontology",
@@ -1759,6 +1883,7 @@ def test_runtime_results_generator_section_parses_ontology_cga_trace(monkeypatch
     ]
     assert [layer["title_zh"] for layer in generator["trace_layers"]] == [
         "自然语言问题预处理",
+        "Step 0 问题框定 / 检索计划",
         "词法层",
         "意图识别与答案形态",
         "本体层",
@@ -1771,25 +1896,81 @@ def test_runtime_results_generator_section_parses_ontology_cga_trace(monkeypatch
     assert preprocessing_fields["输出给下一阶段的 core_question"] == "查询金牌服务使用的隧道名称"
     assert "未通过原因" not in preprocessing_fields
     assert generator["trace_layers"][0]["sections"] == []
-    lexical_fields = {field["label_zh"]: field["value"] for field in generator["trace_layers"][1]["fields"]}
-    assert lexical_fields["mentions 摘要"] == "金牌(VALUE) / 服务(OBJECT) / 隧道名称(ATTRIBUTE)"
-    assert lexical_fields["上下文信号摘要"] == "金牌服务(PROXIMAL_MODIFIER)"
-    assert lexical_fields["答案形态信号摘要"] == "隧道名称(SHAPE_SIGNAL)"
-    lexical_sections = [section["title_zh"] for section in generator["trace_layers"][1]["sections"]]
-    assert lexical_sections == ["词法层输出"]
-    lexical_output = generator["trace_layers"][1]["sections"][0]["value"]
+    question_framing_fields = {field["label_zh"]: field["value"] for field in generator["trace_layers"][1]["fields"]}
+    assert question_framing_fields["输入问题"] == "查询金牌服务使用的隧道名称"
+    question_framing_sections = {section["title_zh"]: section["value"] for section in generator["trace_layers"][1]["sections"]}
+    assert question_framing_sections["发给 LLM 的完整提示词"] == "Step 0 完整提示词"
+    assert question_framing_sections["LLM 原始返回"].startswith("原子问题：")
+    assert question_framing_sections["原子问题拆分结果"][1]["roles"] == ["RELATION_PATH"]
+    assert question_framing_sections["结构化检索计划"]["path_queries"][0]["retrieval_text"] == "金牌服务 使用的隧道"
+    assert question_framing_sections["Step 1 消费情况摘要"] == {
+        "retrieval_plan_vector_recall_count": 1,
+        "retrieval_plan_vector_recalls": [
+            {
+                "query_id": "PQ1",
+                "retrieval_text": "金牌服务 使用的隧道",
+                "span": [2, 11],
+                "provider": "fixture",
+                "candidate_count": 1,
+                "top_candidates": [
+                    {
+                        "canonical_id": "REL_SERVICE_USES_TUNNEL",
+                        "mention_type": "RELATION",
+                        "score": 0.92,
+                        "matched_surface": "服务使用隧道",
+                    }
+                ],
+            }
+        ],
+    }
+    lexical_fields = {field["label_zh"]: field["value"] for field in generator["trace_layers"][2]["fields"]}
+    assert lexical_fields["mentions 数量"] == "3 条"
+    assert lexical_fields["AC 命中数量"] == "1 条"
+    assert lexical_fields["结构化命中数量"] == "1 条"
+    assert lexical_fields["向量召回数量"] == "1 条"
+    assert lexical_fields["未匹配残片数量"] == "1 条"
+    assert lexical_fields["上下文信号数量"] == "1 条"
+    assert lexical_fields["答案形态信号数量"] == "1 条"
+    lexical_sections = [section["title_zh"] for section in generator["trace_layers"][2]["sections"]]
+    assert lexical_sections == ["词法层明细"]
+    lexical_detail = generator["trace_layers"][2]["sections"][0]
+    lexical_tables = {table["title_zh"]: table for table in lexical_detail["tables"]}
+    assert list(lexical_tables) == [
+        "mentions 明细",
+        "AC / 结构化命中明细",
+        "向量召回明细",
+        "未匹配残片",
+        "context signals",
+        "shape signals",
+    ]
+    assert lexical_tables["mentions 明细"]["rows"][0] == {
+        "surface": "金牌",
+        "mention_type": "VALUE",
+        "canonical_id": "ServiceQuality.Gold",
+        "span": "[2, 4]",
+        "metadata": '{"enum_class": "ServiceQuality"}',
+    }
+    assert lexical_tables["mentions 明细"]["columns"][2]["width"] == 280
+    assert lexical_tables["向量召回明细"]["columns"][-1]["width"] == 560
+    assert lexical_tables["AC / 结构化命中明细"]["rows"][1]["match_source"] == "operation_cue"
+    assert lexical_tables["向量召回明细"]["rows"][0]["top_candidates"] == "REL_SERVICE_USES_TUNNEL(RELATION, 0.92)"
+    assert lexical_tables["未匹配残片"]["rows"][0]["expected_mention_type"] == "RELATION"
+    assert lexical_tables["context signals"]["rows"][0]["supports"] == "ServiceQuality.Gold / Service"
+    assert lexical_tables["shape signals"]["rows"][0]["supports"] == "answer_projection_region"
+    lexical_blocks = {block["title_zh"]: block["value"] for block in lexical_detail["blocks"]}
+    lexical_output = lexical_blocks["词法层完整输出"]
     assert lexical_output["mentions"][0]["surface"] == "金牌"
     assert lexical_output["context_signals"][0]["text"] == "金牌服务"
     assert lexical_output["shape_signals"][0]["text"] == "隧道名称"
-    intent_fields = {field["label_zh"]: field["value"] for field in generator["trace_layers"][2]["fields"]}
+    intent_fields = {field["label_zh"]: field["value"] for field in generator["trace_layers"][3]["fields"]}
     assert intent_fields["一层意图字段名称"] == "record_retrieval_query"
     assert intent_fields["一层意图中文解释"] == "明细/清单查询\n说明：返回实体、资源、记录或属性明细，不以统计值、路径结构或布尔判断为最终答案。"
     assert intent_fields["二层意图字段名称"] == "related_record_query"
     assert intent_fields["二层意图中文解释"] == "关联明细查询\n说明：沿关系或固定路径返回相关实体或属性明细，但不把图结构本身作为答案。"
     assert intent_fields["答案形态摘要"] == "answer_type=attribute_table"
-    intent_sections = [section["title_zh"] for section in generator["trace_layers"][2]["sections"]]
+    intent_sections = [section["title_zh"] for section in generator["trace_layers"][3]["sections"]]
     assert intent_sections == []
-    ontology_layer = generator["trace_layers"][3]
+    ontology_layer = generator["trace_layers"][4]
     assert ontology_layer.get("fields", []) == []
     ontology_steps = {section["title_zh"]: section for section in ontology_layer["sections"]}
     assert list(ontology_steps) == [
@@ -1829,10 +2010,10 @@ def test_runtime_results_generator_section_parses_ontology_cga_trace(monkeypatch
     assert final_fields["投影字段"] == "name"
     final_blocks = {block["title_zh"]: block["value"] for block in ontology_steps["3.6 最终回填结构"]["blocks"]}
     assert final_blocks["Step 3 输出结构"]["logical_plan"]["root_operation"] == "match_project"
-    validation_fields = {field["label_zh"]: field["value"] for field in generator["trace_layers"][4]["fields"]}
+    validation_fields = {field["label_zh"]: field["value"] for field in generator["trace_layers"][5]["fields"]}
     assert validation_fields["校验结果"] == "校验通过"
     assert validation_fields["校验项摘要"] == "required_nodes: 通过"
-    compilation_fields = {field["label_zh"]: field["value"] for field in generator["trace_layers"][5]["fields"]}
+    compilation_fields = {field["label_zh"]: field["value"] for field in generator["trace_layers"][6]["fields"]}
     assert compilation_fields["编译结果"] == "已输出 Cypher"
     assert compilation_fields["Cypher 摘要"] == "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel) RETURN t.name"
     prompts = generator["llm_prompts"]

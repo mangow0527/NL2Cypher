@@ -169,6 +169,17 @@ class _ServiceTunnelBothSidesQuestionFramingClient:
         )
 
 
+class _ServiceTunnelEachLatencyQuestionFramingClient:
+    def complete(self, prompt: str) -> str:
+        return (
+            "原子问题：\n"
+            "1. 所有服务使用的隧道 ｜ 找什么对象 + 通过什么关系继续找\n"
+            "2. 服务名称 ｜ 最后返回什么\n"
+            "3. 隧道名称 ｜ 最后返回什么\n"
+            "4. 各自的延迟 ｜ 最后返回什么\n"
+        )
+
+
 class _GenericInfoVectorRetriever:
     provider = "fake_generic_info_vector"
 
@@ -636,6 +647,23 @@ def _service_tunnel_both_sides_pipeline(
     )
 
 
+def _service_tunnel_each_latency_pipeline() -> OntologyGenerationPipeline:
+    assets = OntologyAssets.from_default_resources()
+    return OntologyGenerationPipeline(
+        assets=assets,
+        question_framing_service=QuestionFramingService(client=_ServiceTunnelEachLatencyQuestionFramingClient()),
+        intent_layer=_FixtureIntentClassifier(),  # type: ignore[arg-type]
+        object_role_selection_service=OntologyObjectRoleSelectionService(
+            llm_selector=_FixtureObjectRoleSelectionSelector()
+        ),
+        logical_planning_service=OntologyLogicalPlanningService(
+            assets=assets,
+            coreference_service=OntologyCoreferenceService(llm_selector=_SameInstanceCoreferenceSelector()),
+            binding_service=OntologyBindingService(llm_selector=_FixtureBindingSelector()),
+        ),
+    )
+
+
 def _tunnel_node_pipeline() -> OntologyGenerationPipeline:
     assets = OntologyAssets.from_default_resources()
     return OntologyGenerationPipeline(
@@ -1050,6 +1078,35 @@ def test_pipeline_generates_service_tunnel_endpoint_elem_type_projection_without
     called_fragments = [call["fragment"] for call in retriever.calls]
     assert "之间" not in called_fragments
     assert "双方的元素" not in called_fragments
+
+
+def test_pipeline_expands_each_owner_generic_latency_projection_from_step_0_return_targets() -> None:
+    pipeline = _service_tunnel_each_latency_pipeline()
+
+    result = pipeline.generate(
+        "查询所有服务使用的隧道，返回服务名称、隧道名称以及各自的延迟。",
+        trace_id="trace-service-tunnel-each-latency",
+    )
+
+    assert result.status == "generated"
+    assert result.cypher == (
+        "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel)\n"
+        "RETURN s.name AS service_name, t.name AS tunnel_name, "
+        "s.latency AS service_latency, t.latency AS tunnel_latency"
+    )
+    assert [(item.attribute, item.alias) for item in result.logical_plan.projections] == [
+        ("name", "service_name"),
+        ("name", "tunnel_name"),
+        ("latency", "service_latency"),
+        ("latency", "tunnel_latency"),
+    ]
+    latency_attributes = [
+        item
+        for item in result.trace.to_dict()["ontology_mapping"]["ontology_attributes"]
+        if item["attribute_id"].endswith(".latency")
+    ]
+    assert latency_attributes[0]["projection_distribution"] == "each_owner"
+    assert latency_attributes[0]["owner_scope"] == ["Service", "Tunnel"]
 
 
 def test_ontology_generation_pipeline_returns_node_for_entity_detail_query() -> None:

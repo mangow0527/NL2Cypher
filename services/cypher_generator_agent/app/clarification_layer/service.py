@@ -41,6 +41,7 @@ class ClarificationQuestionService:
         )
         if not options:
             options = list(trace_context.get("options", []))
+        binding_question = _binding_suggested_question(raw, failure, options, reason_code)
         no_option_reason = _no_option_reason(raw, failure, options, reason_code)
         normalized = {
             "core_question": _core_question(raw, core_question, original_question),
@@ -49,8 +50,8 @@ class ClarificationQuestionService:
             "reason": reason,
             "missing_information": trace_context.get("missing_information") or _missing_information(raw, reason_code),
             "business_context": trace_context.get("business_context") or "无额外业务上下文。",
-            "failure_focus": trace_context.get("failure_focus") or reason,
-            "suggested_question": trace_context.get("suggested_question") or "",
+            "failure_focus": _binding_failure_focus(raw, failure, options, reason_code) or trace_context.get("failure_focus") or reason,
+            "suggested_question": binding_question or trace_context.get("suggested_question") or "",
             "stage_params": _stage_params(raw, failure, trace_context),
             "options": options,
             "no_option_reason": no_option_reason,
@@ -95,6 +96,13 @@ class ClarificationQuestionService:
         if not user_message:
             user_message = str(getattr(result, "raw_response", "")).strip()
         if _is_unhelpful_wording(user_message) and payload.get("suggested_question"):
+            return {
+                "user_message": str(payload["suggested_question"]),
+                "llm_raw_output": getattr(result, "raw_response", None),
+                "llm_prompt_name": getattr(result, "prompt_name", None),
+                "llm_user_message_rejected": user_message,
+            }
+        if _is_misaligned_binding_wording(user_message, payload) and payload.get("suggested_question"):
             return {
                 "user_message": str(payload["suggested_question"]),
                 "llm_raw_output": getattr(result, "raw_response", None),
@@ -154,10 +162,82 @@ def _missing_information(payload: dict[str, Any], reason_code: str) -> str:
         "AMBIGUOUS_PATH": "用户需要确认对象之间按哪条业务关系连接。",
         "AMBIGUOUS_COREFERENCE": "用户需要确认两个对象是否指向同一个业务对象。",
         "AMBIGUOUS_ATTRIBUTE_BINDING": "用户需要确认字段或条件属于哪个对象。",
+        "ambiguous_attribute_binding": "用户需要确认字段或条件属于哪个对象。",
+        "invalid_llm_binding": "用户需要确认字段或条件属于哪个对象。",
         "MISSING_PROJECTION_TARGET": "用户需要明确要返回哪个字段或对象。",
         "MISSING_METRIC_TARGET": "用户需要明确要统计服务、隧道、网元、端口或其他对象。",
         "SEMANTIC_ATTRIBUTE_OWNER_INVALID": "用户需要确认非法属性应改为查询哪个相关对象的属性。",
     }.get(reason_code, "用户需要补充当前缺失的判断信息。")
+
+
+def _binding_suggested_question(
+    payload: dict[str, Any],
+    failure: dict[str, Any],
+    options: list[str],
+    reason_code: str,
+) -> str:
+    if not options or not _is_attribute_binding_reason(reason_code):
+        return ""
+    surface = _binding_surface(payload, failure, options)
+    owners = _binding_option_owners(options)
+    if surface and len(owners) == 2:
+        return f"你想把“{surface}”理解为{owners[0]}的{surface}，还是{owners[1]}的{surface}？"
+    if surface and len(owners) > 2:
+        owner_text = "、".join(owners[:-1]) + f"还是{owners[-1]}"
+        return f"你想把“{surface}”绑定到哪个对象：{owner_text}？"
+    if len(options) == 2:
+        return f"你想选择“{options[0]}”，还是“{options[1]}”？"
+    return f"你想选择哪一种字段含义：{'、'.join(options)}？"
+
+
+def _binding_failure_focus(
+    payload: dict[str, Any],
+    failure: dict[str, Any],
+    options: list[str],
+    reason_code: str,
+) -> str:
+    if not options or not _is_attribute_binding_reason(reason_code):
+        return ""
+    surface = _binding_surface(payload, failure, options)
+    owners = _binding_option_owners(options)
+    if surface and owners:
+        return f"字段“{surface}”可能属于多个对象：{'、'.join(owners)}。"
+    return "字段或条件存在多个可选归属对象。"
+
+
+def _is_attribute_binding_reason(reason_code: str) -> bool:
+    normalized = reason_code.strip().lower()
+    return normalized in {"invalid_llm_binding", "ambiguous_attribute_binding"}
+
+
+def _binding_surface(payload: dict[str, Any], failure: dict[str, Any], options: list[str]) -> str:
+    for value in (payload.get("surface"), failure.get("surface")):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    for option in options:
+        if "的" in option:
+            surface = option.rsplit("的", 1)[-1].strip()
+            if surface:
+                return surface
+        if "->" in option:
+            surface = option.split("->", 1)[0].strip()
+            if surface:
+                return surface
+    return ""
+
+
+def _binding_option_owners(options: list[str]) -> list[str]:
+    owners: list[str] = []
+    for option in options:
+        owner = ""
+        if "的" in option:
+            owner = option.split("的", 1)[0].strip()
+        elif "->" in option:
+            right = option.split("->", 1)[1].strip()
+            owner = _class_label(right.split(".", 1)[0].strip())
+        if owner and owner not in owners:
+            owners.append(owner)
+    return owners
 
 
 def _stage_params(
@@ -559,6 +639,18 @@ def _is_unhelpful_wording(message: str) -> bool:
         "补充这个查询缺少的信息",
     )
     return any(marker in text for marker in generic_markers)
+
+
+def _is_misaligned_binding_wording(message: str, payload: dict[str, Any]) -> bool:
+    text = message.strip()
+    if not text or not _is_attribute_binding_reason(str(payload.get("reason_code") or "")):
+        return False
+    options = payload.get("options")
+    if not isinstance(options, list) or not options:
+        return False
+    surface = _binding_surface(payload, {}, [str(option) for option in options])
+    asks_path = "路径" in text or "业务关系" in text or ("按" in text and "查询" in text)
+    return bool(asks_path and surface and surface not in text)
 
 
 def _class_label(class_id: str) -> str:

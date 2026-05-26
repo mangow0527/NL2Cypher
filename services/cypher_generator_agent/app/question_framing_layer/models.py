@@ -91,6 +91,7 @@ class QuestionFramingTrace:
     retrieval_plan: dict[str, Any] = field(default_factory=dict)
     diagnostics: tuple[str, ...] = ()
     enabled: bool = True
+    prompt: str = ""
 
     @classmethod
     def empty(cls, question: str, *, reason: str) -> "QuestionFramingTrace":
@@ -119,6 +120,7 @@ class QuestionFramingTrace:
         return {
             "enabled": self.enabled,
             "question": self.question,
+            "prompt": self.prompt,
             "raw_response": self.raw_response,
             "atoms": [atom.to_dict() for atom in self.atoms],
             "retrieval_plan": dict(self.retrieval_plan),

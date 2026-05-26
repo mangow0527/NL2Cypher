@@ -12,7 +12,10 @@ from services.cypher_generator_agent.app.question_framing_layer.models import (
     QuestionFramingRole,
     QuestionFramingTrace,
 )
-from services.cypher_generator_agent.app.question_framing_layer.service import QuestionFramingService
+from services.cypher_generator_agent.app.question_framing_layer.service import (
+    QUESTION_FRAMING_PROMPT_TEMPLATE,
+    QuestionFramingService,
+)
 from services.cypher_generator_agent.app.lexical_layer.lexer import OntologyLexer
 
 
@@ -85,6 +88,7 @@ def test_question_framing_service_builds_trace_only_retrieval_plan_for_path_quer
 
     trace = service.run("查询所有服务使用的隧道对应的源端网元")
 
+    assert trace.to_dict()["prompt"].endswith("问题：查询所有服务使用的隧道对应的源端网元\n原子问题：\n")
     plan = trace.to_dict()["retrieval_plan"]
     assert plan["version"] == "question_framing_retrieval_plan_v1"
     assert plan["path_queries"] == [
@@ -130,6 +134,11 @@ def test_question_framing_retrieval_plan_does_not_duplicate_combined_find_and_pa
     assert path_query["source_text"] == ""
     assert path_query["path_text"] == "所有服务与隧道的对应关系"
     assert path_query["retrieval_text"] == "所有服务与隧道的对应关系"
+
+
+def test_question_framing_prompt_requires_return_fields_to_split_by_target() -> None:
+    assert "返回内容里有多个字段、多个对象字段或“各自/双方/两端”的字段" in QUESTION_FRAMING_PROMPT_TEMPLATE
+    assert "服务名称、隧道名称以及各自的延迟" in QUESTION_FRAMING_PROMPT_TEMPLATE
 
 
 def test_question_framing_retrieval_plan_trims_return_attributes_from_mixed_path_atoms() -> None:

@@ -913,8 +913,9 @@ class RuntimeResultsService:
         mapping_categories = self._ontology_mapping_categories(ontology_mapping)
         logical_plan = self._trace_object(shape_finalization.get("logical_plan") or shape_finalization.get("logical_plan_draft"))
         core_question = preprocessing.get("core_question") or lexer.get("question")
+        question_framing_layer = self._question_framing_trace_layer(lexer)
 
-        return [
+        layers = [
             {
                 "key": "preprocessing",
                 "title_zh": "自然语言问题预处理",
@@ -925,17 +926,28 @@ class RuntimeResultsService:
                 ],
                 "sections": [],
             },
+            *([question_framing_layer] if question_framing_layer is not None else []),
             {
                 "key": "lexical",
                 "title_zh": "词法层",
                 "fields": [
                     self._trace_field("输入 core_question", core_question),
-                    self._trace_field("mentions 摘要", self._mention_summary(lexer.get("mentions"))),
-                    self._trace_field("上下文信号摘要", self._signal_summary(lexer.get("context_signals"))),
-                    self._trace_field("答案形态信号摘要", self._signal_summary(lexer.get("shape_signals"))),
+                    self._trace_field("mentions 数量", self._trace_count(lexer.get("mentions"))),
+                    self._trace_field("AC 命中数量", self._trace_count(lexer.get("ac_matches"))),
+                    self._trace_field("结构化命中数量", self._trace_count(lexer.get("structured_matches"))),
+                    self._trace_field("向量召回数量", self._trace_count(lexer.get("vector_recalls"))),
+                    self._trace_field("未匹配残片数量", self._trace_count(lexer.get("unmatched_fragments"))),
+                    self._trace_field("上下文信号数量", self._trace_count(lexer.get("context_signals"))),
+                    self._trace_field("答案形态信号数量", self._trace_count(lexer.get("shape_signals"))),
                 ],
                 "sections": [
-                    self._trace_section("词法层输出", lexer),
+                    {
+                        "title_zh": "词法层明细",
+                        "tables": self._lexical_trace_tables(lexer),
+                        "blocks": [
+                            self._trace_section("词法层完整输出", lexer),
+                        ],
+                    },
                 ],
             },
             {
@@ -1071,6 +1083,213 @@ class RuntimeResultsService:
                     self._trace_section("编译层完整输出", compiler),
                 ],
             },
+        ]
+        return layers
+
+    def _question_framing_trace_layer(self, lexer: dict[str, Any]) -> dict[str, Any] | None:
+        question_framing = self._trace_object(lexer.get("question_framing"))
+        if not question_framing:
+            return None
+        prompt = question_framing.get("prompt") or question_framing.get("prompt_markdown")
+        return {
+            "key": "question_framing",
+            "title_zh": "Step 0 问题框定 / 检索计划",
+            "fields": [
+                self._trace_field("输入问题", question_framing.get("question") or lexer.get("question")),
+            ],
+            "sections": [
+                self._trace_section("发给 LLM 的完整提示词", prompt or "历史记录未保存"),
+                self._trace_section("LLM 原始返回", question_framing.get("raw_response") or "未记录"),
+                self._trace_section("原子问题拆分结果", question_framing.get("atoms") or []),
+                self._trace_section("结构化检索计划", question_framing.get("retrieval_plan") or {}),
+                self._trace_section("Step 1 消费情况摘要", self._question_framing_step1_consumption_summary(lexer)),
+            ],
+        }
+
+    def _question_framing_step1_consumption_summary(self, lexer: dict[str, Any]) -> dict[str, Any]:
+        recalls: list[dict[str, Any]] = []
+        for recall in self._trace_list(lexer.get("vector_recalls")):
+            if not isinstance(recall, dict) or recall.get("source") != "question_framing_retrieval_plan":
+                continue
+            candidates: list[dict[str, Any]] = []
+            for candidate in self._trace_list(recall.get("candidates"))[:5]:
+                if not isinstance(candidate, dict):
+                    continue
+                candidates.append(
+                    {
+                        "canonical_id": candidate.get("canonical_id"),
+                        "mention_type": candidate.get("mention_type"),
+                        "score": candidate.get("score"),
+                        "matched_surface": candidate.get("matched_surface"),
+                    }
+                )
+            recalls.append(
+                {
+                    "query_id": recall.get("query_id"),
+                    "retrieval_text": recall.get("fragment"),
+                    "span": recall.get("span"),
+                    "provider": recall.get("provider"),
+                    "candidate_count": len(self._trace_list(recall.get("candidates"))),
+                    "top_candidates": candidates,
+                }
+            )
+        return {
+            "retrieval_plan_vector_recall_count": len(recalls),
+            "retrieval_plan_vector_recalls": recalls,
+        }
+
+    def _lexical_trace_tables(self, lexer: dict[str, Any]) -> list[dict[str, Any]]:
+        return [
+            self._trace_table(
+                "mentions 明细",
+                columns=[
+                    ("surface", "surface", 170),
+                    ("mention_type", "mention_type", 150),
+                    ("canonical_id", "canonical_id", 280),
+                    ("span", "span", 120),
+                    ("metadata", "metadata", 380),
+                ],
+                rows=[
+                    {
+                        "surface": item.get("surface"),
+                        "mention_type": item.get("mention_type"),
+                        "canonical_id": item.get("canonical_id"),
+                        "span": self._display_json(item.get("span")),
+                        "metadata": self._display_json(item.get("metadata")),
+                    }
+                    for item in self._trace_dicts(lexer.get("mentions"))
+                ],
+            ),
+            self._trace_table(
+                "AC / 结构化命中明细",
+                columns=[
+                    ("surface", "surface", 170),
+                    ("mention_type", "mention_type", 150),
+                    ("canonical_id", "canonical_id", 280),
+                    ("span", "span", 120),
+                    ("match_source", "match_source", 190),
+                    ("score", "score", 90),
+                ],
+                rows=[
+                    {
+                        "surface": item.get("surface"),
+                        "mention_type": item.get("mention_type"),
+                        "canonical_id": item.get("canonical_id"),
+                        "span": self._display_json(item.get("span")),
+                        "match_source": item.get("match_source"),
+                        "score": item.get("score"),
+                    }
+                    for item in (
+                        *self._trace_dicts(lexer.get("ac_matches")),
+                        *self._trace_dicts(lexer.get("structured_matches")),
+                    )
+                ],
+            ),
+            self._trace_table(
+                "向量召回明细",
+                columns=[
+                    ("fragment", "fragment", 300),
+                    ("span", "span", 120),
+                    ("expected_mention_type", "expected_mention_type", 210),
+                    ("source", "source", 260),
+                    ("query_id", "query_id", 110),
+                    ("provider", "provider", 170),
+                    ("top_candidates", "top candidates", 560),
+                ],
+                rows=[
+                    {
+                        "fragment": item.get("fragment"),
+                        "span": self._display_json(item.get("span")),
+                        "expected_mention_type": item.get("expected_mention_type"),
+                        "source": item.get("source"),
+                        "query_id": item.get("query_id"),
+                        "provider": item.get("provider"),
+                        "top_candidates": self._vector_candidate_summary(item.get("candidates")),
+                    }
+                    for item in self._trace_dicts(lexer.get("vector_recalls"))
+                ],
+            ),
+            self._trace_table(
+                "未匹配残片",
+                columns=[
+                    ("surface", "surface", 320),
+                    ("span", "span", 140),
+                    ("expected_mention_type", "expected_mention_type", 240),
+                ],
+                rows=[
+                    {
+                        "surface": item.get("surface"),
+                        "span": self._display_json(item.get("span")),
+                        "expected_mention_type": item.get("expected_mention_type"),
+                    }
+                    for item in self._trace_dicts(lexer.get("unmatched_fragments"))
+                ],
+            ),
+            self._trace_table("context signals", columns=self._signal_table_columns(), rows=self._signal_table_rows(lexer.get("context_signals"))),
+            self._trace_table("shape signals", columns=self._signal_table_columns(), rows=self._signal_table_rows(lexer.get("shape_signals"))),
+        ]
+
+    def _trace_table(
+        self,
+        title_zh: str,
+        *,
+        columns: list[tuple[str, str] | tuple[str, str, int]],
+        rows: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return {
+            "title_zh": title_zh,
+            "columns": [
+                {
+                    "key": column[0],
+                    "label_zh": column[1],
+                    **({"width": column[2]} if len(column) > 2 else {}),
+                }
+                for column in columns
+            ],
+            "rows": rows,
+        }
+
+    def _trace_dicts(self, value: Any) -> list[dict[str, Any]]:
+        return [item for item in self._trace_list(value) if isinstance(item, dict)]
+
+    def _display_json(self, value: Any) -> str:
+        if value is None or value == "" or value == {} or value == []:
+            return "未记录"
+        return json.dumps(value, ensure_ascii=False)
+
+    def _vector_candidate_summary(self, value: Any) -> str:
+        parts: list[str] = []
+        for candidate in self._trace_dicts(value)[:5]:
+            canonical_id = self._compact_text(candidate.get("canonical_id"))
+            mention_type = self._compact_text(candidate.get("mention_type"))
+            score = self._compact_text(candidate.get("score"))
+            if not canonical_id:
+                continue
+            details = ", ".join(part for part in (mention_type, score) if part)
+            parts.append(f"{canonical_id}({details})" if details else canonical_id)
+        return " / ".join(parts) if parts else "未记录"
+
+    def _signal_table_columns(self) -> list[tuple[str, str, int]]:
+        return [
+            ("signal_id", "signal_id", 110),
+            ("type", "type", 220),
+            ("text", "text", 280),
+            ("span", "span", 120),
+            ("supports", "supports", 420),
+            ("strength", "strength", 100),
+        ]
+
+    def _signal_table_rows(self, value: Any) -> list[dict[str, Any]]:
+        return [
+            {
+                "signal_id": item.get("signal_id"),
+                "type": item.get("type"),
+                "text": item.get("text"),
+                "span": self._display_json(item.get("span")),
+                "supports": self._summary_join([self._compact_text(part) for part in self._trace_list(item.get("supports"))]),
+                "strength": item.get("strength"),
+            }
+            for item in self._trace_dicts(value)
         ]
 
     def _trace_section(self, title_zh: str, value: Any) -> dict[str, Any]:

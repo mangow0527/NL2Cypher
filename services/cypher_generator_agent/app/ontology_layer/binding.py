@@ -123,11 +123,13 @@ class OntologyBindingService:
         intent_output: IntentOutput,
         question: str,
         unmatched_fragments: tuple[dict[str, Any], ...] | list[dict[str, Any]] = (),
+        path_owner_scope: tuple[str, ...] | list[str] = (),
     ) -> BindingTrace:
         nodes = _node_index(merged_nodes)
         family = candidate_family or {}
         context = tuple(context_signals)
         shape = tuple(shape_signals)
+        path_scope = tuple(str(item) for item in path_owner_scope if str(item))
         filters: list[BindingItem] = []
         projections: list[BindingItem] = []
         metric_conditions: list[BindingItem] = []
@@ -203,6 +205,7 @@ class OntologyBindingService:
                     shape,
                     intent_output,
                     projection_index,
+                    path_scope,
                 )
                 if not candidates:
                     unresolved.append(
@@ -367,6 +370,7 @@ def _binding_mappings(ontology_mapping: dict[str, Any]) -> tuple[dict[str, Any],
         attribute_candidates = item.get("attribute_candidates", [])
         if not attribute_candidates and isinstance(ontology_id, str) and ontology_id:
             attribute_candidates = [ontology_id]
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
         mappings.append(
             {
                 "mapping_id": attribute_ref_id,
@@ -378,6 +382,9 @@ def _binding_mappings(ontology_mapping: dict[str, Any]) -> tuple[dict[str, Any],
                 "ontology_id": ontology_id,
                 "parent_class": item.get("parent_class"),
                 "attribute_candidates": attribute_candidates,
+                "projection_distribution": item.get("projection_distribution"),
+                "owner_scope": item.get("owner_scope"),
+                "metadata": dict(metadata),
                 "evidence_refs": item.get("evidence_refs", []),
             }
         )
@@ -777,8 +784,9 @@ def _attribute_candidates(
     shape_signals: tuple[ContextSignal, ...],
     intent_output: IntentOutput,
     start_index: int,
+    path_owner_scope: tuple[str, ...],
 ) -> tuple[tuple[BindingCandidate, ...], int]:
-    projection_owner_context = _projection_owner_context(mapping, nodes, context_signals)
+    projection_owner_context = _projection_owner_context(mapping, nodes, context_signals, path_owner_scope)
     refs = _attribute_refs(mapping, candidate_family)
     refs = _refs_with_projection_owner_type(refs, nodes, projection_owner_context)
     single = len(refs) == 1
@@ -856,10 +864,13 @@ def _projection_owner_context(
     mapping: dict[str, Any],
     nodes: dict[str, str],
     context_signals: tuple[ContextSignal, ...],
+    path_owner_scope: tuple[str, ...],
 ) -> dict[str, str]:
     surface = str(mapping.get("surface") or "")
     span_start, span_end = _span(mapping)
-    owners: dict[str, str] = _both_sides_projection_owner_context(mapping, nodes, context_signals)
+    owners: dict[str, str] = _distribution_projection_owner_context(mapping, nodes, path_owner_scope)
+    if not owners:
+        owners = _both_sides_projection_owner_context(mapping, nodes, context_signals)
     for signal in context_signals:
         if signal.signal_type != "PROXIMAL_MODIFIER":
             continue
@@ -879,6 +890,25 @@ def _projection_owner_context(
                 continue
             if _subject_mentions_class(subject, class_id):
                 owners[class_id] = signal.signal_id
+    return owners
+
+
+def _distribution_projection_owner_context(
+    mapping: dict[str, Any],
+    nodes: dict[str, str],
+    path_owner_scope: tuple[str, ...],
+) -> dict[str, str]:
+    distribution = str(mapping.get("projection_distribution") or "")
+    if distribution not in {"each_owner", "each_endpoint", "pairwise"}:
+        return {}
+    owner_scope = mapping.get("owner_scope")
+    if not isinstance(owner_scope, (list, tuple)) or not owner_scope:
+        owner_scope = path_owner_scope
+    owners: dict[str, str] = {}
+    for raw_class_id in owner_scope:
+        class_id = str(raw_class_id)
+        if class_id in nodes:
+            owners[class_id] = "mapping.owner_scope"
     return owners
 
 
@@ -1012,7 +1042,7 @@ def _score_attribute_candidate(
     if _shape_mentions_attribute(intent_output, attribute):
         score += 30
         evidence.append("intent_shape_field")
-    if attribute.endswith(".elem_type") and owner_class in projection_owner_context:
+    if owner_class in projection_owner_context:
         score += 120
         evidence_ids.append(projection_owner_context[owner_class])
         evidence.append("projection_owner_context")
@@ -1041,7 +1071,6 @@ def _select_many_by_rules(candidates: tuple[BindingCandidate, ...]) -> tuple[Bin
         for item in candidates
         if "projection_owner_context" in item.evidence
         and item.owner_node
-        and item.attribute.endswith(".elem_type")
     )
     if len(projection_owner_candidates) <= 1:
         return ()
@@ -1326,8 +1355,46 @@ def _unresolved(
 def _binding_clarification_options(candidates: tuple[BindingCandidate, ...]) -> list[dict[str, str]]:
     options: list[dict[str, str]] = []
     for candidate in candidates:
-        label = f"{candidate.surface} -> {candidate.attribute}"
-        if candidate.owner_class:
-            label = f"{candidate.surface} -> {candidate.attribute}"
+        label = _binding_clarification_label(candidate)
         options.append({"option_id": candidate.candidate_id, "label": label})
     return options
+
+
+def _binding_clarification_label(candidate: BindingCandidate) -> str:
+    owner = candidate.owner_class
+    attr = candidate.attribute
+    if "." in candidate.attribute:
+        owner_from_attr, attr = candidate.attribute.split(".", 1)
+        owner = owner or owner_from_attr
+    owner_label = _binding_class_label(owner)
+    attr_label = _binding_attribute_label(attr, candidate.surface)
+    if owner_label and attr_label:
+        return f"{owner_label}的{attr_label}"
+    return f"{candidate.surface} -> {candidate.attribute}"
+
+
+def _binding_class_label(class_id: str) -> str:
+    return {
+        "Service": "服务",
+        "Tunnel": "隧道",
+        "NetworkElement": "网元",
+        "Port": "端口",
+        "Fiber": "光纤",
+        "Link": "链路",
+        "Protocol": "协议",
+    }.get(class_id, class_id)
+
+
+def _binding_attribute_label(attribute: str, surface: str) -> str:
+    surface_text = surface.strip()
+    return {
+        "name": "名称",
+        "latency": "延迟",
+        "delay": "延迟",
+        "id": "ID",
+        "__internal_id": "内部ID",
+        "element_type": "类型",
+        "type": "类型",
+        "standard": "标准",
+        "ietf_standard": "标准",
+    }.get(attribute, surface_text or attribute)

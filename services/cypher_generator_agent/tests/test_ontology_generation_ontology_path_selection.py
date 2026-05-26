@@ -380,6 +380,52 @@ def test_auto_accepts_single_candidate_requests_without_calling_llm() -> None:
     assert service.llm_selector.calls == []
 
 
+def test_selected_paths_expose_path_owner_scope_for_downstream_projection_distribution() -> None:
+    class Selector:
+        def select(self, prompt_name: str, variables: dict[str, object]):
+            raise AssertionError("single-candidate path requests must not call the LLM")
+
+    service = OntologyPathSelectionService(assets=OntologyAssets.from_default_resources(), llm_selector=Selector())
+    trace = service.fill(
+        ontology_mapping={
+            "ontology_objects": [
+                {
+                    "object_id": "OO1",
+                    "class_id": "Service",
+                    "selected_roles": ["path_subject"],
+                    "evidence_refs": ["E1"],
+                    "order": 1,
+                },
+                {
+                    "object_id": "OO2",
+                    "class_id": "Tunnel",
+                    "selected_roles": ["path_subject"],
+                    "evidence_refs": ["E2"],
+                    "order": 2,
+                },
+            ],
+            "ontology_relation_hints": [
+                {
+                    "relation_hint_id": "ORH1",
+                    "relation_id": "SERVICE_USES_TUNNEL",
+                    "from_class": "Service",
+                    "to_class": "Tunnel",
+                    "selected_roles": ["path_subject"],
+                    "evidence_refs": ["E2"],
+                    "order": 2,
+                }
+            ],
+            "ontology_attributes": [],
+            "ontology_values": [],
+            "evidence": [],
+        },
+        question="查询所有服务使用的隧道",
+    )
+
+    assert trace.shape_updates["path_owner_scope"].value == ["Service", "Tunnel"]
+    assert trace.to_dict()["shape_updates"]["path_owner_scope"]["value"] == ["Service", "Tunnel"]
+
+
 def test_zero_hop_attribute_projection_marks_relation_resolution_complete() -> None:
     class Selector:
         def select(self, prompt_name: str, variables: dict[str, object]):

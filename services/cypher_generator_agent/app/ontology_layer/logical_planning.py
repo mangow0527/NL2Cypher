@@ -75,6 +75,7 @@ class OntologyLogicalPlanningService:
         intent_output: IntentOutput,
         ontology_mapping: dict[str, Any],
         coreference: dict[str, Any],
+        ontology_path_selection: Any | None = None,
     ) -> BindingTrace:
         return self.binding_service.bind(
             ontology_mapping=ontology_mapping,
@@ -85,6 +86,7 @@ class OntologyLogicalPlanningService:
             intent_output=intent_output,
             question=question,
             unmatched_fragments=lexer_trace.unmatched_fragments,
+            path_owner_scope=_path_owner_scope(_to_dict(ontology_path_selection)),
         )
 
     def finalize_shape(
@@ -115,6 +117,19 @@ def _to_dict(value: Any) -> dict[str, Any]:
         payload = to_dict()
         return payload if isinstance(payload, dict) else {}
     return {}
+
+
+def _path_owner_scope(path_payload: dict[str, Any]) -> tuple[str, ...]:
+    shape_updates = path_payload.get("shape_updates")
+    if not isinstance(shape_updates, dict):
+        return ()
+    field = shape_updates.get("path_owner_scope")
+    if not isinstance(field, dict):
+        return ()
+    value = field.get("value")
+    if not isinstance(value, (list, tuple)):
+        return ()
+    return tuple(str(item) for item in value if str(item))
 
 
 def _with_planning_nodes(

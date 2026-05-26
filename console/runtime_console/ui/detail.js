@@ -228,6 +228,74 @@ function renderTraceFields(fields = []) {
   `;
 }
 
+function tableCellValue(value) {
+  if (value === null || value === undefined || value === '') {
+    return '未记录';
+  }
+  if (typeof value === 'object') {
+    return JSON.stringify(value, null, 2);
+  }
+  return String(value);
+}
+
+function renderTraceTable(table = {}) {
+  const columns = Array.isArray(table.columns) ? table.columns : [];
+  const rows = Array.isArray(table.rows) ? table.rows : [];
+  if (!columns.length) {
+    return '';
+  }
+  const colgroup = columns
+    .map((column) => {
+      const width = Number(column.width || 0);
+      return width > 0 ? `<col style="width: ${width}px" />` : '<col />';
+    })
+    .join('');
+  const emptyRow = `
+    <tr>
+      <td class="empty-cell" colspan="${columns.length}">未记录</td>
+    </tr>
+  `;
+  return `
+    <div class="trace-table-block">
+      <h3>${escapeHtml(table.title_zh || '明细表')}</h3>
+      <div class="trace-table-shell">
+        <table class="trace-table">
+          <colgroup>${colgroup}</colgroup>
+          <thead>
+            <tr>
+              ${columns.map((column) => `<th>${escapeHtml(column.label_zh || column.key || '字段')}</th>`).join('')}
+            </tr>
+          </thead>
+          <tbody>
+            ${
+              rows.length
+                ? rows
+                    .map(
+                      (row) => `
+                        <tr>
+                          ${columns
+                            .map((column) => `<td>${escapeHtml(tableCellValue(row?.[column.key]))}</td>`)
+                            .join('')}
+                        </tr>
+                      `,
+                    )
+                    .join('')
+                : emptyRow
+            }
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function renderTraceTables(tables = []) {
+  if (!tables.length) {
+    return '';
+  }
+  return tables.map((table) => renderTraceTable(table)).join('');
+}
+
 function renderTraceSectionBlock(block = {}) {
   return `
     <h3>${escapeHtml(block.title_zh || '输出')}</h3>
@@ -237,8 +305,9 @@ function renderTraceSectionBlock(block = {}) {
 
 function renderStructuredTraceSection(section = {}) {
   const fields = Array.isArray(section.fields) ? section.fields : [];
+  const tables = Array.isArray(section.tables) ? section.tables : [];
   const blocks = Array.isArray(section.blocks) ? section.blocks : [];
-  if (!fields.length && !blocks.length) {
+  if (!fields.length && !tables.length && !blocks.length) {
     return `
       <h3>${escapeHtml(section.title_zh || '分段证据')}</h3>
       ${codeBlock(section.value)}
@@ -248,6 +317,7 @@ function renderStructuredTraceSection(section = {}) {
     <section class="trace-substep">
       <h3>${escapeHtml(section.title_zh || '分段证据')}</h3>
       ${renderTraceFields(fields)}
+      ${renderTraceTables(tables)}
       ${blocks.map((block) => renderTraceSectionBlock(block)).join('')}
     </section>
   `;
@@ -263,6 +333,7 @@ function chainMetric(label, item, valueKey = 'label_zh') {
 const cgaTraceLayerTitles = {
   orchestration: '服务编排层',
   preprocessing: '自然语言问题预处理',
+  question_framing: 'Step 0 问题框定 / 检索计划',
   lexical: '词法层',
   intent_shape: '意图识别与答案形态',
   ontology: '本体层',

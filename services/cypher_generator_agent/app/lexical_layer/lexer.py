@@ -198,24 +198,13 @@ class OntologyLexer:
         literal_matches = self._literal_extract(question, pre_literal_unmatched_fragments)
         structured_matches = tuple((*structural_matches, *literal_matches))
         raw_matches = tuple((*ac_matches, *structured_matches))
-        vector_fragments = _unmatched_fragments_from_matches(
-            question,
-            raw_matches,
-            ignored_spans=_retrieval_plan_vector_covered_spans(question_framing),
-            question_framing=question_framing,
-        )
-        vector_recalls, vector_matches = self._vector_recall(
-            vector_fragments,
-            question=question,
-            question_framing=question_framing,
-            existing_matches=raw_matches,
-        )
         unmatched_fragments = _unmatched_fragments_from_matches(
             question,
             raw_matches,
             question_framing=question_framing,
         )
-        final_matches = tuple((*raw_matches, *vector_matches))
+        vector_recalls: list[dict[str, Any]] = []
+        final_matches = raw_matches
         final_resolution = self._overlap_resolver.resolve(final_matches)
         selected = final_resolution.selected
         candidate_groups = _candidate_groups(final_matches)

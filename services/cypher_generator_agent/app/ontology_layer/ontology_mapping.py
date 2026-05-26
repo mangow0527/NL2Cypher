@@ -33,6 +33,8 @@ class MappedMention:
     raw_value: str | None = None
     role: str | None = None
     attribute_candidates: tuple[str, ...] = ()
+    projection_distribution: str | None = None
+    owner_scope: tuple[str, ...] = ()
     semantic_object_kind: str | None = None
     definition_ref: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -61,6 +63,7 @@ class MappedMention:
             "constrains_attribute",
             "raw_value",
             "role",
+            "projection_distribution",
             "semantic_object_kind",
             "definition_ref",
         ):
@@ -69,6 +72,8 @@ class MappedMention:
                 payload[key] = value
         if self.attribute_candidates:
             payload["attribute_candidates"] = list(self.attribute_candidates)
+        if self.owner_scope:
+            payload["owner_scope"] = list(self.owner_scope)
         if self.metadata:
             payload["metadata"] = dict(self.metadata)
         return payload
@@ -120,6 +125,8 @@ class OntologyMappingService:
             mapping = self._map_mention(mention_id, mention, len(mapped) + 1)
             if mapping is None:
                 continue
+            if mapping.ontology_kind == "attribute":
+                mapping = _with_return_attribute_distribution(mapping, lexer_trace.question_framing)
             selected = selected_by_mention_id.get(mention_id)
             if selected is not None:
                 metadata = dict(mapping.metadata)
@@ -275,6 +282,108 @@ class OntologyMappingService:
         return value
 
 
+def _with_return_attribute_distribution(
+    mapped: MappedMention,
+    question_framing: dict[str, Any] | None,
+) -> MappedMention:
+    targets = _question_framing_return_targets(question_framing)
+    if not targets:
+        return mapped
+    target_index = _return_target_index_for_mapping(mapped, targets)
+    if target_index is None:
+        return mapped
+    target = targets[target_index]
+    target_text = str(target.get("text") or "")
+    if not _has_each_owner_marker(target_text):
+        return mapped
+    owner_scope = _return_owner_scope(targets, target_index)
+    metadata = {
+        **mapped.metadata,
+        "distribution_surface": target_text,
+        "owner_scope_source": "question_framing.return_targets"
+        if len(owner_scope) >= 2
+        else "pending_path_owner_scope",
+    }
+    return MappedMention(
+        **{
+            **mapped.__dict__,
+            "parent_class": None,
+            "projection_distribution": "each_owner",
+            "owner_scope": owner_scope,
+            "metadata": metadata,
+        }
+    )
+
+
+def _question_framing_return_targets(question_framing: dict[str, Any] | None) -> tuple[dict[str, Any], ...]:
+    if not isinstance(question_framing, dict):
+        return ()
+    retrieval_plan = question_framing.get("retrieval_plan")
+    if not isinstance(retrieval_plan, dict):
+        return ()
+    raw_targets = retrieval_plan.get("return_targets")
+    if not isinstance(raw_targets, list):
+        return ()
+    return tuple(dict(item) for item in raw_targets if isinstance(item, dict))
+
+
+def _return_target_index_for_mapping(mapped: MappedMention, targets: tuple[dict[str, Any], ...]) -> int | None:
+    start, end = mapped.span
+    for index, target in enumerate(targets):
+        span = target.get("span")
+        if isinstance(span, (list, tuple)) and len(span) == 2:
+            try:
+                target_start = int(span[0])
+                target_end = int(span[1])
+            except (TypeError, ValueError):
+                target_start = target_end = -1
+            if target_start <= start and end <= target_end:
+                return index
+        text = str(target.get("text") or "")
+        if mapped.surface and mapped.surface in text:
+            return index
+    return None
+
+
+def _has_each_owner_marker(text: str) -> bool:
+    compact = "".join(text.split())
+    return any(marker in compact for marker in ("各自", "双方", "两端", "两侧", "两者", "二者", "分别"))
+
+
+def _return_owner_scope(targets: tuple[dict[str, Any], ...], target_index: int) -> tuple[str, ...]:
+    owner_scope: list[str] = []
+    for target in targets[:target_index]:
+        for class_id in _classes_mentioned_in_return_target(str(target.get("text") or "")):
+            if class_id not in owner_scope:
+                owner_scope.append(class_id)
+    if owner_scope:
+        return tuple(owner_scope)
+    for target in targets:
+        for class_id in _classes_mentioned_in_return_target(str(target.get("text") or "")):
+            if class_id not in owner_scope:
+                owner_scope.append(class_id)
+    return tuple(owner_scope)
+
+
+def _classes_mentioned_in_return_target(text: str) -> tuple[str, ...]:
+    classes: list[str] = []
+    for class_id, aliases in _CLASS_ALIASES.items():
+        if any(alias in text for alias in aliases):
+            classes.append(class_id)
+    return tuple(classes)
+
+
+_CLASS_ALIASES: dict[str, tuple[str, ...]] = {
+    "Service": ("服务", "业务"),
+    "Tunnel": ("隧道",),
+    "NetworkElement": ("源网元", "目的网元", "网元", "设备"),
+    "Port": ("端口", "接口"),
+    "Protocol": ("协议",),
+    "Fiber": ("光纤",),
+    "Link": ("链路",),
+}
+
+
 def _mapping_entries(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     entries = payload.get("mappings", [])
     if not isinstance(entries, list):
@@ -418,6 +527,9 @@ def _ontology_mapping_ir(mention_rows: list[MappedMention]) -> OntologyMapping:
                         "attribute_id": mapped.ontology_id,
                         "parent_class": mapped.parent_class,
                         "attribute_candidates": list(mapped.attribute_candidates),
+                        "projection_distribution": mapped.projection_distribution,
+                        "owner_scope": list(mapped.owner_scope),
+                        **({"metadata": dict(mapped.metadata)} if mapped.metadata else {}),
                         "evidence_refs": evidence_refs,
                         "order": order,
                     }

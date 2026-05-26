@@ -103,6 +103,7 @@ QUESTION_FRAMING_PROMPT_TEMPLATE = """请把下面的问题拆成几个原子性
 8. “通过什么关系继续找”只描述从一个对象到另一个对象的路径动作和对象短语。
 9. 如果一个片段同时包含“关系动作”和“最终要展示的字段”，要拆开，不要合成一个原子问题。
 10. 出现“返回/并返回/输出/列出”后面的内容，优先标为“最后返回什么”，不要继续并入 RELATION_PATH。
+11. 返回内容里有多个字段、多个对象字段或“各自/双方/两端”的字段时，必须按每个返回目标拆成多个“最后返回什么”原子问题。
 
 输出格式必须是：
 原子问题：
@@ -127,6 +128,14 @@ QUESTION_FRAMING_PROMPT_TEMPLATE = """请把下面的问题拆成几个原子性
 原子问题：
 1. 所有服务与隧道之间的连接关系 ｜ 找什么对象 + 通过什么关系继续找
 2. 双方的元素类型 ｜ 最后返回什么
+
+示例4：
+问题：查询所有服务使用的隧道，返回服务名称、隧道名称以及各自的延迟
+原子问题：
+1. 所有服务使用的隧道 ｜ 找什么对象 + 通过什么关系继续找
+2. 服务名称 ｜ 最后返回什么
+3. 隧道名称 ｜ 最后返回什么
+4. 各自的延迟 ｜ 最后返回什么
 
 反例修正：
 问题：查询对象A的名称及其使用的对象B的名称和标准
@@ -157,10 +166,10 @@ class QuestionFramingService:
             raw_response = self._client.complete(prompt)
         except Exception as exc:  # pragma: no cover - defensive runtime degradation
             return QuestionFramingTrace.empty(question, reason=f"question_framing_llm_error:{type(exc).__name__}")
-        return _parse_question_framing_response(question, raw_response)
+        return _parse_question_framing_response(question, raw_response, prompt=prompt)
 
 
-def _parse_question_framing_response(question: str, raw_response: str) -> QuestionFramingTrace:
+def _parse_question_framing_response(question: str, raw_response: str, *, prompt: str = "") -> QuestionFramingTrace:
     atoms: list[QuestionAtom] = []
     diagnostics: list[str] = []
     for line in raw_response.splitlines():
@@ -199,6 +208,7 @@ def _parse_question_framing_response(question: str, raw_response: str) -> Questi
         retrieval_plan=retrieval_plan,
         diagnostics=tuple(diagnostics),
         enabled=bool(atoms),
+        prompt=prompt,
     )
 
 

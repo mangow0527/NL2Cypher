@@ -114,6 +114,69 @@ def test_clarification_service_extracts_shape_precheck_failure() -> None:
     assert payload["user_message"] == "你想把名称绑定到服务还是隧道？"
 
 
+def test_clarification_service_keeps_step_3_5_binding_question_aligned_with_options() -> None:
+    selector = _FakeClarificationSelector("你想把“延迟”理解为服务的延迟，还是隧道的延迟？")
+    service = ClarificationQuestionService(llm_selector=selector)
+    exc = ClarificationNeeded(
+        stage="step_3_5",
+        message="invalid llm binding",
+        clarification={
+            "precheck_result": {
+                "passed": False,
+                "failures": [
+                    {
+                        "check": "blocking_unresolved_empty",
+                        "source_stage": "step_3_5",
+                        "reason_code": "invalid_llm_binding",
+                        "message": "unknown candidate_id",
+                        "surface": "延迟",
+                        "clarification_options": [
+                            {"option_id": "bc_projection_1", "label": "服务的延迟"},
+                            {"option_id": "bc_projection_2", "label": "隧道的延迟"},
+                        ],
+                    }
+                ],
+            }
+        },
+        partial_trace={
+            "ontology_path_selection": {
+                "path_requests": [
+                    {
+                        "request_id": "PR1",
+                        "from_class": "Service",
+                        "to_class": "Tunnel",
+                        "relation_hint": "SERVICE_USES_TUNNEL",
+                    }
+                ],
+                "candidate_paths": [
+                    {
+                        "path_id": "P1",
+                        "request_id": "PR1",
+                        "from_class": "Service",
+                        "to_class": "Tunnel",
+                        "relation_chain": ["SERVICE_USES_TUNNEL"],
+                    }
+                ],
+                "selected_paths": [
+                    {"request_id": "PR1", "path_id": "P1", "relation_chain": ["SERVICE_USES_TUNNEL"]}
+                ],
+            }
+        },
+    )
+
+    payload = service.build(
+        exc,
+        original_question="查询服务及其使用的隧道的时延",
+        core_question="查询服务及其使用的隧道的时延",
+    )
+
+    assert payload["reason_code"] == "invalid_llm_binding"
+    assert payload["options"] == ["服务的延迟", "隧道的延迟"]
+    assert payload["suggested_question"] == "你想把“延迟”理解为服务的延迟，还是隧道的延迟？"
+    assert "服务 -> 使用的隧道" not in selector.calls[0]["suggested_question"]
+    assert selector.calls[0]["option_list_with_ids"] == "O1: 服务的延迟\nO2: 隧道的延迟"
+
+
 @pytest.mark.parametrize(
     ("source_step", "reason_code", "message", "expected_missing"),
     [

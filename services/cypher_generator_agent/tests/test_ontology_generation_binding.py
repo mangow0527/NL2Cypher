@@ -430,6 +430,101 @@ def test_both_sides_elem_type_projection_binds_path_endpoint_owners() -> None:
     assert trace.unresolved_items == ()
 
 
+def test_each_owner_generic_attribute_projection_binds_owner_scope_candidates() -> None:
+    ontology_mapping = {
+        "ontology_objects": [],
+        "ontology_relation_hints": [],
+        "ontology_attributes": [
+            {
+                "attribute_ref_id": "OA1",
+                "attribute_id": "Link.latency",
+                "attribute_candidates": ["Link.latency", "Service.latency", "Tunnel.latency"],
+                "projection_distribution": "each_owner",
+                "owner_scope": ["Service", "Tunnel"],
+                "metadata": {"owner_scope_source": "question_framing.return_targets"},
+                "evidence_refs": ["E1"],
+                "order": 1,
+            }
+        ],
+        "ontology_values": [],
+        "evidence": [
+            {
+                "evidence_id": "E1",
+                "mention_id": "m_link_latency_1",
+                "mention_type": "ATTRIBUTE",
+                "surface": "延迟",
+                "span": [26, 28],
+                "ontology_kind": "attribute",
+                "ontology_id": "Link.latency",
+                "candidate_refs": ["Link.latency", "Service.latency", "Tunnel.latency"],
+            }
+        ],
+    }
+
+    trace = OntologyBindingService().bind(
+        ontology_mapping=ontology_mapping,
+        merged_nodes=_merged_nodes(),
+        candidate_family={},
+        context_signals=(),
+        shape_signals=(),
+        intent_output=_intent_output(),
+        question="查询所有服务使用的隧道，返回服务名称、隧道名称以及各自的延迟",
+    )
+
+    assert [item.result for item in trace.projections] == [
+        {"node": "s1", "attribute": "Service.latency", "alias": "service_latency"},
+        {"node": "t1", "attribute": "Tunnel.latency", "alias": "tunnel_latency"},
+    ]
+    assert trace.unresolved_items == ()
+
+
+def test_each_owner_generic_attribute_projection_uses_path_owner_scope_when_mapping_scope_is_absent() -> None:
+    ontology_mapping = {
+        "ontology_objects": [],
+        "ontology_relation_hints": [],
+        "ontology_attributes": [
+            {
+                "attribute_ref_id": "OA1",
+                "attribute_id": "Link.latency",
+                "attribute_candidates": ["Link.latency", "Service.latency", "Tunnel.latency"],
+                "projection_distribution": "each_owner",
+                "evidence_refs": ["E1"],
+                "order": 1,
+            }
+        ],
+        "ontology_values": [],
+        "evidence": [
+            {
+                "evidence_id": "E1",
+                "mention_id": "m_link_latency_1",
+                "mention_type": "ATTRIBUTE",
+                "surface": "延迟",
+                "span": [20, 22],
+                "ontology_kind": "attribute",
+                "ontology_id": "Link.latency",
+                "candidate_refs": ["Link.latency", "Service.latency", "Tunnel.latency"],
+            }
+        ],
+    }
+
+    trace = OntologyBindingService().bind(
+        ontology_mapping=ontology_mapping,
+        merged_nodes=_merged_nodes(),
+        candidate_family={},
+        context_signals=(),
+        shape_signals=(),
+        intent_output=_intent_output(),
+        question="查询所有服务与隧道之间的连接关系，并返回双方的延迟",
+        path_owner_scope=("Service", "Tunnel"),
+    )
+
+    assert [item.result for item in trace.projections] == [
+        {"node": "s1", "attribute": "Service.latency", "alias": "service_latency"},
+        {"node": "t1", "attribute": "Tunnel.latency", "alias": "tunnel_latency"},
+    ]
+    assert trace.unresolved_items == ()
+
+
 def test_attribute_family_is_disambiguated_in_binding_stage() -> None:
     trace = OntologyBindingService().bind(
         ontology_mapping=_mapping(
@@ -585,8 +680,8 @@ def test_illegal_llm_candidate_or_signal_is_rejected_as_unresolved() -> None:
     assert trace.unresolved_items[0]["reason_code"] == "invalid_llm_binding"
     assert "unknown candidate_id" in trace.unresolved_items[0]["reason"]
     assert [option["label"] for option in trace.unresolved_items[0]["options"]] == [
-        "名称 -> Service.name",
-        "名称 -> Tunnel.name",
+        "服务的名称",
+        "隧道的名称",
     ]
 
 

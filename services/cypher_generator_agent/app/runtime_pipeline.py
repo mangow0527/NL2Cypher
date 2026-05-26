@@ -245,6 +245,7 @@ class OntologyGenerationPipeline:
                 intent_output=intent_output,
                 ontology_mapping=ontology_mapping_payload,
                 coreference=coreference,
+                ontology_path_selection=ontology_path_selection,
             )
             partial_trace["binding"] = binding.to_dict()
             shape_finalization = self.logical_planning_service.finalize_shape(

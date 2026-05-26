@@ -203,7 +203,7 @@ def _metric_attribute_pipeline(*, lexer: OntologyLexer | None = None) -> Ontolog
     )
 
 
-def test_lexer_uses_ac_automaton_and_vector_recall_for_unmatched_relation_synonym() -> None:
+def test_lexer_uses_ac_automaton_without_vector_recall_for_unmatched_relation_synonym() -> None:
     assets = OntologyAssets.from_default_resources()
     pipeline = _pipeline(
         assets=assets,
@@ -214,13 +214,9 @@ def test_lexer_uses_ac_automaton_and_vector_recall_for_unmatched_relation_synony
     lexer = result.trace.to_dict()["lexer"]
 
     assert lexer["matcher"] == "ac"
-    assert lexer["vector_recalls"]
-    assert any(item["fragment"] == "穿越" for item in lexer["vector_recalls"])
-    assert any(
-        candidate["canonical_id"] == "REL_PATH_THROUGH"
-        for item in lexer["vector_recalls"]
-        for candidate in item["candidates"]
-    )
+    assert lexer["vector_recalls"] == []
+    assert any(item["surface"] == "穿越" for item in lexer["unmatched_fragments"])
+    assert not any(item["canonical_id"] == "REL_PATH_THROUGH" for item in lexer["mentions"])
     assert "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel)" in result.cypher
 
 

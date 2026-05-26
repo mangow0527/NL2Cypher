@@ -209,6 +209,18 @@ class FakeRelationPathStructuralVectorRetriever:
                     metadata={"dictionary": "attributes"},
                 )
             ]
+        if fragment == "双方":
+            return [
+                MentionVectorCandidate(
+                    id="mention.Protocol.协议",
+                    text="双方 protocol object",
+                    canonical_id="Protocol",
+                    mention_type="OBJECT",
+                    surface="协议",
+                    score=0.93,
+                    metadata={"dictionary": "business_objects"},
+                )
+            ]
         return []
 
 
@@ -388,32 +400,25 @@ class FakeRetrievalPlanVectorRetriever:
         return []
 
 
-def test_lexer_uses_mention_vector_retriever_for_unmatched_fragments() -> None:
+def test_lexer_does_not_use_mention_vector_retriever_for_unmatched_fragments() -> None:
     assets = OntologyAssets.from_default_resources()
     retriever = FakeMentionVectorRetriever()
     lexer = OntologyLexer(assets, vector_retriever=retriever)
 
     trace = lexer.run("查询金牌服务穿越的隧道名称").to_dict()
 
-    assert retriever.calls == [
-        {"fragment": "穿越", "expected_mention_type": "RELATION", "top_k": 5}
-    ]
+    assert retriever.calls == []
     assert trace["unmatched_fragments"] == [
         {"surface": "穿越", "span": [6, 8], "expected_mention_type": "RELATION"}
     ]
-    assert trace["vector_recalls"][0]["provider"] == "fake_mention_vector"
-    assert trace["vector_recalls"][0]["candidates"][0]["canonical_id"] == "REL_PATH_THROUGH"
-    assert (
-        "REL_PATH_THROUGH",
-        "穿越",
-        "RELATION",
-    ) in [
-        (mention["canonical_id"], mention["surface"], mention["mention_type"])
+    assert trace["vector_recalls"] == []
+    assert not any(
+        mention["canonical_id"] == "REL_PATH_THROUGH" and mention["surface"] == "穿越"
         for mention in trace["mentions"]
-    ]
+    )
 
 
-def test_retrieval_plan_path_query_replaces_covered_fragment_vector_recall() -> None:
+def test_retrieval_plan_path_query_does_not_trigger_lexical_vector_recall() -> None:
     assets = OntologyAssets.from_default_resources()
     retriever = FakeRetrievalPlanVectorRetriever()
     lexer = OntologyLexer(assets, vector_retriever=retriever)
@@ -460,13 +465,25 @@ def test_retrieval_plan_path_query_replaces_covered_fragment_vector_recall() -> 
 
     trace = lexer.run(question, question_framing=framing).to_dict()
 
-    assert retriever.calls == [
-        {"fragment": "所有服务 使用的隧道", "expected_mention_type": None, "top_k": 5}
-    ]
-    assert trace["vector_recalls"][0]["source"] == "question_framing_retrieval_plan"
-    assert trace["vector_recalls"][0]["fragment"] == "所有服务 使用的隧道"
-    assert trace["vector_recalls"][0]["candidates"][0]["canonical_id"] == "REL_SERVICE_USES_TUNNEL"
-    assert not any(call["fragment"] in {"使用的隧道", "及其使用的隧道"} for call in retriever.calls)
+    assert retriever.calls == []
+    assert trace["vector_recalls"] == []
+    assert not any(
+        mention["canonical_id"] == "REL_SERVICE_USES_TUNNEL" and mention["match_source"] == "vector_recall"
+        for mention in trace["selected_hits"]
+    )
+
+
+def test_endpoint_modifier_words_do_not_vector_recall_as_schema_mentions() -> None:
+    assets = OntologyAssets.from_default_resources()
+    retriever = FakeRelationPathStructuralVectorRetriever()
+    lexer = OntologyLexer(assets, vector_retriever=retriever)
+
+    trace = lexer.run("查询所有服务与隧道的对应关系，并返回双方的名称及延迟值").to_dict()
+
+    assert retriever.calls == []
+    assert trace["vector_recalls"] == []
+    assert not any(mention["surface"] == "双方" for mention in trace["mentions"])
+    assert not any(mention["canonical_id"] == "Protocol" for mention in trace["mentions"])
 
 
 def test_generic_connector_fragment_does_not_independently_vector_recall() -> None:

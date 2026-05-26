@@ -150,6 +150,101 @@ def test_candidate_refs_are_preserved_as_candidate_family_and_validated() -> Non
     assert attribute["attribute_candidates"] == ["Protocol.standard", "Tunnel.ietf_standard"]
 
 
+def test_each_owner_return_attribute_keeps_owner_scope_from_question_framing_targets() -> None:
+    trace = LexerTrace(
+        question="查询所有服务使用的隧道，返回服务名称、隧道名称以及各自的延迟",
+        matcher="test",
+        ac_matches=(),
+        selected_hits=(),
+        discarded_hits=(),
+        resolution_summary={},
+        unmatched_fragments=(),
+        vector_recalls=(),
+        mentions=(
+            _mention("Service", "OBJECT", "服务", (4, 6)),
+            _mention("REL_SERVICE_USES_TUNNEL", "RELATION", "使用的", (6, 9)),
+            _mention("Tunnel", "OBJECT", "隧道", (9, 11)),
+            _mention(
+                "Link.latency",
+                "ATTRIBUTE",
+                "延迟",
+                (31, 33),
+                {"candidate_refs": ["Link.latency", "Service.latency", "Tunnel.latency"]},
+            ),
+        ),
+        unmatched_spans=(),
+        context_signals=(),
+        shape_signals=(),
+        question_framing={
+            "retrieval_plan": {
+                "return_targets": [
+                    {"atom_id": "QA2", "text": "服务名称", "span": [15, 19], "roles": ["RETURN_CONTENT"]},
+                    {"atom_id": "QA3", "text": "隧道名称", "span": [20, 24], "roles": ["RETURN_CONTENT"]},
+                    {"atom_id": "QA4", "text": "各自的延迟", "span": [26, 33], "roles": ["RETURN_CONTENT"]},
+                ]
+            }
+        },
+    )
+
+    mapping = OntologyMappingService(OntologyAssets.from_default_resources()).map(
+        lexer_trace=trace,
+        object_role_selection=ObjectRoleSelection(selected_objects=()),
+    )
+    attribute = mapping.to_dict()["ontology_attributes"][0]
+
+    assert attribute["attribute_id"] == "Link.latency"
+    assert "parent_class" not in attribute
+    assert attribute["attribute_candidates"] == ["Link.latency", "Service.latency", "Tunnel.latency"]
+    assert attribute["projection_distribution"] == "each_owner"
+    assert attribute["owner_scope"] == ["Service", "Tunnel"]
+    assert attribute["metadata"]["owner_scope_source"] == "question_framing.return_targets"
+
+
+def test_each_owner_return_attribute_keeps_distribution_when_scope_requires_path_context() -> None:
+    trace = LexerTrace(
+        question="查询所有服务与隧道之间的连接关系，并返回双方的延迟",
+        matcher="test",
+        ac_matches=(),
+        selected_hits=(),
+        discarded_hits=(),
+        resolution_summary={},
+        unmatched_fragments=(),
+        vector_recalls=(),
+        mentions=(
+            _mention("Service", "OBJECT", "服务", (4, 6)),
+            _mention("Tunnel", "OBJECT", "隧道", (7, 9)),
+            _mention(
+                "Link.latency",
+                "ATTRIBUTE",
+                "延迟",
+                (24, 26),
+                {"candidate_refs": ["Link.latency", "Service.latency", "Tunnel.latency"]},
+            ),
+        ),
+        unmatched_spans=(),
+        context_signals=(),
+        shape_signals=(),
+        question_framing={
+            "retrieval_plan": {
+                "return_targets": [
+                    {"atom_id": "QA2", "text": "双方的延迟", "span": [21, 26], "roles": ["RETURN_CONTENT"]},
+                ]
+            }
+        },
+    )
+
+    mapping = OntologyMappingService(OntologyAssets.from_default_resources()).map(
+        lexer_trace=trace,
+        object_role_selection=ObjectRoleSelection(selected_objects=()),
+    )
+    attribute = mapping.to_dict()["ontology_attributes"][0]
+
+    assert "parent_class" not in attribute
+    assert attribute["projection_distribution"] == "each_owner"
+    assert "owner_scope" not in attribute
+    assert attribute["metadata"]["owner_scope_source"] == "pending_path_owner_scope"
+
+
 def test_relation_selected_as_return_subject_backfills_target_object() -> None:
     service = OntologyMappingService(OntologyAssets.from_default_resources())
     trace = LexerTrace(

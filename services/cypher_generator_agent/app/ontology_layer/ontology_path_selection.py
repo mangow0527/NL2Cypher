@@ -1175,7 +1175,7 @@ def _shape_updates(
             )
         }
     hop_count = sum(len(item.relation_chain) for item in selected_paths)
-    return {
+    updates = {
         "hop_count": InitialShapeField(value=hop_count, source="ontology_path_selection", decision="accept", confidence=1.0),
         "relation_chain_type": InitialShapeField(
             value="fixed_chain",
@@ -1184,6 +1184,32 @@ def _shape_updates(
             confidence=1.0,
         ),
     }
+    owner_scope = _path_owner_scope(path_requests, selected_paths)
+    if owner_scope:
+        updates["path_owner_scope"] = InitialShapeField(
+            value=list(owner_scope),
+            source="ontology_path_selection",
+            decision="accept",
+            confidence=1.0,
+            derived_from=tuple(selected.request_id for selected in selected_paths),
+        )
+    return updates
+
+
+def _path_owner_scope(
+    path_requests: tuple[PathRequest, ...],
+    selected_paths: tuple[SelectedPath, ...],
+) -> tuple[str, ...]:
+    requests_by_id = {request.request_id: request for request in path_requests}
+    scope: list[str] = []
+    for selected in selected_paths:
+        request = requests_by_id.get(selected.request_id)
+        if request is None:
+            continue
+        for class_id in (request.from_class, request.to_class):
+            if class_id and class_id not in scope:
+                scope.append(class_id)
+    return tuple(scope)
 
 
 def _path_selection_cards(
