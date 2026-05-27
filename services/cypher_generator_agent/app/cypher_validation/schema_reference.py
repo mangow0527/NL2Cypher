@@ -26,9 +26,13 @@ DIRECTED_PATTERN_RE = re.compile(
     r")"
 )
 VAR_PROPERTY_RE = re.compile(rf"(?<!\$)\b(?P<var>{IDENTIFIER_RE})\.(?P<property>{IDENTIFIER_RE})\b")
+NUMERIC_AGG_START_RE = re.compile(rf"\b(?P<function>sum|avg)\s*\(", re.IGNORECASE)
+WITH_ALIAS_RE = re.compile(rf"(?P<expression>.+?)\s+AS\s+(?P<alias>{IDENTIFIER_RE})\s*$", re.IGNORECASE)
+IDENTIFIER_TOKEN_RE = re.compile(rf"\b(?P<identifier>{IDENTIFIER_RE})\b")
 MAP_KEY_RE = re.compile(rf"(?P<key>{IDENTIFIER_RE})\s*:")
 NODE_LABEL_RE = re.compile(rf":\s*(?P<label>{IDENTIFIER_RE})")
 REL_TYPE_RE = re.compile(rf"[:|]\s*(?P<type>{IDENTIFIER_RE})")
+NUMERIC_PROPERTY_TYPES = frozenset({"int", "integer", "float", "double", "number", "decimal"})
 
 
 @dataclass(frozen=True)
@@ -68,6 +72,7 @@ def validate_schema_references(
         _validate_match_clause(match_clause.text, registry, bindings, errors)
 
     _validate_var_properties(parsed.cypher, registry, bindings, errors)
+    _validate_numeric_aggregate_properties(parsed, registry, bindings, errors)
     return errors
 
 
@@ -189,6 +194,164 @@ def _validate_var_properties(
             )
             continue
         _validate_property(registry, binding.owner, property_name, match.group(0), errors)
+
+
+def _validate_numeric_aggregate_properties(
+    parsed: ParsedCypher,
+    registry: GraphSemanticRegistry,
+    bindings: dict[str, Binding],
+    errors: list[CypherValidationIssue],
+) -> None:
+    aliases = _infer_with_alias_types(parsed, registry, bindings)
+    for function_name, argument, location in _iter_numeric_aggregate_calls(parsed.cypher):
+        for property_match in VAR_PROPERTY_RE.finditer(argument):
+            variable = property_match.group("var")
+            property_name = property_match.group("property")
+            binding = bindings.get(variable)
+            if binding is None:
+                continue
+
+            try:
+                property_type = registry.property_type(binding.owner, property_name)
+            except RegistryLookupError:
+                continue
+
+            if property_type.lower() in NUMERIC_PROPERTY_TYPES:
+                continue
+
+            errors.append(
+                validation_error(
+                    SCHEMA_FAILURE_CODE,
+                    (
+                        f"{function_name} requires a numeric property, "
+                        f"but {binding.owner}.{property_name} has type {property_type}"
+                    ),
+                    "schema_reference",
+                    location,
+                )
+            )
+
+        for alias_match in IDENTIFIER_TOKEN_RE.finditer(argument):
+            alias = alias_match.group("identifier")
+            property_type = aliases.get(alias)
+            if property_type is None or property_type.lower() in NUMERIC_PROPERTY_TYPES:
+                continue
+
+            errors.append(
+                validation_error(
+                    SCHEMA_FAILURE_CODE,
+                    f"{function_name} requires a numeric expression, but alias {alias} has type {property_type}",
+                    "schema_reference",
+                    location,
+                )
+            )
+
+
+def _iter_numeric_aggregate_calls(cypher: str) -> list[tuple[str, str, str]]:
+    calls: list[tuple[str, str, str]] = []
+    for match in NUMERIC_AGG_START_RE.finditer(cypher):
+        open_index = cypher.find("(", match.start())
+        close_index = _matching_parenthesis(cypher, open_index)
+        if close_index is None:
+            continue
+        function_name = match.group("function").lower()
+        argument = cypher[open_index + 1 : close_index]
+        calls.append((function_name, argument, cypher[match.start() : close_index + 1]))
+    return calls
+
+
+def _infer_with_alias_types(
+    parsed: ParsedCypher,
+    registry: GraphSemanticRegistry,
+    bindings: dict[str, Binding],
+) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for clause in parsed.clauses:
+        if clause.name != "WITH":
+            continue
+        for item in _split_top_level_comma(clause.text[len("WITH") :].strip()):
+            alias_match = WITH_ALIAS_RE.match(item)
+            if alias_match is None:
+                continue
+            expression = alias_match.group("expression")
+            property_match = VAR_PROPERTY_RE.fullmatch(expression.strip())
+            if property_match is None:
+                continue
+
+            binding = bindings.get(property_match.group("var"))
+            if binding is None:
+                continue
+
+            try:
+                aliases[alias_match.group("alias")] = registry.property_type(
+                    binding.owner,
+                    property_match.group("property"),
+                )
+            except RegistryLookupError:
+                continue
+    return aliases
+
+
+def _split_top_level_comma(text: str) -> list[str]:
+    parts: list[str] = []
+    start = 0
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    for index, char in enumerate(text):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if quote:
+            if char == quote:
+                quote = None
+            continue
+        if char in {'"', "'"}:
+            quote = char
+            continue
+        if char == "(":
+            depth += 1
+            continue
+        if char == ")" and depth > 0:
+            depth -= 1
+            continue
+        if char == "," and depth == 0:
+            parts.append(text[start:index].strip())
+            start = index + 1
+    parts.append(text[start:].strip())
+    return [part for part in parts if part]
+
+
+def _matching_parenthesis(text: str, open_index: int) -> int | None:
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    for index in range(open_index, len(text)):
+        char = text[index]
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if quote:
+            if char == quote:
+                quote = None
+            continue
+        if char in {'"', "'"}:
+            quote = char
+            continue
+        if char == "(":
+            depth += 1
+            continue
+        if char == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
 
 
 def _parse_node_pattern(raw: str) -> NodePattern:

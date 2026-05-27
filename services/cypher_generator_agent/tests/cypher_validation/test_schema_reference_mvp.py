@@ -77,6 +77,55 @@ def test_edge_variable_property_is_rejected_when_property_does_not_belong_to_edg
     assert "unknown_property" in result.errors[0].message
 
 
+@pytest.mark.parametrize(
+    ("cypher", "message_fragment"),
+    [
+        ("MATCH (ne:NetworkElement) RETURN avg(ne.name) AS avg_name", "avg"),
+        ("MATCH (ne:NetworkElement) RETURN sum(ne.location) AS total_location", "sum"),
+        ("MATCH (t:Tunnel) RETURN avg(t.id) AS avg_id", "string"),
+        ("MATCH (ne:NetworkElement) RETURN avg(ne.name + 1) AS avg_name", "avg"),
+        ("MATCH (ne:NetworkElement) RETURN sum(DISTINCT ne.location + 1) AS total_location", "sum"),
+        ("MATCH (ne:NetworkElement) RETURN avg((ne.name + 1)) AS avg_name", "avg"),
+        (
+            "MATCH (ne:NetworkElement) WITH ne.name AS device_name RETURN avg(device_name) AS avg_name",
+            "device_name",
+        ),
+    ],
+)
+def test_sum_and_avg_reject_non_numeric_properties(
+    validator: CypherSelfValidator,
+    cypher: str,
+    message_fragment: str,
+) -> None:
+    result = validate(validator, cypher)
+
+    assert result.valid is False
+    assert [error.code for error in result.errors] == ["cypher_schema_reference_invalid"]
+    assert result.errors[0].check == "schema_reference"
+    assert message_fragment in result.errors[0].message
+
+
+@pytest.mark.parametrize(
+    "cypher",
+    [
+        "MATCH (t:Tunnel) RETURN avg(t.bandwidth) AS avg_bandwidth",
+        "MATCH (t:Tunnel)-[p:PATH_THROUGH]->(ne:NetworkElement) RETURN sum(p.hop_order) AS hops",
+        "MATCH (ne:NetworkElement) RETURN count(ne.name) AS named_devices",
+        "MATCH (ne:NetworkElement) RETURN min(ne.name) AS first_name",
+        "MATCH (ne:NetworkElement) RETURN max(ne.name) AS last_name",
+        "MATCH (t:Tunnel) WITH t.bandwidth AS bandwidth RETURN avg(bandwidth) AS avg_bandwidth",
+    ],
+)
+def test_numeric_aggregates_accept_compatible_properties(
+    validator: CypherSelfValidator,
+    cypher: str,
+) -> None:
+    result = validate(validator, cypher)
+
+    assert result.valid is True
+    assert result.errors == []
+
+
 def test_reverse_edge_direction_uses_reversed_endpoint_validation(
     validator: CypherSelfValidator,
 ) -> None:

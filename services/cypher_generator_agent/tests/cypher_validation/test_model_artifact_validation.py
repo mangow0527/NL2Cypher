@@ -48,6 +48,23 @@ def test_loader_rejects_metric_full_cypher_with_unknown_schema_reference() -> No
     assert "MissingVertex" in str(error.value)
 
 
+def test_loader_rejects_metric_full_cypher_with_invalid_aggregate_property_type() -> None:
+    model = _load_model_dict()
+    metric = model["metrics"][0]
+    metric.pop("pattern")
+    metric.pop("expression")
+    metric["valid_dimensions"] = []
+    metric["full_cypher"] = "MATCH (ne:NetworkElement) RETURN avg(ne.name + 1) AS avg_name"
+
+    with pytest.raises(GraphModelValidationError) as error:
+        load_graph_semantic_model(model)
+
+    assert "cypher_schema_reference_invalid" in _error_codes(error.value)
+    assert "metrics.device_count.full_cypher" in _error_locations(error.value)
+    assert "self_validation_check=schema_reference" in str(error.value)
+    assert "avg" in str(error.value)
+
+
 def test_loader_accepts_readonly_schema_valid_metric_full_cypher() -> None:
     model = _load_model_dict()
     metric = model["metrics"][0]

@@ -16,13 +16,25 @@ def validator() -> CypherSelfValidator:
     return CypherSelfValidator(load_graph_semantic_model(FIXTURE_PATH).registry)
 
 
-@pytest.mark.parametrize("function_name", ["count", "sum", "avg", "min", "max"])
+@pytest.mark.parametrize(
+    ("function_name", "expression"),
+    [
+        ("count", "ne.id"),
+        ("sum", "t.bandwidth"),
+        ("avg", "t.bandwidth"),
+        ("min", "t.bandwidth"),
+        ("max", "t.bandwidth"),
+    ],
+)
 def test_allowed_aggregate_functions_pass_target_dialect(
     validator: CypherSelfValidator,
     function_name: str,
+    expression: str,
 ) -> None:
+    label = "Tunnel" if expression.startswith("t.") else "NetworkElement"
+    variable = expression.split(".", 1)[0]
     result = validator.validate_generated_query(
-        f"MATCH (ne:NetworkElement) RETURN {function_name}(ne.id) AS value"
+        f"MATCH ({variable}:{label}) RETURN {function_name}({expression}) AS value"
     )
 
     assert result.valid is True
