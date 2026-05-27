@@ -46,39 +46,27 @@ OSI schema 只能保证结构格式。以下语义约束必须由本系统补充
 
 ```mermaid
 flowchart TD
-  A["NL Question"] --> A1["Input Clarification Gate"]
-  A1 --> B["Question Decomposer"]
-  A1 -->|"underspecified input"| K["Clarification Required"]
-  B --> C["Candidate Retriever"]
-  C --> D["LiteralResolver"]
-  D --> E["Grounded LLM Understanding"]
-  E --> F["Semantic Binder"]
-  F --> G["Semantic Validator"]
-  G --> H{"Valid?"}
-  H -->|"yes"| I["Restricted Query DSL"]
-  H -->|"repairable"| J["Repair and Clarification Controller"]
+  A["NL Question<br/>自然语言问题"] --> A1["Input Clarification Gate<br/>输入澄清门禁"]
+  A1 --> B["Question Decomposer<br/>问题拆解器"]
+  A1 -->|"underspecified input / 输入信息不足"| K["Clarification Required<br/>需要澄清"]
+  B --> C["Candidate Retriever<br/>候选召回器"]
+  C --> D["LiteralResolver<br/>字面值解析器"]
+  D --> E["Grounded LLM Understanding<br/>基于语义候选的 LLM 理解"]
+  E --> F["Semantic Binder<br/>语义绑定器"]
+  F --> G["Semantic Validator<br/>语义校验器"]
+  G --> H{"Valid?<br/>是否有效？"}
+  H -->|"yes / 通过"| I["Restricted Query DSL<br/>受限查询 DSL"]
+  H -->|"repairable / 可修复"| J["Repair and Clarification Controller<br/>修复与澄清控制器"]
   J --> E
-  H -->|"needs user"| K["Clarification Required"]
-  H -->|"unsupported"| L["Unsupported Query Shape"]
-  I --> M["DSL Parser / AST"]
-  M --> N["Cypher Compiler"]
-  N --> O["Cypher Validation"]
-  O --> P["Execution"]
-  P --> Q["Execution Feedback Analyzer"]
-  Q --> R["Result / Failure / Clarification"]
+  H -->|"needs user / 需要用户确认"| K["Clarification Required<br/>需要澄清"]
+  H -->|"unsupported / 不支持"| L["Unsupported Query Shape<br/>不支持的查询形态"]
+  I --> M["DSL Parser / AST<br/>DSL 解析器 / AST"]
+  M --> N["Cypher Compiler<br/>Cypher 编译器"]
+  N --> O["Cypher Validation<br/>Cypher 校验"]
+  O --> P["Execution<br/>执行"]
+  P --> Q["Execution Feedback Analyzer<br/>执行反馈分析器"]
+  Q --> R["Result / Failure / Clarification<br/>结果 / 失败 / 澄清"]
 ```
-
-流程图中文解释：
-
-1. 用户输入自然语言问题后，系统先进入 `Input Clarification Gate`。这一层只判断问题本身是否足够完整，例如“那个设备怎么样了”这类缺少指代对象的问题会直接进入 `Clarification Required`，不继续消耗后续语义召回和 LLM 绑定资源。
-2. 如果问题可以继续处理，`Question Decomposer` 先做领域无关拆解，把问题拆成目标概念、关系短语、字面值、时间词、语气词、实质词和输出形态。这一步不绑定 OSI 对象，目的是先确认“问题在语言上说了什么”。
-3. `Candidate Retriever` 开始引入 OSI 语义层，根据拆解结果召回 dataset、field、metric、relationship、path pattern 等候选，并保留 match type、score 和 evidence。随后 `LiteralResolver` 独立解析字面值，例如枚举值、设备 ID、服务名、时间范围和数值过滤。
-4. `Grounded LLM Understanding` 在候选集合约束下让 LLM 做结构化理解。LLM 只能从候选中选择或标记不确定，不能发明语义对象。`Semantic Binder` 再把 LLM 输出规范化为稳定的 semantic id、role、field、operator、value 和路径绑定。
-5. `Semantic Validator` 是生成 Cypher 前的语义门禁。它检查类型、relationship 方向、字段归属、覆盖率、歧义、path pattern role、DSL 支持度等问题，然后进入 `Valid?` 分支。
-6. 如果校验通过，系统生成 `Restricted Query DSL`，再经 `DSL Parser / AST` 做结构校验和 AST 规范化，最后由 `Cypher Compiler` 模板化编译为目标 TuGraph Cypher。
-7. 如果校验发现可自动修复的问题，例如 relationship 方向错误或 metric/dimension 误用，会进入 `Repair and Clarification Controller`，再回灌给 `Grounded LLM Understanding` 重新选择绑定。这个循环有最大次数、状态指纹和震荡检测。
-8. 如果问题需要用户选择，例如多个候选接近、字面值无法确定、实质词未覆盖，会进入 `Clarification Required`。如果问题超出 v1 DSL 能力，例如 shortest path、OPTIONAL MATCH 或未注册图算法，则进入 `Unsupported Query Shape`，不会回退到 LLM 直接生成 Cypher。
-9. 编译后的 Cypher 还要经过 `Cypher Validation`，包括语法、只读约束、schema-aware 检查和目标方言检查。执行后由 `Execution Feedback Analyzer` 判断空结果、结果过大、返回列不一致、运行时错误或超时，最终返回结果、失败原因或澄清请求。
 
 各层职责：
 
