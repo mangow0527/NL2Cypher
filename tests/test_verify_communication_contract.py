@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from contracts.models import GenerationEvidence
+from services.cypher_generator_agent.app.api.models import GenerationFailureReason as GeneratorGenerationFailureReason
 from services.cypher_generator_agent.app.api.models import CgaGenerationNonSuccessReport as GeneratorNonSuccessReport
 from services.testing_agent.app.models import (
     CgaGenerationNonSuccessReport as ReceiverNonSuccessReport,
     GeneratedCypherSubmissionRequest,
+    GenerationFailureReason as ReceiverGenerationFailureReason,
 )
 from verify_communication import ServiceCommunicationTester
 
@@ -155,6 +157,7 @@ def test_graph_generation_failure_reasons_are_compatible_between_services():
         "coverage_failure",
         "literal_unresolved",
         "repair_binding_oscillation",
+        "max_repair_attempts_exceeded",
     ]:
         payload = {
             "id": f"qa-{reason}",
@@ -168,6 +171,10 @@ def test_graph_generation_failure_reasons_are_compatible_between_services():
         }
 
         assert GeneratorNonSuccessReport(**payload).model_dump() == ReceiverNonSuccessReport(**payload).model_dump()
+
+
+def test_generation_failure_reason_enums_are_synchronized_between_services():
+    assert set(GeneratorGenerationFailureReason.__args__) == set(ReceiverGenerationFailureReason.__args__)
 
 
 def test_generation_evidence_is_current_issue_ticket_snapshot():

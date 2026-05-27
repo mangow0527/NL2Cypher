@@ -121,6 +121,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "infrastructure",
         "literals",
         "observability",
+        "repair",
         "retrieval",
         "semantic_model",
         "understanding",
@@ -198,6 +199,9 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
     }
     assert _source_names(SERVICE_ROOT / "app" / "understanding") <= allowed_understanding_files
 
+    allowed_repair_files = {"__init__.py", "controller.py", "fingerprint.py", "models.py", "notices.py"}
+    assert _source_names(SERVICE_ROOT / "app" / "repair") <= allowed_repair_files
+
     allowed_validation_files = {"__init__.py", "coverage.py", "models.py", "semantic_validator.py"}
     assert _source_names(SERVICE_ROOT / "app" / "validation") <= allowed_validation_files
 
@@ -212,6 +216,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "integration",
         "literals",
         "observability",
+        "repair",
         "retrieval",
         "semantic_model",
         "understanding",
@@ -293,6 +298,14 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "test_grounded_schema.py",
     }
     assert _source_names(SERVICE_ROOT / "tests" / "understanding") <= allowed_understanding_tests
+
+    allowed_repair_tests = {
+        "__init__.py",
+        "test_assumption_notices.py",
+        "test_decision_matrix.py",
+        "test_fingerprint.py",
+    }
+    assert _source_names(SERVICE_ROOT / "tests" / "repair") <= allowed_repair_tests
 
     allowed_validation_tests = {
         "__init__.py",

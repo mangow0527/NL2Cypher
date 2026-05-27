@@ -54,6 +54,9 @@ GenerationFailureReason = Literal[
     "coverage_failure",
     "literal_unresolved",
     "repair_binding_oscillation",
+    "max_repair_attempts_exceeded",
+    "question_decomposer_schema_invalid",
+    "grounded_understanding_schema_invalid",
 ]
 ServiceFailureReason = Literal[
     "knowledge_context_unavailable",
