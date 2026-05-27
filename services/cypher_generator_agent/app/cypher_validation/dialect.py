@@ -30,6 +30,7 @@ DYNAMIC_SCHEMA_RES = (
     re.compile(r"[\(\[][^\{\}\)\]]*:\s*\$"),
     re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\s*\[\s*\$[A-Za-z_][A-Za-z0-9_]*\s*\]"),
 )
+MAP_PROJECTION_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\s*\{[^{}]*\}")
 UNSUPPORTED_READ_FRAGMENTS = tuple(
     sorted(
         {
@@ -50,6 +51,7 @@ UNSUPPORTED_READ_FRAGMENTS = tuple(
 def validate_target_dialect(parsed: ParsedCypher) -> list[CypherValidationIssue]:
     errors: list[CypherValidationIssue] = []
     _validate_unsupported_read_fragments(parsed, errors)
+    _validate_no_projection_comprehension_fragments(parsed, errors)
     _validate_no_dynamic_schema_references(parsed, errors)
     _validate_function_allowlist(parsed, errors)
     for match in REL_PATTERN_RE.finditer(parsed.cypher):
@@ -81,6 +83,30 @@ def validate_target_dialect(parsed: ParsedCypher) -> list[CypherValidationIssue]
     return errors
 
 
+def _validate_no_projection_comprehension_fragments(
+    parsed: ParsedCypher,
+    errors: list[CypherValidationIssue],
+) -> None:
+    for location in _iter_map_projection_locations(parsed):
+        errors.append(
+            validation_error(
+                DIALECT_FAILURE_CODE,
+                "map projection is not allowed in target dialect static subset",
+                "dialect",
+                location,
+            )
+        )
+    for location in _iter_pattern_comprehension_locations(parsed.cypher):
+        errors.append(
+            validation_error(
+                DIALECT_FAILURE_CODE,
+                "pattern comprehension is not allowed in target dialect static subset",
+                "dialect",
+                location,
+            )
+        )
+
+
 def _validate_unsupported_read_fragments(
     parsed: ParsedCypher,
     errors: list[CypherValidationIssue],
@@ -101,7 +127,7 @@ def _validate_no_dynamic_schema_references(
     errors: list[CypherValidationIssue],
 ) -> None:
     for pattern in DYNAMIC_SCHEMA_RES:
-        for match in pattern.finditer(parsed.cypher):
+        for match in _iter_unquoted_matches(pattern, parsed.cypher):
             errors.append(
                 validation_error(
                     DIALECT_FAILURE_CODE,
@@ -131,6 +157,51 @@ def _validate_function_allowlist(
                 name,
             )
         )
+
+
+def _iter_unquoted_matches(pattern: re.Pattern[str], text: str):
+    for match in pattern.finditer(text):
+        if _inside_string(text, match.start()):
+            continue
+        yield match
+
+
+def _iter_map_projection_locations(parsed: ParsedCypher) -> list[str]:
+    locations: list[str] = []
+    for clause in parsed.clauses:
+        if clause.name not in {"RETURN", "WITH"}:
+            continue
+        clause_body = clause.text[len(clause.name) :].strip()
+        for match in _iter_unquoted_matches(MAP_PROJECTION_RE, clause_body):
+            locations.append(match.group(0))
+    return locations
+
+
+def _iter_pattern_comprehension_locations(text: str) -> list[str]:
+    locations: list[str] = []
+    for start, end in _iter_square_bracket_spans(text):
+        body = text[start + 1 : end]
+        if "|" not in body:
+            continue
+        scan_body = _replace_string_literals(body)
+        if re.search(r"\([^)]*\)\s*(?:<-|--|-)\s*(?:\[[^\[\]]*\]\s*)?(?:->|-)?\s*\([^)]*\)", scan_body):
+            locations.append(text[start : end + 1])
+    return locations
+
+
+def _iter_square_bracket_spans(text: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    stack: list[int] = []
+    for index, char in enumerate(text):
+        if _inside_string(text, index):
+            continue
+        if char == "[":
+            stack.append(index)
+            continue
+        if char == "]" and stack:
+            start = stack.pop()
+            spans.append((start, index))
+    return spans
 
 
 def _find_unsupported_read_fragments(cypher: str) -> list[tuple[str, int]]:
@@ -192,3 +263,28 @@ def _inside_string(text: str, index: int) -> bool:
         if char in {'"', "'"}:
             quote = char
     return quote is not None
+
+
+def _replace_string_literals(text: str) -> str:
+    chars = list(text)
+    quote: str | None = None
+    escaped = False
+    for index, char in enumerate(chars):
+        if escaped:
+            chars[index] = " "
+            escaped = False
+            continue
+        if char == "\\":
+            if quote:
+                chars[index] = " "
+            escaped = True
+            continue
+        if quote:
+            chars[index] = " "
+            if char == quote:
+                quote = None
+            continue
+        if char in {'"', "'"}:
+            chars[index] = " "
+            quote = char
+    return "".join(chars)

@@ -99,3 +99,49 @@ def test_dynamic_schema_references_fail_target_dialect(
     assert result.errors[0].code == "target_dialect_static_error"
     assert result.errors[0].check == "dialect"
     assert "dynamic" in result.errors[0].message
+
+
+@pytest.mark.parametrize(
+    "cypher",
+    [
+        "MATCH (ne:NetworkElement) RETURN ne { .id, .name } AS device",
+        "MATCH (ne:NetworkElement) RETURN ne { .* } AS device",
+        "MATCH (ne:NetworkElement) RETURN ne { id } AS device",
+        "MATCH (ne:NetworkElement) RETURN ne { id: $id } AS device",
+        "MATCH (ne:NetworkElement) RETURN ne { answer: 42 } AS device",
+        "MATCH (ne:NetworkElement) RETURN [(ne)-[:HAS_PORT]->(p:Port) | p.id] AS port_ids",
+        "MATCH (ne:NetworkElement) RETURN [p = (ne)-[:HAS_PORT]->(:Port) | p] AS paths",
+        "MATCH (ne:NetworkElement) RETURN [(ne {name: '(core)'})-->(p) | p] AS paths",
+    ],
+)
+def test_pattern_and_map_projection_fragments_fail_target_dialect(
+    validator: CypherSelfValidator,
+    cypher: str,
+) -> None:
+    result = validator.validate_generated_query(cypher)
+
+    assert result.valid is False
+    assert result.errors[0].code == "target_dialect_static_error"
+    assert result.errors[0].check == "dialect"
+
+
+def test_pattern_like_text_inside_string_literal_is_allowed(
+    validator: CypherSelfValidator,
+) -> None:
+    result = validator.validate_generated_query(
+        "MATCH (ne:NetworkElement) RETURN 'ne { .id } and [(ne)-->(p) | p]' AS text"
+    )
+
+    assert result.valid is True
+    assert result.errors == []
+
+
+def test_pattern_like_text_inside_list_string_literal_is_allowed(
+    validator: CypherSelfValidator,
+) -> None:
+    result = validator.validate_generated_query(
+        "MATCH (ne:NetworkElement) RETURN ['(ne)-->(p) | p'] AS examples"
+    )
+
+    assert result.valid is True
+    assert result.errors == []
