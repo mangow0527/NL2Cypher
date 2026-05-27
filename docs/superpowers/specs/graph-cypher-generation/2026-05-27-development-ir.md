@@ -23,6 +23,7 @@
 - 本 IR 不要求一次实现所有 query shape；v1 可以按 MVP slice 逐步打开能力。
 - 本 IR 不允许以 LLM 直接生成 Cypher 作为捷径。
 - 本 IR 不覆盖 UI 或 runtime console 展示细节，只规定 trace 和输出字段。
+- v1 不集成 value-index 服务。LiteralResolver 只消费随模型发布的静态 `value_index` 文件；这意味着 v1 上线后新写入的实体，例如新增设备 ID、新建服务名，必须等到下一次模型和 value index 发布后才能被识别。该约束需要在产品文档和用户引导中明确告知。
 
 ## 2. 当前起点
 
@@ -141,6 +142,8 @@ services/cypher_generator_agent/app/
     config.py                       # settings, no DB config
 ```
 
+`understanding/` 和 `binding/` 的拆分是初始建议，不是硬性边界。IR-09 启动前必须做一次边界复核：如果 grounded understanding 输出到 binding plan 只是字段重命名和类型规范化，应合并为 `binding/binder.py`，减少一层 1:1 模块；只有当 LLM 输出需要保留原始候选选择、置信证据、schema retry 证据，并且 binding plan 需要承担独立的稳定领域模型时，才保留两层。
+
 测试建议：
 
 ```text
@@ -174,6 +177,27 @@ services/cypher_generator_agent/tests/
 7. fixture 先行：每个例子都应能被 `network_topology_graph_model.yaml` 和 value index 校验。
 8. 小步提交：每个 IR 完成后提交一次，避免跨层大爆炸。
 
+## 4.1 估算与角色标签
+
+估算用于 sprint planning，不是承诺工时：
+
+| 估算 | 含义 |
+| --- | --- |
+| XS | 0.5-1 天，局部模型、契约或测试 |
+| S | 1-3 天，单一模块或薄集成 |
+| M | 3-6 天，多个文件和较完整测试 |
+| L | 1-2 周，跨模块功能或复杂校验 |
+| XL | 2 周以上，需要拆分或 spike |
+
+角色标签：
+
+| 角色 | 主要职责 |
+| --- | --- |
+| backend | Python service、Pydantic model、pipeline、compiler、validator |
+| LLM | prompt、structured output、schema retry、候选约束 |
+| infra | 配置、CI、testing-agent 对接、trace/metrics、发布边界 |
+| QA | fixture、golden tests、回归矩阵 |
+
 ## 5. MVP 分层
 
 ### MVP-0：确定性底座
@@ -185,7 +209,7 @@ services/cypher_generator_agent/tests/
 - IR-00 Project Contract Baseline
 - IR-01 Graph Model Fixture
 - IR-02 Graph Model Loader / Registry
-- IR-03 Cypher Self-Validation
+- IR-03a Cypher Self-Validation MVP
 - IR-04 Restricted DSL Models / Parser
 - IR-05 Cypher Compiler MVP
 - IR-06 Observability Skeleton
@@ -202,6 +226,7 @@ services/cypher_generator_agent/tests/
 - IR-10 Semantic Validator MVP
 - IR-11 DSL Builder MVP
 - IR-12 Pipeline Orchestrator MVP
+- SP-01 LLM Feasibility Spike
 
 ### MVP-2：LLM 受控接入
 
@@ -220,10 +245,11 @@ services/cypher_generator_agent/tests/
 
 包含：
 
+- IR-03b Cypher Self-Validation Full
 - IR-17 Variable Path Traversal
 - IR-18 Metric / Ad Hoc Aggregate
 - IR-19 Top-N and Two-Step Aggregate
-- IR-20 Golden Test Suite and Regression Matrix
+- IR-20 Golden Test Regression Matrix
 
 ## 6. IR 详细清单
 
@@ -232,6 +258,8 @@ services/cypher_generator_agent/tests/
 目标：为 graph-native generation pipeline 建立稳定入口、结果状态和错误码，不破坏当前 I/O stub。
 
 依赖：无。
+估算：S。
+角色：backend、infra。
 
 建议文件：
 
@@ -277,15 +305,18 @@ services/cypher_generator_agent/tests/
 
 ### IR-01 Graph Model Fixture
 
-目标：建立一份真实可测的 network topology graph semantic model fixture，作为所有后续测试的共同事实来源。
+目标：建立一份真实可测的 network topology graph semantic model fixture 和 Golden Test Set v1，作为所有后续测试的共同事实来源。
 
 依赖：IR-00 可并行。
+估算：M。
+角色：QA、backend。
 
 建议文件：
 
 - 新建 `services/cypher_generator_agent/tests/fixtures/network_topology_graph_model.yaml`
 - 新建 `services/cypher_generator_agent/tests/fixtures/value_index.json`
 - 新建 `services/cypher_generator_agent/tests/fixtures/questions.yaml`
+- 新建 `services/cypher_generator_agent/tests/fixtures/golden_questions.yaml`
 - 测试 `services/cypher_generator_agent/tests/fixtures/test_fixture_consistency.py`
 
 Fixture 必须包含：
@@ -298,24 +329,36 @@ Fixture 必须包含：
 - value synonyms：`firewall -> ["防火墙", "FW"]`、`GOLD -> ["Gold", "金牌"]`
 - value index：`ne-0001`、`tun-mpls-001`、`svc-gold-001` 等稳定 ID
 
+Golden Test Set v1 必须先建成 fixture，不等到 IR-20：
+
+- 至少 26 个用例。
+- 每条用例声明 `id`、`question`、`expected_status`、`primary_ir`、`expected_reason_code`。
+- generated 用例可以先不填完整 expected Cypher，但必须声明将由哪个 IR 补齐 expected DSL/Cypher。
+- non-success 用例必须从一开始声明 failure / clarification / unsupported 的原因。
+- IR-05、IR-10、IR-15 等后续 IR 的验收必须引用这里的用例，而不是临时再写一套一次性问题。
+
 开发内容：
 
 - 将文档 vocabulary 转为可加载 YAML fixture。
 - 编写 fixture consistency 测试，确保 edge endpoint、property owner、metric dimensions、path_pattern 参数一致。
-- 建立最小 question corpus，覆盖单跳、path pattern、literal、coverage failure、unsupported query。
+- 建立 Golden Test Set v1 question corpus，覆盖单跳、path pattern、literal、coverage failure、unsupported query、repair oscillation、readonly violation、shape mismatch。
+- 明确 `value_index.json` 是 v1 静态输入，不代表已实现 value-index 服务。
 
 验收：
 
 - fixture 中所有 `value_synonyms` key 都存在于 `valid_values`。
 - fixture 中没有非 vocabulary 的服务隧道边短名。
 - path_pattern `tunnel_full_path` 只使用 `PATH_THROUGH`，并返回 `device`、`hop`。
-- questions corpus 每条都有 expected final status。
+- golden question corpus 至少 26 条，每条都有 expected final status 和 primary IR。
+- 新写入实体不在静态 `value_index.json` 时，测试应验证 LiteralResolver 后续返回 unresolved，而不是尝试 live lookup。
 
 ### IR-02 Graph Model Loader / Registry
 
 目标：加载 Graph Semantic Model v1，校验结构，构建 graph semantic registry 和检索基础索引。
 
 依赖：IR-01。
+估算：M。
+角色：backend。
 
 建议文件：
 
@@ -358,11 +401,13 @@ Fixture 必须包含：
 - invalid value_synonyms key 拒绝加载。
 - registry lookup 对不存在对象返回 typed error，不抛裸 KeyError。
 
-### IR-03 Cypher Self-Validation
+### IR-03a Cypher Self-Validation MVP
 
-目标：实现不连接数据库的 Cypher 静态校验服务，既能校验最终生成 Cypher，也能校验 model artifact 中的 path_pattern/metric 模板。
+目标：实现 Sprint 0 可落地的 Cypher 静态校验最小防线，覆盖 syntax、readonly、最小 schema reference，足够支撑 IR-05 编译器 MVP。
 
 依赖：IR-02。
+估算：M。
+角色：backend。
 
 建议文件：
 
@@ -370,19 +415,15 @@ Fixture 必须包含：
 - 新建 `app/cypher_validation/parser.py`
 - 新建 `app/cypher_validation/readonly.py`
 - 新建 `app/cypher_validation/schema_reference.py`
-- 新建 `app/cypher_validation/shape.py`
-- 新建 `app/cypher_validation/dialect.py`
 - 新建 `app/cypher_validation/validator.py`
 - 测试 `tests/cypher_validation/test_readonly.py`
-- 测试 `tests/cypher_validation/test_schema_reference.py`
-- 测试 `tests/cypher_validation/test_shape.py`
-- 测试 `tests/cypher_validation/test_model_artifact_validation.py`
+- 测试 `tests/cypher_validation/test_schema_reference_mvp.py`
 
 输入：
 
 - `cypher_self_validation_request_v1`
 - registry
-- optional DSL AST
+- optional source kind：`compiled_query | path_pattern | metric_full_cypher`
 
 输出：
 
@@ -390,27 +431,63 @@ Fixture 必须包含：
 
 开发内容：
 
-- syntax check：openCypher parser adapter；如果 parser 未接入，先实现保守 tokenizer + clause parser，但接口保持可替换。
+- syntax check MVP：优先接入现成 openCypher parser；如果选型未完成，先实现保守 clause tokenizer，只接受 v1 compiler 会生成的 `MATCH/WHERE/RETURN/WITH/ORDER BY/LIMIT` 子集，并把 parser adapter 接口固定下来。
 - readonly check：白名单 `MATCH/WHERE/WITH/RETURN/ORDER BY/LIMIT/SKIP/UNWIND`；禁止 `CREATE/MERGE/SET/DELETE/DETACH DELETE/REMOVE/CALL/LOAD CSV/FOREACH`。
-- schema reference：校验 label、edge type、property owner、edge endpoint、property type/operator compatibility。
-- shape check：RETURN alias 与 DSL projection 顺序一致；limit/order 不超过 DSL AST。
-- dialect check：禁止 optional match、union、procedure、unbounded variable path、动态 label/type/property。
-- model loader 接入：`path_pattern.cypher` 和 `metric.full_cypher` 加载期校验并缓存。
+- 最小 schema reference：校验 node label 和 edge type 是否存在；校验 map literal 中的 property 是否属于已知 owner；校验简单 `var.property` 是否能回溯到当前 MATCH 里的 vertex/edge。
+- 返回统一 failure code：`cypher_syntax_invalid`、`cypher_readonly_violation`、`cypher_schema_reference_invalid`。
+- 为 IR-03b 预留 `shape`、`dialect`、`model_artifact` check slot，但 Sprint 0 不要求实现 full logic。
 
 验收：
 
 - `MATCH (ne:NetworkElement) RETURN ne.id AS id` 通过。
 - `MATCH (ne:NetworkElement) SET ne.name = "x" RETURN ne` 返回 `cypher_readonly_violation`。
-- 未知 label 返回 `cypher_schema_reference_invalid`。
-- 未知 property 返回 `cypher_schema_reference_invalid`。
+- `MATCH (x:UnknownLabel) RETURN x` 返回 `cypher_schema_reference_invalid`。
+- `MATCH (ne:NetworkElement) RETURN ne.unknown_property AS x` 返回 `cypher_schema_reference_invalid`。
+- 多语句或分号拼接被拒绝。
+
+### IR-03b Cypher Self-Validation Full
+
+目标：补完完整 Cypher Self-Validation 规则，包括 compiler shape、target dialect、model artifact 加载期校验和更完整的 property type/operator 校验。
+
+依赖：IR-03a、IR-04、IR-05。
+估算：L。
+角色：backend。
+
+建议文件：
+
+- 修改 `app/cypher_validation/parser.py`
+- 修改 `app/cypher_validation/schema_reference.py`
+- 新建 `app/cypher_validation/shape.py`
+- 新建 `app/cypher_validation/dialect.py`
+- 修改 `app/cypher_validation/validator.py`
+- 修改 `app/semantic_model/loader.py`
+- 测试 `tests/cypher_validation/test_shape.py`
+- 测试 `tests/cypher_validation/test_dialect.py`
+- 测试 `tests/cypher_validation/test_model_artifact_validation.py`
+
+开发内容：
+
+- shape check：RETURN alias 与 DSL projection 顺序一致；limit/order 不超过 DSL AST；最终 RETURN 不暴露 DSL 未声明列。
+- dialect check：禁止 optional match、union、procedure、unbounded variable path、动态 label/type/property、未在 allowlist 的函数。
+- schema reference full：校验 edge endpoint/direction、property type/operator compatibility、aggregate function/type compatibility。
+- model artifact validation：`path_pattern.cypher` 和 `metric.full_cypher` 在 model loader 阶段调用 self-validation，并按 model checksum 缓存结果。
+- parser adapter 选型定案：如果 Sprint 0 使用保守 tokenizer，本 IR 必须替换为 openCypher parser adapter 或给出保守 parser 的覆盖证明。
+
+验收：
+
 - DSL projection 为 `device, hop` 但 Cypher 返回 `ne` 时返回 `compiler_shape_mismatch`。
 - `MATCH p=(a)-[*]->(b) RETURN p` 返回 `target_dialect_static_error`。
+- path_pattern 模板含 `SET` 时模型加载失败。
+- `avg(NetworkElement.name)` 这类 string property 数值聚合失败。
+- `SERVICE_USES_TUNNEL` 方向或 endpoint 与 MATCH pattern 不一致时失败。
 
 ### IR-04 Restricted DSL Models / Parser
 
 目标：实现 `restricted_query_dsl_v1` 的 Pydantic model、JSON Schema 校验和 AST 规范化。
 
 依赖：IR-02。
+估算：M。
+角色：backend。
 
 建议文件：
 
@@ -448,7 +525,9 @@ Fixture 必须包含：
 
 目标：从 AST 模板化生成 v1 Cypher 子集，不允许 LLM 直接生成 Cypher。
 
-依赖：IR-03、IR-04。
+依赖：IR-03a、IR-04。
+估算：M。
+角色：backend。
 
 建议文件：
 
@@ -484,13 +563,15 @@ RETURN tun.id AS tunnel_id
 
 - `tunnel_full_path` 生成使用 fixture 中 path_pattern 模板。
 - 编译输出包含 `parameters`，而不是把 `GOLD` 写死到 Cypher。
-- compiler 输出全部通过 IR-03 自校验。
+- compiler 输出全部通过 IR-03a 自校验；shape/dialect 深度校验在 IR-03b 补齐。
 
 ### IR-06 Observability Skeleton
 
 目标：实现 `cga_graph_trace_v1` 的基础 trace builder，后续每个 stage 都能追加结构化证据。
 
 依赖：IR-00。
+估算：S。
+角色：infra、backend。
 
 建议文件：
 
@@ -518,6 +599,8 @@ RETURN tun.id AS tunnel_id
 目标：独立实现字面值解析，不依赖 Candidate Retriever 内部策略，不连接数据库。
 
 依赖：IR-01、IR-02、IR-06。
+估算：M。
+角色：backend。
 
 建议文件：
 
@@ -533,6 +616,7 @@ RETURN tun.id AS tunnel_id
 
 - 输入：`raw_literal`、`expected_vertex`、`expected_edge`、`expected_property`、`literal_kind_hint`。
 - fixed resolution order：exact、value_synonym、typed_parse、fuzzy_text、embedding disabled by default、value_index_lookup。
+- v1 只读取随模型发布的静态 `value_index.json` 或同等本地快照，不对接 value-index 服务。
 - 高风险枚举不自动 fuzzy/embedding。
 - ID 形态只允许 value index exact，不允许相近 ID 静默替换。
 - alternatives 最多 3 个。
@@ -549,6 +633,8 @@ RETURN tun.id AS tunnel_id
 目标：基于 question decomposition 和 registry 召回语义候选，输出置信度、match_type 和 evidence。
 
 依赖：IR-02、IR-06。
+估算：S。
+角色：backend。
 
 建议文件：
 
@@ -578,6 +664,14 @@ RETURN tun.id AS tunnel_id
 目标：把 grounded understanding 输出变成稳定 binding plan，供 semantic validator 和 DSL builder 使用。
 
 依赖：IR-02、IR-07、IR-08。
+估算：M。
+角色：backend、LLM。
+
+启动前复核：
+
+- 对比 `understanding` 输出 schema 和 binding plan schema。
+- 如果两者只是字段重命名和类型规范化，合并 `understanding/grounded_understanding.py` 与 `binding/binder.py` 的实现职责，只保留一个 binder 模块。
+- 如果仍保留两层，必须在本 IR 中写清楚两层的不可替代职责，并为两层分别保留测试。
 
 建议文件：
 
@@ -603,6 +697,8 @@ RETURN tun.id AS tunnel_id
 目标：校验 binding plan 的语义正确性和 DSL 支持度。
 
 依赖：IR-09。
+估算：M。
+角色：backend。
 
 建议文件：
 
@@ -632,6 +728,8 @@ RETURN tun.id AS tunnel_id
 目标：从已通过语义校验的 binding plan 生成 Restricted DSL。
 
 依赖：IR-04、IR-10。
+估算：S。
+角色：backend。
 
 建议文件：
 
@@ -657,6 +755,8 @@ RETURN tun.id AS tunnel_id
 目标：把确定性组件串成无 LLM happy path，用 mock decomposer / mock understanding 完成端到端生成。
 
 依赖：IR-05、IR-06、IR-07、IR-08、IR-09、IR-10、IR-11。
+估算：M。
+角色：backend、infra。
 
 建议文件：
 
@@ -668,8 +768,8 @@ RETURN tun.id AS tunnel_id
 
 - Orchestrator stage 顺序：model registry -> mock decomposition -> candidate retrieval -> literal resolver -> mock understanding -> binder -> validator -> DSL builder -> parser -> compiler -> self-validation -> output。
 - 每个 stage 写 trace。
-- generated output 提交 testing-agent。
-- non-success output 提交 generation failure endpoint。
+- generated output 可先沿用现有 testing-agent submission contract，但 trace 允许是过渡结构。
+- non-success output 可先提交 generation failure endpoint，但完整 trace contract 由 IR-16 替换和收口。
 
 验收：
 
@@ -678,11 +778,40 @@ RETURN tun.id AS tunnel_id
 - coverage failure 不生成 Cypher。
 - CGA 仍不连接数据库。
 
+过渡说明：
+
+- IR-12 的 testing-agent 集成是端到端 smoke path，不是最终 contract。
+- IR-16 必须替换 IR-12 的过渡提交逻辑，使 generated 和 non-success 都统一使用 `cga_graph_trace_v1`。
+
+### SP-01 LLM Feasibility Spike
+
+目标：在完整 LLM 接入前，用 2-3 天验证 Question Decomposer 和 Grounded Understanding 的 prompt 可行性，避免 Sprint 3 才暴露 prompt/schema 风险。
+
+依赖：IR-01、IR-08，可与 IR-09 到 IR-12 并行。
+估算：S，time-box 2-3 天。
+角色：LLM、backend。
+
+开发内容：
+
+- 选定 v1 LLM provider 候选，例如 OpenAI、Anthropic 或自建模型。
+- 用 Golden Test Set v1 中 5 个真实问题跑 Question Decomposer prompt。
+- 用同一批问题和候选集合跑 Grounded Understanding prompt。
+- 记录 schema failure rate、term classification accuracy、candidate invention rate、平均 token usage。
+- 输出 spike report，不接入主 pipeline，不阻塞确定性底座开发。
+
+验收：
+
+- 5 个问题都有原始 prompt、模型输出、schema 校验结果。
+- schema failure rate、classification miss、candidate invention 都有记录。
+- 如果 candidate invention 或 schema failure 明显偏高，Sprint 3 前必须调整 prompt 或降级策略。
+
 ### IR-13 Question Decomposer
 
 目标：接入真实 Question Decomposer，让自然语言先变成领域无关结构化问题。
 
 依赖：IR-06、IR-12。
+估算：M。
+角色：LLM、backend。
 
 建议文件：
 
@@ -700,6 +829,7 @@ RETURN tun.id AS tunnel_id
 - schema violation 最多重试 2 次。
 - 输入缺少指代对象时进入 Input Clarification Gate。
 - LLM client 用 protocol，测试中使用 fake client。
+- LLM provider 不可用时返回 `service_failed`，trace 中记录 provider、错误类型、重试次数；不降级为自由文本或 deterministic 猜测。
 
 验收：
 
@@ -713,6 +843,8 @@ RETURN tun.id AS tunnel_id
 目标：在候选集合内让 LLM 做受控语义选择，输出结构化 grounded understanding。
 
 依赖：IR-08、IR-13。
+估算：M。
+角色：LLM、backend。
 
 建议文件：
 
@@ -728,6 +860,7 @@ RETURN tun.id AS tunnel_id
 - 输出必须引用 candidate id 或 registry name。
 - schema invalid 最多重试 2 次。
 - 输出引用不存在 candidate 时失败，交给 Repair Controller 或 generation_failed。
+- LLM provider 不可用时返回 `service_failed`，并保留 candidate retrieval 和 literal resolver trace，方便复盘。
 
 验收：
 
@@ -740,6 +873,8 @@ RETURN tun.id AS tunnel_id
 目标：实现 repair loop、clarification、unsupported、generation_failed 决策。
 
 依赖：IR-10、IR-14。
+估算：M。
+角色：backend、LLM。
 
 建议文件：
 
@@ -769,9 +904,11 @@ RETURN tun.id AS tunnel_id
 
 ### IR-16 Full Trace and Testing-Agent Contract
 
-目标：将 `cga_graph_trace_v1` 作为 testing-agent 的 `input_prompt_snapshot`，统一 generated 和 non-success 输出。
+目标：将 IR-12 的过渡性 testing-agent 提交逻辑替换为完整 `cga_graph_trace_v1` contract，统一 generated 和 non-success 输出。
 
 依赖：IR-06、IR-12、IR-15。
+估算：M。
+角色：infra、backend。
 
 建议文件：
 
@@ -793,13 +930,43 @@ RETURN tun.id AS tunnel_id
 - generated submission 的 `input_prompt_snapshot` 是 `cga_graph_trace_v1`。
 - clarification 不包含 parsed Cypher。
 - generation_failed 不包含 clarification。
+- LLM provider failure 提交 `service_failed`，trace 中有 provider 异常 stage。
 - testing-agent client retry 行为不吞掉最终失败。
+
+### IR-16.5 Performance Baseline
+
+目标：在完整 trace contract 后建立性能和 token 基线，不设 SLO，只拿到可比较的数据。
+
+依赖：IR-16。
+估算：S。
+角色：infra、QA。
+
+建议文件：
+
+- 新建 `services/cypher_generator_agent/tests/integration/test_performance_baseline.py`
+- 新建 `services/cypher_generator_agent/tests/fixtures/performance_baseline_cases.yaml`
+- 修改 `app/observability/metrics.py`
+
+开发内容：
+
+- 跑 Golden Test Set v1 的 generated 和 non-success 子集。
+- 记录每个 stage latency、总 latency、LLM call count、schema retry count、token usage。
+- 输出本地 baseline artifact，例如 JSON summary。
+- 不在此 IR 中做性能优化。
+
+验收：
+
+- baseline artifact 包含 p50/p95 latency、LLM call count、token usage。
+- trace 中每个 stage 都有 duration。
+- CI 可选择只跑小样本；完整 baseline 可作为 nightly 或手动任务。
 
 ### IR-17 Variable Path Traversal
 
 目标：支持受限变长路径查询，例如“找出所有经过设备 ne-0001 的隧道”。
 
 依赖：IR-12。
+估算：M。
+角色：backend。
 
 建议文件：
 
@@ -828,6 +995,8 @@ RETURN tun.id AS tunnel_id
 目标：支持 metric_aggregate 和 ad_hoc_aggregate。
 
 依赖：IR-12。
+估算：M。
+角色：backend。
 
 建议文件：
 
@@ -856,6 +1025,8 @@ RETURN tun.id AS tunnel_id
 目标：支持“端口最多的 5 台设备”这类先聚合再排序限制的查询。
 
 依赖：IR-18。
+估算：L。
+角色：backend。
 
 建议文件：
 
@@ -879,16 +1050,18 @@ RETURN tun.id AS tunnel_id
 - subquery nested subquery 失败。
 - fingerprint 能区分 port_count 和 service_count。
 
-### IR-20 Golden Test Suite and Regression Matrix
+### IR-20 Golden Test Regression Matrix
 
-目标：建立覆盖“看起来对其实错”的系统级测试，防止后续 LLM 或 compiler 改动破坏边界。
+目标：将 IR-01 到 IR-19 中已经使用的 golden test 用例集中到统一 regression matrix 和 CI 自动化中，防止后续 LLM 或 compiler 改动破坏边界。
 
 依赖：IR-12 以后持续补充，最终依赖 IR-19。
+估算：M。
+角色：QA、backend、infra。
 
 建议文件：
 
 - 新建 `tests/integration/test_golden_questions.py`
-- 新建 `tests/fixtures/golden_questions.yaml`
+- 修改 `tests/fixtures/golden_questions.yaml`
 - 新建 `tests/fixtures/expected_dsl/`
 - 新建 `tests/fixtures/expected_cypher/`
 
@@ -905,9 +1078,11 @@ RETURN tun.id AS tunnel_id
 验收：
 
 - golden question 每条都有 expected status。
+- 每条 golden question 都标记覆盖的 IR、query_shape、expected reason 和是否进入 CI smoke subset。
 - generated case 校验 DSL AST 和 Cypher 结构，不只做字符串包含。
 - non-success case 校验 reason_code、clarification options 或 unsupported reason。
-- 每次新增 query shape 必须新增 golden question。
+- IR-01 已建立的 26 个用例全部纳入矩阵；本 IR 不重新发明另一套测试语料。
+- 每次新增 query shape 必须新增或更新 golden question，并在 matrix 中标明。
 
 ## 7. 推荐开发顺序
 
@@ -916,13 +1091,14 @@ Sprint 0:
   IR-00 Project Contract Baseline
   IR-01 Graph Model Fixture
   IR-02 Graph Model Loader / Registry
-  IR-03 Cypher Self-Validation
+  IR-03a Cypher Self-Validation MVP
 
 Sprint 1:
   IR-04 Restricted DSL Models / Parser
   IR-05 Cypher Compiler MVP
   IR-06 Observability Skeleton
   IR-07 LiteralResolver MVP
+  SP-01 LLM Feasibility Spike
 
 Sprint 2:
   IR-08 Candidate Retriever MVP
@@ -936,20 +1112,30 @@ Sprint 3:
   IR-14 Grounded LLM Understanding
   IR-15 Repair / Clarification Controller
   IR-16 Full Trace and Testing-Agent Contract
+  IR-16.5 Performance Baseline
 
 Sprint 4:
+  IR-03b Cypher Self-Validation Full
   IR-17 Variable Path Traversal
   IR-18 Metric / Ad Hoc Aggregate
   IR-19 Top-N and Two-Step Aggregate
-  IR-20 Golden Test Suite and Regression Matrix
+  IR-20 Golden Test Regression Matrix
 ```
 
 顺序理由：
 
-- Self-Validation 提前实现，因为它是 CGA 不连接数据库后的最后静态防线。
+- Self-Validation 先做 MVP，再做 Full：Sprint 0 只要求能拦截写操作和未知 schema 引用，完整 shape/dialect/model artifact 校验放到 IR-03b，避免启动 sprint 过载。
 - DSL/Compiler 提前实现，因为 LLM 接入前必须有确定性落点。
+- LLM 在 Sprint 1 做 spike，Sprint 3 再正式接入；这样能提前暴露 prompt/schema 可行性风险。
 - LLM 后置，避免一开始就把问题混成 prompt 调参。
-- Golden tests 贯穿后续 sprint，但完整矩阵要等 query shape 扩展后收口。
+- Golden Test Set v1 从 IR-01 开始存在；IR-20 只是把贯穿各 IR 的用例收束成 regression matrix 和 CI 自动化。
+
+Sprint 0 容量边界：
+
+- Sprint 0 的关键路径是 IR-01 -> IR-02 -> IR-03a。
+- IR-03a 只做 MVP，不包含 shape、dialect、model artifact full validation。
+- 如果团队只有 1 名后端工程师，Sprint 0 应只承诺 IR-00、IR-01、IR-02，IR-03a 作为 stretch。
+- 如果 Sprint 固定为 2 周，不建议把 IR-03b 放入 Sprint 0。
 
 ## 8. 跨 IR 验收矩阵
 
@@ -958,17 +1144,19 @@ Sprint 4:
 | Graph Semantic Model 是单一事实来源 | IR-01、IR-02 |
 | 不维护旧字段映射 | IR-02、IR-20 |
 | CGA 不连接数据库 | IR-00、IR-07、IR-12、IR-16 |
-| path_pattern 加载期自校验 | IR-03、IR-05 |
+| path_pattern 加载期自校验 | IR-03b、IR-05 |
 | Question Decomposer 分类稳定 | IR-13、IR-20 |
 | LiteralResolver 独立子系统 | IR-07 |
 | Candidate Retriever 带置信度和 evidence | IR-08 |
 | LLM 只能在候选内选择 | IR-14 |
 | coverage failure 不静默生成 | IR-10、IR-15、IR-20 |
 | DSL 不支持不 fallback raw Cypher | IR-04、IR-10、IR-15、IR-20 |
-| Cypher 只读和方言静态校验 | IR-03、IR-05、IR-20 |
+| Cypher 只读和方言静态校验 | IR-03a、IR-03b、IR-05、IR-20 |
 | repair loop 有上限和震荡检测 | IR-15 |
 | assumption notice 用户可见且可追踪 | IR-15、IR-16 |
 | 完整 trace 可复盘 | IR-06、IR-16 |
+| LLM 可行性提前验证 | SP-01、IR-13、IR-14 |
+| 性能和 token 基线 | IR-16.5 |
 
 ## 9. Definition of Done
 
@@ -987,14 +1175,17 @@ Sprint 4:
 
 - fixture 中所有 golden generated case 产出 DSL、Cypher、trace。
 - fixture 中所有 non-success case 产出 clarification、unsupported 或 generation_failed，不产出假 Cypher。
-- Cypher Self-Validation 能拦截写操作、未知 schema 引用、shape mismatch 和禁用方言能力。
+- Cypher Self-Validation MVP 能拦截写操作和未知 schema 引用；Full 能拦截 shape mismatch、model artifact 写操作和禁用方言能力。
 - Testing-agent 能接收 generated 与 non-success report。
 - CGA 配置中没有 TuGraph URL、用户名、密码或执行 timeout。
+- v1 文档和用户引导明确说明静态 value index 的新鲜度限制。
+- Golden Test Regression Matrix 能按 smoke/full 两档运行。
 
 ## 10. 需要避免的实现偏差
 
 - 把 LLM 接到 pipeline 前，先跳过 DSL/Compiler。
 - 在 LiteralResolver cache miss 时直接查 TuGraph 或业务库。
+- 把静态 `value_index.json` 偷换成隐式在线服务，却没有新增 service contract、限流、缓存和失败语义。
 - 用字符串拼接生成 WHERE 条件。
 - 在 DSL 不支持时添加 `raw_cypher` 字段。
 - 把 `unparsed_terms` 当垃圾桶，导致 coverage failure 失真。
@@ -1006,9 +1197,9 @@ Sprint 4:
 
 本 IR 覆盖面较宽，正式进入编码时应拆成多个 implementation plan：
 
-- `2026-05-27-cga-deterministic-foundation-plan.md`：IR-00 到 IR-06。
+- `2026-05-27-cga-deterministic-foundation-plan.md`：IR-00 到 IR-06，包含 IR-03a，不包含 IR-03b。
 - `2026-05-27-cga-semantic-binding-plan.md`：IR-07 到 IR-12。
-- `2026-05-27-cga-llm-repair-plan.md`：IR-13 到 IR-16。
-- `2026-05-27-cga-query-shapes-plan.md`：IR-17 到 IR-20。
+- `2026-05-27-cga-llm-repair-plan.md`：SP-01、IR-13 到 IR-16.5。
+- `2026-05-27-cga-query-shapes-plan.md`：IR-03b、IR-17 到 IR-20。
 
 每份 plan 再按 TDD 步骤展开到具体文件、测试和提交点。
