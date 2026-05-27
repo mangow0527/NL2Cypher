@@ -130,6 +130,46 @@ def test_clarification_report_contract_is_compatible_between_services():
     assert GeneratorNonSuccessReport(**payload).model_dump() == ReceiverNonSuccessReport(**payload).model_dump()
 
 
+def test_unsupported_query_shape_report_contract_is_compatible_between_services():
+    payload = {
+        "id": "qa-unsupported",
+        "question": "查询两台设备之间的最短路径",
+        "generation_run_id": "run-unsupported",
+        "generation_status": "unsupported_query_shape",
+        "input_prompt_snapshot": "{\"trace_schema_version\":\"cga_graph_trace_v1\"}",
+        "failure_reason": "unsupported_query_shape",
+        "parsed_cypher": None,
+        "gate_passed": False,
+    }
+
+    assert GeneratorNonSuccessReport(**payload).model_dump() == ReceiverNonSuccessReport(**payload).model_dump()
+
+
+def test_graph_generation_failure_reasons_are_compatible_between_services():
+    for reason in [
+        "cypher_syntax_invalid",
+        "cypher_readonly_violation",
+        "cypher_schema_reference_invalid",
+        "compiler_shape_mismatch",
+        "target_dialect_static_error",
+        "coverage_failure",
+        "literal_unresolved",
+        "repair_binding_oscillation",
+    ]:
+        payload = {
+            "id": f"qa-{reason}",
+            "question": "查询设备",
+            "generation_run_id": f"run-{reason}",
+            "generation_status": "generation_failed",
+            "input_prompt_snapshot": "{}",
+            "failure_reason": reason,
+            "parsed_cypher": "",
+            "gate_passed": False,
+        }
+
+        assert GeneratorNonSuccessReport(**payload).model_dump() == ReceiverNonSuccessReport(**payload).model_dump()
+
+
 def test_generation_evidence_is_current_issue_ticket_snapshot():
     evidence = GenerationEvidence(
         generation_run_id="run-001",

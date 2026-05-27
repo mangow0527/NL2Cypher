@@ -40,11 +40,13 @@ class DeploymentDefaultsTest(unittest.TestCase):
 
         GenerationRunResult(
             generation_run_id="run-1",
+            submission_status=None,
             generation_status="service_failed",
             reason="knowledge_context_unavailable",
         )
         GenerationRunResult(
             generation_run_id="run-semantic-contract",
+            submission_status=None,
             generation_status="service_failed",
             reason="semantic_contract_unaligned",
         )
@@ -52,6 +54,7 @@ class DeploymentDefaultsTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             GenerationRunResult(
                 generation_run_id="run-2",
+                submission_status=None,
                 generation_status="service_failed",
                 reason="knowledge_agent_context_unavailable",
             )

@@ -45,6 +45,15 @@ GenerationFailureReason = Literal[
     "semantic_match_rejected",
     "path_planning_failed",
     "cypher_fallback_cannot_generate",
+    "cypher_syntax_invalid",
+    "cypher_readonly_violation",
+    "cypher_schema_reference_invalid",
+    "compiler_shape_mismatch",
+    "target_dialect_static_error",
+    "unsupported_query_shape",
+    "coverage_failure",
+    "literal_unresolved",
+    "repair_binding_oscillation",
 ]
 ServiceFailureReason = Literal[
     "knowledge_context_unavailable",
@@ -52,7 +61,12 @@ ServiceFailureReason = Literal[
     "model_invocation_failed",
     "testing_agent_submission_failed",
 ]
-GenerationReportStatus = Literal["generation_failed", "clarification_required", "service_failed"]
+GenerationReportStatus = Literal[
+    "generation_failed",
+    "clarification_required",
+    "unsupported_query_shape",
+    "service_failed",
+]
 SubmissionGenerationStatus = Literal["generated", "generation_failed"]
 
 
@@ -111,6 +125,12 @@ class CgaGenerationNonSuccessReport(BaseModel):
                 raise ValueError("clarification_required requires clarification")
             if self.parsed_cypher is not None:
                 raise ValueError("clarification_required must not include parsed_cypher")
+            return self
+        if self.generation_status == "unsupported_query_shape":
+            if self.failure_reason != "unsupported_query_shape":
+                raise ValueError("unsupported_query_shape requires unsupported_query_shape failure reason")
+            if self.parsed_cypher is not None:
+                raise ValueError("unsupported_query_shape must not include parsed_cypher")
             return self
         if self.failure_reason not in service_reasons:
             raise ValueError("service_failed requires ServiceFailure reason")

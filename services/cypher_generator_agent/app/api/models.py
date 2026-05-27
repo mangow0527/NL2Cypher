@@ -4,35 +4,19 @@ from typing import Any, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from services.cypher_generator_agent.app.core.errors import (
+    GenerationFailureReason,
+    GenerationFinalStatus,
+    GenerationSubmissionStatus,
+    ServiceFailureReason,
+)
 
-GenerationFailureReason = Literal[
-    "empty_output",
-    "no_cypher_found",
-    "wrapped_in_markdown",
-    "wrapped_in_json",
-    "contains_explanation",
-    "multiple_statements",
-    "unbalanced_brackets",
-    "unclosed_string",
-    "write_operation",
-    "unsupported_call",
-    "unsupported_start_clause",
-    "unauthorized_schema_reference",
-    "logical_plan_mismatch",
-    "semantic_match_rejected",
-    "path_planning_failed",
-    "cypher_fallback_cannot_generate",
+GenerationReportStatus = Literal[
+    "generation_failed",
+    "clarification_required",
+    "unsupported_query_shape",
+    "service_failed",
 ]
-
-ServiceFailureReason = Literal[
-    "knowledge_context_unavailable",
-    "semantic_contract_unaligned",
-    "model_invocation_failed",
-    "testing_agent_submission_failed",
-]
-
-GenerationStatus = Literal["submitted_to_testing", "clarification_required", "generation_failed", "service_failed"]
-GenerationReportStatus = Literal["generation_failed", "clarification_required", "service_failed"]
 
 
 class QAQuestionRequest(BaseModel):
@@ -92,6 +76,12 @@ class CgaGenerationNonSuccessReport(BaseModel):
             if self.parsed_cypher is not None:
                 raise ValueError("clarification_required must not include parsed_cypher")
             return self
+        if self.generation_status == "unsupported_query_shape":
+            if self.failure_reason != "unsupported_query_shape":
+                raise ValueError("unsupported_query_shape requires unsupported_query_shape failure reason")
+            if self.parsed_cypher is not None:
+                raise ValueError("unsupported_query_shape must not include parsed_cypher")
+            return self
         if self.failure_reason not in service_reasons:
             raise ValueError("service_failed requires ServiceFailure reason")
         if self.clarification is not None:
@@ -103,19 +93,30 @@ class CgaGenerationNonSuccessReport(BaseModel):
 
 class GenerationRunResult(BaseModel):
     generation_run_id: str
-    generation_status: GenerationStatus
+    submission_status: Optional[GenerationSubmissionStatus] = None
+    generation_status: Optional[GenerationFinalStatus] = None
     reason: Optional[Union[GenerationFailureReason, ServiceFailureReason]] = None
     last_reason: Optional[GenerationFailureReason] = None
 
     @model_validator(mode="after")
     def validate_reason_matches_status(self) -> "GenerationRunResult":
-        if self.generation_status == "submitted_to_testing":
+        if self.generation_status is None:
             if self.reason is not None or self.last_reason is not None:
-                raise ValueError("submitted_to_testing must not include failure reason")
+                raise ValueError("submission-only result must not include failure reason")
+            return self
+        if self.generation_status == "generated":
+            if self.reason is not None or self.last_reason is not None:
+                raise ValueError("generated must not include failure reason")
             return self
         if self.generation_status == "clarification_required":
             if self.last_reason is not None:
                 raise ValueError("clarification_required must not include last_reason")
+            return self
+        if self.generation_status == "unsupported_query_shape":
+            if self.reason != "unsupported_query_shape":
+                raise ValueError("unsupported_query_shape requires unsupported_query_shape reason")
+            if self.last_reason is not None:
+                raise ValueError("unsupported_query_shape must not include last_reason")
             return self
 
         if self.generation_status == "generation_failed":

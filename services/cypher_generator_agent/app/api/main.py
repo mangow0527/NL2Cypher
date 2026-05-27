@@ -5,7 +5,7 @@ from fastapi.responses import Response
 import uvicorn
 
 from .models import IntentRecognitionRequest, QAQuestionRequest, SemanticParseRequest
-from .service import build_io_stub_trace, get_generator_status, get_workflow_service
+from .service import build_semantic_parse_stub_output, get_generator_status, get_workflow_service
 from services.cypher_generator_agent.app.infrastructure.config import get_settings
 
 
@@ -40,17 +40,12 @@ async def recognize_intent(request: IntentRecognitionRequest) -> Dict[str, objec
 
 @app.post("/api/v1/semantic/parse")
 async def parse_semantics(request: SemanticParseRequest) -> Dict[str, object]:
-    trace = build_io_stub_trace(
+    output = build_semantic_parse_stub_output(
         qa_id=request.id,
         question=request.question,
         trace_id=request.generation_run_id or request.id or "api",
     )
-    return {
-        "status": "generated",
-        "cypher": "",
-        "logical_plan": {},
-        "trace": trace,
-    }
+    return output.model_dump(exclude_none=True)
 
 
 if __name__ == "__main__":

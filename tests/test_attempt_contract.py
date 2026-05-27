@@ -105,6 +105,43 @@ def test_repository_persists_service_failed_report_without_assigning_attempt_num
     assert "attempt_no" not in persisted
 
 
+def test_repository_persists_unsupported_query_shape_without_assigning_attempt_number(tmp_path):
+    repository = TestingRepository(str(tmp_path / "testing"))
+    report = CgaGenerationNonSuccessReport(
+        id="qa-unsupported",
+        question="查询两台设备之间的最短路径",
+        generation_run_id="run-unsupported",
+        input_prompt_snapshot='{"trace_schema_version":"cga_graph_trace_v1"}',
+        generation_status="unsupported_query_shape",
+        failure_reason="unsupported_query_shape",
+        parsed_cypher=None,
+        gate_passed=False,
+    )
+
+    repository.save_generation_failure_report(report)
+
+    assert repository.list_submission_attempts("qa-unsupported") == []
+    persisted = repository.get_generation_failure_report("qa-unsupported", "run-unsupported")
+    assert persisted is not None
+    assert persisted["generation_status"] == "unsupported_query_shape"
+    assert persisted["failure_reason"] == "unsupported_query_shape"
+    assert "attempt_no" not in persisted
+
+
+def test_unsupported_query_shape_report_rejects_parsed_cypher():
+    with pytest.raises(ValidationError, match="unsupported_query_shape must not include parsed_cypher"):
+        CgaGenerationNonSuccessReport(
+            id="qa-unsupported",
+            question="查询两台设备之间的最短路径",
+            generation_run_id="run-unsupported",
+            input_prompt_snapshot="{}",
+            generation_status="unsupported_query_shape",
+            failure_reason="unsupported_query_shape",
+            parsed_cypher="MATCH (n) RETURN n",
+            gate_passed=False,
+        )
+
+
 def test_generation_failed_report_defaults_gate_passed_to_false():
     report = CgaGenerationNonSuccessReport(
         id="qa-001",

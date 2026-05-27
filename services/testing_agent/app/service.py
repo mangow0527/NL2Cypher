@@ -97,7 +97,7 @@ class TestingAgentService:
         return SubmissionReceipt(accepted=True)
 
     async def ingest_generation_failure(self, report: CgaGenerationNonSuccessReport) -> SubmissionReceipt:
-        if report.generation_status in {"service_failed", "clarification_required"}:
+        if report.generation_status in {"service_failed", "clarification_required", "unsupported_query_shape"}:
             self.repository.save_generation_failure_report(report)
             return SubmissionReceipt(accepted=True)
 

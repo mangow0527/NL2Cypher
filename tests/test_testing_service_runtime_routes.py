@@ -104,6 +104,19 @@ def test_submission_route_returns_minimal_receipt(monkeypatch):
         ),
         (
             {
+                "id": "qa-unsupported",
+                "question": "查询两台设备之间的最短路径",
+                "generation_run_id": "run-unsupported",
+                "generation_status": "unsupported_query_shape",
+                "failure_reason": "unsupported_query_shape",
+                "parsed_cypher": None,
+                "input_prompt_snapshot": '{"trace_schema_version":"cga_graph_trace_v1"}',
+                "gate_passed": False,
+            },
+            "unsupported_query_shape",
+        ),
+        (
+            {
                 "id": "qa-clarification",
                 "question": "查询服务 A 对应的网元",
                 "generation_run_id": "run-clarification",

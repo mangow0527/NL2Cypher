@@ -39,7 +39,8 @@ async def test_ingest_question_preserves_io_contract_with_empty_generation_body(
 
     result = await service.ingest_question(QAQuestionRequest(id="qa-osi-1", question="查询服务名称"))
 
-    assert result.generation_status == "submitted_to_testing"
+    assert result.submission_status == "submitted_to_testing"
+    assert result.generation_status is None
     assert result.generation_run_id
     assert testing_client.failure is None
     assert testing_client.submission is not None
@@ -65,16 +66,31 @@ async def test_semantic_parse_returns_empty_io_skeleton() -> None:
     )
 
     assert result == {
-        "status": "generated",
-        "cypher": "",
-        "logical_plan": {},
+        "status": "unsupported_query_shape",
         "trace": {
-            "schema_version": "cga_io_stub_v1",
+            "trace_schema_version": "cga_graph_trace_v1",
             "trace_id": "run-osi-2",
-            "input": {"id": "qa-osi-2", "question": "查询端口信息"},
-            "output": {"generated_cypher": ""},
-            "internal_flow": {},
+            "question_id": "qa-osi-2",
+            "generation_run_id": "run-osi-2",
+            "source_question": "查询端口信息",
+            "final_status": "unsupported_query_shape",
+            "semantic_model": {},
+            "stages": [],
+            "final_outputs": {
+                "failure": {
+                    "reason": "unsupported_query_shape",
+                    "message": "Graph-native Cypher generation is not implemented in the IR-00 stub.",
+                    "suggested_rewrites": [],
+                },
+                "user_visible_notices": [],
+            },
         },
+        "failure": {
+            "reason": "unsupported_query_shape",
+            "message": "Graph-native Cypher generation is not implemented in the IR-00 stub.",
+            "suggested_rewrites": [],
+        },
+        "user_visible_notices": [],
     }
 
 
@@ -94,14 +110,20 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
     allowed_top_level = {"__init__.py", "app", "tests"}
     assert _source_names(SERVICE_ROOT) <= allowed_top_level
 
-    allowed_app_children = {"__init__.py", "api", "infrastructure"}
+    allowed_app_children = {"__init__.py", "api", "core", "infrastructure"}
     assert _source_names(SERVICE_ROOT / "app") <= allowed_app_children
+
+    allowed_core_files = {"__init__.py", "errors.py", "result.py"}
+    assert _source_names(SERVICE_ROOT / "app" / "core") <= allowed_core_files
 
     allowed_infrastructure_files = {"__init__.py", "clients.py", "config.py"}
     assert _source_names(SERVICE_ROOT / "app" / "infrastructure") <= allowed_infrastructure_files
 
-    allowed_tests = {"test_input_output_stub_contract.py"}
+    allowed_tests = {"__init__.py", "integration", "test_input_output_stub_contract.py"}
     assert _source_names(SERVICE_ROOT / "tests") <= allowed_tests
+
+    allowed_integration_files = {"__init__.py", "test_api_contract.py"}
+    assert _source_names(SERVICE_ROOT / "tests" / "integration") <= allowed_integration_files
 
 
 def _source_names(path: Path) -> set[str]:
