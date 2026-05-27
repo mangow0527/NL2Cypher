@@ -128,6 +128,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "cypher_validation",
         "dsl",
         "infrastructure",
+        "literals",
         "observability",
         "semantic_model",
     }
@@ -164,6 +165,15 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
     allowed_compiler_files = {"__init__.py", "compiler.py", "projection.py", "templates.py"}
     assert _source_names(SERVICE_ROOT / "app" / "compiler") <= allowed_compiler_files
 
+    allowed_literals_files = {
+        "__init__.py",
+        "models.py",
+        "resolver.py",
+        "typed_parser.py",
+        "value_index.py",
+    }
+    assert _source_names(SERVICE_ROOT / "app" / "literals") <= allowed_literals_files
+
     allowed_tests = {
         "__init__.py",
         "compiler",
@@ -171,6 +181,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "dsl",
         "fixtures",
         "integration",
+        "literals",
         "observability",
         "semantic_model",
         "test_input_output_stub_contract.py",
@@ -203,6 +214,14 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "test_vertex_lookup.py",
     }
     assert _source_names(SERVICE_ROOT / "tests" / "compiler") <= allowed_compiler_tests
+
+    allowed_literals_tests = {
+        "__init__.py",
+        "test_enum_resolution.py",
+        "test_id_resolution.py",
+        "test_time_numeric_parse.py",
+    }
+    assert _source_names(SERVICE_ROOT / "tests" / "literals") <= allowed_literals_tests
 
     allowed_fixture_files = {
         "__init__.py",
