@@ -30,7 +30,6 @@ DYNAMIC_SCHEMA_RES = (
     re.compile(r"[\(\[][^\{\}\)\]]*:\s*\$"),
     re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\s*\[\s*\$[A-Za-z_][A-Za-z0-9_]*\s*\]"),
 )
-MAP_PROJECTION_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\s*\{[^{}]*\}")
 UNSUPPORTED_READ_FRAGMENTS = tuple(
     sorted(
         {
@@ -167,26 +166,112 @@ def _iter_unquoted_matches(pattern: re.Pattern[str], text: str):
 
 
 def _iter_map_projection_locations(parsed: ParsedCypher) -> list[str]:
+    text = parsed.cypher
     locations: list[str] = []
-    for clause in parsed.clauses:
-        if clause.name not in {"RETURN", "WITH"}:
+    for open_index, identifier_start in _iter_identifier_brace_pairs(text):
+        if _is_graph_pattern_property_map(parsed, identifier_start):
             continue
-        clause_body = clause.text[len(clause.name) :].strip()
-        for match in _iter_unquoted_matches(MAP_PROJECTION_RE, clause_body):
-            locations.append(match.group(0))
+        close_index = _find_closing_bracket(text, open_index, "{", "}")
+        if close_index is None:
+            locations.append(text[identifier_start : open_index + 1])
+            continue
+        locations.append(text[identifier_start : close_index + 1])
     return locations
+
+
+def _iter_identifier_brace_pairs(text: str) -> list[tuple[int, int]]:
+    pairs: list[tuple[int, int]] = []
+    for open_index, char in enumerate(text):
+        if char != "{" or _inside_string(text, open_index):
+            continue
+        identifier_end = open_index - 1
+        while identifier_end >= 0 and text[identifier_end].isspace():
+            identifier_end -= 1
+        if identifier_end < 0 or not _is_identifier_char(text[identifier_end]):
+            continue
+        identifier_start = identifier_end
+        while identifier_start > 0 and _is_identifier_char(text[identifier_start - 1]):
+            identifier_start -= 1
+        pairs.append((open_index, identifier_start))
+    return pairs
 
 
 def _iter_pattern_comprehension_locations(text: str) -> list[str]:
     locations: list[str] = []
     for start, end in _iter_square_bracket_spans(text):
         body = text[start + 1 : end]
-        if "|" not in body:
+        if not _contains_unquoted_pipe(body):
             continue
         scan_body = _replace_string_literals(body)
-        if re.search(r"\([^)]*\)\s*(?:<-|--|-)\s*(?:\[[^\[\]]*\]\s*)?(?:->|-)?\s*\([^)]*\)", scan_body):
+        if re.search(r"\([^)]*\)", scan_body) and re.search(r"<-|--|->|-\s*\[|\]\s*-", scan_body):
             locations.append(text[start : end + 1])
     return locations
+
+
+def _is_graph_pattern_property_map(parsed: ParsedCypher, start: int) -> bool:
+    text = parsed.cypher
+    if _clause_name_at(parsed, start) not in {"MATCH", "OPTIONAL MATCH"}:
+        return False
+    index = start - 1
+    while index >= 0 and text[index].isspace():
+        index -= 1
+    if index < 0:
+        return False
+    if text[index] in {"(", ":"}:
+        return True
+    if text[index] == "[":
+        return _is_relationship_pattern_bracket(text, index)
+    return False
+
+
+def _clause_name_at(parsed: ParsedCypher, index: int) -> str | None:
+    for clause in parsed.clauses:
+        if clause.start <= index < clause.end:
+            return clause.name
+    return None
+
+
+def _is_relationship_pattern_bracket(text: str, open_index: int) -> bool:
+    close_index = _find_closing_bracket(text, open_index, "[", "]")
+    if close_index is None:
+        return False
+    left = _previous_nonspace(text, open_index - 1)
+    right = _next_nonspace(text, close_index + 1)
+    return left == "-" or right in {"-", ">"}
+
+
+def _find_closing_bracket(text: str, open_index: int, open_char: str, close_char: str) -> int | None:
+    depth = 0
+    for index in range(open_index, len(text)):
+        if _inside_string(text, index):
+            continue
+        if text[index] == open_char:
+            depth += 1
+            continue
+        if text[index] == close_char:
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def _previous_nonspace(text: str, index: int) -> str | None:
+    while index >= 0 and text[index].isspace():
+        index -= 1
+    return text[index] if index >= 0 else None
+
+
+def _next_nonspace(text: str, index: int) -> str | None:
+    while index < len(text) and text[index].isspace():
+        index += 1
+    return text[index] if index < len(text) else None
+
+
+def _contains_unquoted_pipe(text: str) -> bool:
+    for index, char in enumerate(text):
+        if char == "|" and not _inside_string(text, index):
+            return True
+    return False
 
 
 def _iter_square_bracket_spans(text: str) -> list[tuple[int, int]]:

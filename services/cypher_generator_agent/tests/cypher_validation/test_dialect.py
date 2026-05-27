@@ -64,6 +64,26 @@ def test_spec_allowlisted_scalar_functions_pass_target_dialect(
 @pytest.mark.parametrize(
     "cypher",
     [
+        "MATCH (t:Tunnel {id: $tunnel_id}) RETURN t.id AS tunnel_id",
+        (
+            "MATCH (t:Tunnel)-[p:PATH_THROUGH {hop_order: 1}]->(ne:NetworkElement) "
+            "RETURN ne.id AS device_id, p.hop_order AS hop"
+        ),
+    ],
+)
+def test_graph_pattern_property_maps_pass_target_dialect(
+    validator: CypherSelfValidator,
+    cypher: str,
+) -> None:
+    result = validator.validate_generated_query(cypher)
+
+    assert result.valid is True
+    assert {check.name: check.status for check in result.checks}["dialect"] == "passed"
+
+
+@pytest.mark.parametrize(
+    "cypher",
+    [
         "MATCH p = shortestPath((a:NetworkElement)-[:HAS_PORT*1..8]->(b:Port)) RETURN p",
         "MATCH (ne:NetworkElement) RETURN apoc.text.join([ne.id], ',') AS joined",
     ],
@@ -109,9 +129,19 @@ def test_dynamic_schema_references_fail_target_dialect(
         "MATCH (ne:NetworkElement) RETURN ne { id } AS device",
         "MATCH (ne:NetworkElement) RETURN ne { id: $id } AS device",
         "MATCH (ne:NetworkElement) RETURN ne { answer: 42 } AS device",
+        "MATCH (ne:NetworkElement) RETURN (ne { .id }) AS device",
+        "MATCH (ne:NetworkElement) RETURN {device: ne { .id }} AS row",
+        "MATCH (ne:NetworkElement) RETURN ne { nested: { id: 1 } } AS device",
         "MATCH (ne:NetworkElement) RETURN [(ne)-[:HAS_PORT]->(p:Port) | p.id] AS port_ids",
         "MATCH (ne:NetworkElement) RETURN [p = (ne)-[:HAS_PORT]->(:Port) | p] AS paths",
         "MATCH (ne:NetworkElement) RETURN [(ne {name: '(core)'})-->(p) | p] AS paths",
+        "MATCH (ne:NetworkElement) RETURN [({name: coalesce(ne.name, '')})-->(p) | p] AS paths",
+        "MATCH (ne:NetworkElement) RETURN [(ne)-[:HAS_PORT]-(p:Port) | 1] AS flags",
+        "MATCH (ne:NetworkElement) RETURN [(ne)-[r:HAS_PORT]-(p:Port) | ne.id] AS ids",
+        "MATCH (ne:NetworkElement) RETURN ne.id AS id ORDER BY ne { .id }",
+        "MATCH (ne:NetworkElement) WITH ne ORDER BY ne { .id } RETURN ne.id AS id",
+        "MATCH (ne:NetworkElement) WHERE ne { .id } IS NOT NULL RETURN ne.id AS id",
+        "MATCH (ne:NetworkElement) UNWIND [ne { .id }] AS m RETURN ne.id AS id",
     ],
 )
 def test_pattern_and_map_projection_fragments_fail_target_dialect(
