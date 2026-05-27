@@ -7,7 +7,11 @@ from services.cypher_generator_agent.app.api.models import SemanticParseRequest
 from services.cypher_generator_agent.app.core import pipeline as pipeline_module
 from services.cypher_generator_agent.app.core.pipeline import run_pipeline
 from services.cypher_generator_agent.app.core.result import ClarificationRequest
-from services.cypher_generator_agent.app.decomposition.models import QuestionDecompositionClarification
+from services.cypher_generator_agent.app.decomposition.models import (
+    QuestionDecompositionClarification,
+    QuestionDecompositionFailure,
+)
+from services.cypher_generator_agent.app.understanding.models import GroundedUnderstandingFailure
 
 
 EXPECTED_STAGES = [
@@ -258,6 +262,34 @@ def test_decomposer_clarification_outcome_short_circuits_pipeline(
     assert _stage_names(output.trace) == ["graph_model_loader", "question_decomposer", "output"]
 
 
+def test_decomposer_failure_outcome_short_circuits_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def failed_decompose(question: str) -> QuestionDecompositionFailure:
+        return QuestionDecompositionFailure(
+            status="service_failed",
+            reason="model_invocation_failed",
+            message="provider timeout",
+            provider="fake-llm",
+            error_type="TimeoutError",
+            attempts=1,
+            retry_count=0,
+        )
+
+    monkeypatch.setattr(pipeline_module, "_mock_decompose", failed_decompose)
+
+    output = run_pipeline(
+        question="Gold 服务使用了哪些隧道",
+        qa_id="decomposer-failure",
+        generation_run_id="run-decomposer-failure",
+    )
+
+    assert output.status == "service_failed"
+    assert output.failure is not None
+    assert output.failure.reason == "model_invocation_failed"
+    assert _stage_names(output.trace) == ["graph_model_loader", "question_decomposer", "output"]
+
+
 def test_grounded_understanding_schema_output_is_converted_before_binding(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -317,6 +349,37 @@ def test_grounded_understanding_schema_output_is_converted_before_binding(
     assert output.cypher is not None
     assert "SERVICE_USES_TUNNEL" in output.cypher
     assert _stage_names(output.trace) == EXPECTED_STAGES
+
+
+def test_grounded_understanding_failure_outcome_stops_before_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def failed_grounding(
+        decomposition: dict[str, object],
+        literal_results: list[object],
+    ) -> GroundedUnderstandingFailure:
+        return GroundedUnderstandingFailure(
+            status="generation_failed",
+            reason="semantic_match_rejected",
+            message="candidate_id edge:USES_TUNNEL is not present in candidate set",
+            provider="fake-grounded-llm",
+            error_type="CandidateBoundaryError",
+            attempts=1,
+            retry_count=0,
+        )
+
+    monkeypatch.setattr(pipeline_module, "_mock_understand", failed_grounding)
+
+    output = run_pipeline(
+        question="Gold 服务使用了哪些隧道",
+        qa_id="grounded-failure",
+        generation_run_id="run-grounded-failure",
+    )
+
+    assert output.status == "generation_failed"
+    assert output.failure is not None
+    assert output.failure.reason == "semantic_match_rejected"
+    assert _stage_names(output.trace)[-2:] == ["grounded_understanding", "output"]
 
 
 @pytest.mark.asyncio
