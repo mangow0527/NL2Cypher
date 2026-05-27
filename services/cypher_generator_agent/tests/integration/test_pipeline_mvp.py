@@ -6,6 +6,8 @@ from services.cypher_generator_agent.app.api.main import parse_semantics
 from services.cypher_generator_agent.app.api.models import SemanticParseRequest
 from services.cypher_generator_agent.app.core import pipeline as pipeline_module
 from services.cypher_generator_agent.app.core.pipeline import run_pipeline
+from services.cypher_generator_agent.app.core.result import ClarificationRequest
+from services.cypher_generator_agent.app.decomposition.models import QuestionDecompositionClarification
 
 
 EXPECTED_STAGES = [
@@ -176,6 +178,93 @@ def test_model_loader_failure_returns_service_failure_envelope(tmp_path) -> None
     assert output.trace["stages"][0]["status"] == "failed"
 
 
+def test_decomposer_clarification_outcome_short_circuits_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def clarification_decompose(question: str) -> QuestionDecompositionClarification:
+        return QuestionDecompositionClarification(
+            original_question=question,
+            clarification=ClarificationRequest(question="请说明“它”指的是哪个设备或服务。"),
+            missing_referents=["它"],
+        )
+
+    monkeypatch.setattr(pipeline_module, "_mock_decompose", clarification_decompose)
+
+    output = run_pipeline(
+        question="它最近 down 了吗",
+        qa_id="decomposer-clarification",
+        generation_run_id="run-decomposer-clarification",
+    )
+
+    assert output.status == "clarification_required"
+    assert output.cypher is None
+    assert output.dsl is None
+    assert output.clarification is not None
+    assert output.clarification.question == "请说明“它”指的是哪个设备或服务。"
+    assert _stage_names(output.trace) == ["graph_model_loader", "question_decomposer", "output"]
+
+
+def test_grounded_understanding_schema_output_is_converted_before_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def grounded_schema_understanding(
+        decomposition: dict[str, object],
+        literal_results: list[object],
+    ) -> dict[str, object]:
+        return {
+            "schema_version": "grounded_understanding_v1",
+            "status": "grounded",
+            "query_shape": "single_hop",
+            "selected_bindings": [
+                _grounded_binding("source", "vertex", "Service"),
+                _grounded_binding("target", "vertex", "Tunnel"),
+                _grounded_binding("relation", "edge", "SERVICE_USES_TUNNEL", direction="forward"),
+                _grounded_binding(
+                    "filter_property",
+                    "property",
+                    "Service.quality_of_service",
+                    semantic_name="quality_of_service",
+                    owner="Service",
+                ),
+            ],
+            "selected_literals": [
+                result.model_dump(mode="json")
+                for result in literal_results
+            ],
+            "filters": [
+                {
+                    "owner": "Service",
+                    "property": "quality_of_service",
+                    "operator": "=",
+                    "raw_literal": "Gold",
+                }
+            ],
+            "projection": [{"semantic_type": "vertex", "name": "Tunnel"}],
+            "coverage": {
+                "substantive_terms": {
+                    "total": 4,
+                    "covered": 4,
+                    "uncovered": [],
+                }
+            },
+            "unsupported": None,
+            "confidence": 0.93,
+        }
+
+    monkeypatch.setattr(pipeline_module, "_mock_understand", grounded_schema_understanding)
+
+    output = run_pipeline(
+        question="Gold 服务使用了哪些隧道",
+        qa_id="grounded-schema",
+        generation_run_id="run-grounded-schema",
+    )
+
+    assert output.status == "generated"
+    assert output.cypher is not None
+    assert "SERVICE_USES_TUNNEL" in output.cypher
+    assert _stage_names(output.trace) == EXPECTED_STAGES
+
+
 @pytest.mark.asyncio
 async def test_semantic_parse_api_uses_pipeline_for_happy_path() -> None:
     result = await parse_semantics(
@@ -215,3 +304,27 @@ def _all_keys(value: object) -> set[str]:
             keys.update(_all_keys(item))
         return keys
     return set()
+
+
+def _grounded_binding(
+    role: str,
+    semantic_type: str,
+    semantic_id: str,
+    *,
+    semantic_name: str | None = None,
+    owner: str | None = None,
+    direction: str | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "role": role,
+        "semantic_type": semantic_type,
+        "candidate_id": f"{semantic_type}:{semantic_id}",
+        "semantic_id": semantic_id,
+        "semantic_name": semantic_name or semantic_id,
+        "confidence": 0.95,
+    }
+    if owner is not None:
+        payload["owner"] = owner
+    if direction is not None:
+        payload["direction"] = direction
+    return payload

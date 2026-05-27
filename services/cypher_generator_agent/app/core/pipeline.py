@@ -11,6 +11,11 @@ from services.cypher_generator_agent.app.core.errors import GenerationFailureRea
 from services.cypher_generator_agent.app.core.result import GenerationOutput
 from services.cypher_generator_agent.app.cypher_validation import CypherSelfValidator
 from services.cypher_generator_agent.app.cypher_validation.models import CypherSelfValidationResult
+from services.cypher_generator_agent.app.decomposition.models import (
+    QuestionDecomposition,
+    QuestionDecompositionClarification,
+    QuestionDecompositionFailure,
+)
 from services.cypher_generator_agent.app.dsl.builder import RestrictedDslBuilder
 from services.cypher_generator_agent.app.dsl.parser import RestrictedDslValidationError, parse_restricted_query_dsl
 from services.cypher_generator_agent.app.literals.models import LiteralResolverRequest, LiteralResolverResult
@@ -22,6 +27,10 @@ from services.cypher_generator_agent.app.repair.controller import RepairControll
 from services.cypher_generator_agent.app.repair.models import RepairDecision, RepairIssue
 from services.cypher_generator_agent.app.retrieval.retriever import CandidateRetriever
 from services.cypher_generator_agent.app.semantic_model.loader import load_graph_semantic_model
+from services.cypher_generator_agent.app.understanding.models import (
+    GroundedUnderstanding,
+    GroundedUnderstandingFailure,
+)
 from services.cypher_generator_agent.app.validation.coverage import CoverageReport
 from services.cypher_generator_agent.app.validation.semantic_validator import SemanticValidator
 
@@ -100,6 +109,9 @@ def _run_pipeline_steps(
         input_payload={"question": question},
         action=lambda: _mock_decompose(question),
     )
+    if decomposition_output := _output_from_decomposition_outcome(trace, decomposition):
+        return decomposition_output
+    decomposition = _decomposition_payload(decomposition)
 
     retrieval_result = _run_stage(
         trace,
@@ -150,6 +162,9 @@ def _run_pipeline_steps(
         },
         action=lambda: _mock_understand(decomposition, literal_results),
     )
+    if grounded_output := _output_from_grounded_outcome(trace, grounded):
+        return grounded_output
+    grounded = _grounded_binder_payload(grounded)
 
     try:
         plan = _run_stage(
@@ -341,6 +356,106 @@ def _run_repair_controller_stage(
         action=lambda: RepairController().decide(payload),
         output_payload=lambda result: result.model_dump(mode="json"),
     )
+
+
+def _output_from_decomposition_outcome(
+    trace: GraphTraceBuilder,
+    result: Any,
+) -> GenerationOutput | None:
+    if isinstance(result, QuestionDecompositionClarification):
+        return _clarification(trace, question=result.clarification.question)
+    if isinstance(result, QuestionDecompositionFailure):
+        return _failure(trace, reason=result.reason, message=result.message)
+    if isinstance(result, Mapping):
+        status = result.get("status")
+        if status == "clarification_required":
+            clarification = result.get("clarification")
+            question = _clarification_question_from_payload(clarification) or str(
+                result.get("clarification_question") or "请补充澄清信息。"
+            )
+            return _clarification(trace, question=question)
+        if status in {"generation_failed", "service_failed"}:
+            return _failure(
+                trace,
+                reason=str(result.get("reason") or "semantic_contract_unaligned"),
+                message=str(result.get("message") or result.get("reason") or status),
+            )
+    return None
+
+
+def _decomposition_payload(result: Any) -> dict[str, Any]:
+    if isinstance(result, QuestionDecomposition):
+        payload = result.model_dump(mode="json")
+        payload["literal_candidates"] = [
+            candidate["text"]
+            for candidate in payload.get("literal_candidates", [])
+            if isinstance(candidate, dict) and candidate.get("text")
+        ]
+        payload.setdefault("literal_requests", [])
+        payload.setdefault("coverage", _coverage(covered=payload.get("substantive_terms", [])))
+        return payload
+    if isinstance(result, Mapping):
+        return dict(result)
+    raise TypeError(f"question decomposer returned unsupported payload: {result!r}")
+
+
+def _output_from_grounded_outcome(
+    trace: GraphTraceBuilder,
+    result: Any,
+) -> GenerationOutput | None:
+    if isinstance(result, GroundedUnderstandingFailure):
+        return _failure(trace, reason=result.reason, message=result.message)
+    grounded = _coerce_grounded_understanding(result)
+    if grounded is None:
+        return None
+    if grounded.status == "grounded":
+        return None
+    if grounded.status == "unsupported_query_shape":
+        message = grounded.unsupported.message if grounded.unsupported is not None else "Unsupported query shape."
+        return _failure(
+            trace,
+            reason="unsupported_query_shape",
+            message=message,
+            details={
+                "grounded_understanding": grounded.model_dump(mode="json"),
+                "reason_code": grounded.unsupported.reason_code if grounded.unsupported else "unsupported_query_shape",
+            },
+        )
+    if grounded.status == "clarification_required":
+        return _clarification(trace, question="请补充澄清信息。")
+    return _failure(
+        trace,
+        reason="semantic_match_rejected",
+        message=f"Grounded understanding returned non-grounded status {grounded.status}.",
+    )
+
+
+def _grounded_binder_payload(result: Any) -> dict[str, Any]:
+    grounded = _coerce_grounded_understanding(result)
+    if grounded is not None:
+        return grounded.to_binder_payload()
+    if isinstance(result, Mapping):
+        return dict(result)
+    raise TypeError(f"grounded understanding returned unsupported payload: {result!r}")
+
+
+def _coerce_grounded_understanding(result: Any) -> GroundedUnderstanding | None:
+    if isinstance(result, GroundedUnderstanding):
+        return result
+    if isinstance(result, Mapping) and result.get("schema_version") == "grounded_understanding_v1":
+        return GroundedUnderstanding.model_validate(result)
+    return None
+
+
+def _clarification_question_from_payload(payload: Any) -> str | None:
+    if payload is None:
+        return None
+    if hasattr(payload, "question"):
+        return str(payload.question)
+    if isinstance(payload, Mapping):
+        question = payload.get("question") or payload.get("question_zh")
+        return str(question) if question else None
+    return None
 
 
 def _mock_decompose(question: str) -> dict[str, Any]:
