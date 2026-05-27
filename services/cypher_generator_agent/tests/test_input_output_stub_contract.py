@@ -119,11 +119,21 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
     allowed_infrastructure_files = {"__init__.py", "clients.py", "config.py"}
     assert _source_names(SERVICE_ROOT / "app" / "infrastructure") <= allowed_infrastructure_files
 
-    allowed_tests = {"__init__.py", "integration", "test_input_output_stub_contract.py"}
+    allowed_tests = {"__init__.py", "fixtures", "integration", "test_input_output_stub_contract.py"}
     assert _source_names(SERVICE_ROOT / "tests") <= allowed_tests
 
     allowed_integration_files = {"__init__.py", "test_api_contract.py"}
     assert _source_names(SERVICE_ROOT / "tests" / "integration") <= allowed_integration_files
+
+    allowed_fixture_files = {
+        "__init__.py",
+        "golden_questions.yaml",
+        "network_topology_graph_model.yaml",
+        "questions.yaml",
+        "test_fixture_consistency.py",
+        "value_index.json",
+    }
+    assert _source_names(SERVICE_ROOT / "tests" / "fixtures") <= allowed_fixture_files
 
 
 def _source_names(path: Path) -> set[str]:
