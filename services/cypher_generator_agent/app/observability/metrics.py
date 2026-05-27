@@ -12,7 +12,10 @@ class MetricName(str, Enum):
     CGA_GRAPH_UNSUPPORTED_QUERY_SHAPE_COUNT = "cga_graph_unsupported_query_shape_count"
     CGA_GRAPH_GENERATION_FAILED_COUNT = "cga_graph_generation_failed_count"
     CGA_GRAPH_STAGE_DURATION_MS = "cga_graph_stage_duration_ms"
+    CGA_GRAPH_TOTAL_DURATION_MS = "cga_graph_total_duration_ms"
     CGA_GRAPH_LLM_CALL_COUNT = "cga_graph_llm_call_count"
+    CGA_GRAPH_SCHEMA_RETRY_COUNT = "cga_graph_schema_retry_count"
+    CGA_GRAPH_TOKEN_USAGE_TOTAL = "cga_graph_token_usage_total"
     CGA_GRAPH_REPAIR_ATTEMPT_COUNT = "cga_graph_repair_attempt_count"
     CGA_GRAPH_REPAIR_OSCILLATION_COUNT = "cga_graph_repair_oscillation_count"
     CGA_GRAPH_LITERAL_CACHE_HIT_RATE = "cga_graph_literal_cache_hit_rate"
@@ -58,10 +61,25 @@ METRIC_DEFINITIONS: dict[MetricName, MetricDefinition] = {
         metric_type="histogram",
         description="Stage duration distribution in milliseconds.",
     ),
+    MetricName.CGA_GRAPH_TOTAL_DURATION_MS: MetricDefinition(
+        name=MetricName.CGA_GRAPH_TOTAL_DURATION_MS,
+        metric_type="histogram",
+        description="End-to-end generation duration distribution in milliseconds.",
+    ),
     MetricName.CGA_GRAPH_LLM_CALL_COUNT: MetricDefinition(
         name=MetricName.CGA_GRAPH_LLM_CALL_COUNT,
         metric_type="counter",
         description="Counts LLM calls, including retries and repair loop calls.",
+    ),
+    MetricName.CGA_GRAPH_SCHEMA_RETRY_COUNT: MetricDefinition(
+        name=MetricName.CGA_GRAPH_SCHEMA_RETRY_COUNT,
+        metric_type="counter",
+        description="Counts structured-output schema retries across LLM stages.",
+    ),
+    MetricName.CGA_GRAPH_TOKEN_USAGE_TOTAL: MetricDefinition(
+        name=MetricName.CGA_GRAPH_TOKEN_USAGE_TOTAL,
+        metric_type="counter",
+        description="Counts total LLM token usage recorded in trace stage metrics.",
     ),
     MetricName.CGA_GRAPH_REPAIR_ATTEMPT_COUNT: MetricDefinition(
         name=MetricName.CGA_GRAPH_REPAIR_ATTEMPT_COUNT,

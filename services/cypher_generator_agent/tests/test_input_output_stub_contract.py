@@ -202,6 +202,9 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
     allowed_repair_files = {"__init__.py", "controller.py", "fingerprint.py", "models.py", "notices.py"}
     assert _source_names(SERVICE_ROOT / "app" / "repair") <= allowed_repair_files
 
+    allowed_observability_files = {"__init__.py", "baseline.py", "metrics.py", "stages.py", "trace.py"}
+    assert _source_names(SERVICE_ROOT / "app" / "observability") <= allowed_observability_files
+
     allowed_validation_files = {"__init__.py", "coverage.py", "models.py", "semantic_validator.py"}
     assert _source_names(SERVICE_ROOT / "app" / "validation") <= allowed_validation_files
 
@@ -282,13 +285,19 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "__init__.py",
         "golden_questions.yaml",
         "network_topology_graph_model.yaml",
+        "performance_baseline_cases.yaml",
         "questions.yaml",
         "test_fixture_consistency.py",
         "value_index.json",
     }
     assert _source_names(SERVICE_ROOT / "tests" / "fixtures") <= allowed_fixture_files
 
-    allowed_observability_tests = {"__init__.py", "test_stage_contract.py", "test_trace_builder.py"}
+    allowed_observability_tests = {
+        "__init__.py",
+        "test_performance_baseline.py",
+        "test_stage_contract.py",
+        "test_trace_builder.py",
+    }
     assert _source_names(SERVICE_ROOT / "tests" / "observability") <= allowed_observability_tests
 
     allowed_retrieval_tests = {"__init__.py", "test_candidate_retriever.py"}
