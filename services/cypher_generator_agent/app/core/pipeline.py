@@ -331,6 +331,27 @@ def _mock_decompose(question: str) -> dict[str, Any]:
             "mock_intent": "tunnel_full_path",
         }
 
+    if "ne-0001" in question and "隧道" in question and "经过" in question:
+        return {
+            "schema_version": "question_decomposition_v1",
+            "original_question": question,
+            "target_concepts": ["Tunnel", "NetworkElement", "隧道", "设备"],
+            "relation_phrases": ["经过", "PATH_THROUGH"],
+            "literal_candidates": ["ne-0001"],
+            "semantic_terms": ["NetworkElement.id", "PATH_THROUGH"],
+            "substantive_terms": ["隧道", "经过", "设备", "ne-0001"],
+            "literal_requests": [
+                {
+                    "raw_literal": "ne-0001",
+                    "expected_vertex": "NetworkElement",
+                    "expected_property": "id",
+                    "literal_kind_hint": "id",
+                }
+            ],
+            "coverage": _coverage(covered=["隧道", "经过", "设备", "ne-0001"]),
+            "mock_intent": "tunnels_through_device",
+        }
+
     return {
         "schema_version": "question_decomposition_v1",
         "original_question": question,
@@ -423,6 +444,24 @@ def _mock_understand(
                 {"alias": "hop", "source": "path.hop"},
             ],
             "assumptions": [{"type": "path_pattern_selected", "name": "tunnel_full_path"}],
+        }
+
+    if intent == "tunnels_through_device":
+        return {
+            "query_shape": "variable_path_traversal",
+            "selected_vertices": ["Tunnel", "NetworkElement"],
+            "selected_edges": ["PATH_THROUGH"],
+            "selected_properties": [{"owner": "NetworkElement", "name": "id"}],
+            "selected_literals": literal_payloads,
+            "filters": [
+                {
+                    "owner": "NetworkElement",
+                    "property": "id",
+                    "operator": "=",
+                    "raw_literal": "ne-0001",
+                }
+            ],
+            "projection": [{"semantic_type": "vertex", "name": "Tunnel"}],
         }
 
     return {

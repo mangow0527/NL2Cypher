@@ -146,6 +146,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
 
     allowed_cypher_validation_files = {
         "__init__.py",
+        "dialect.py",
         "models.py",
         "parser.py",
         "readonly.py",
@@ -233,6 +234,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "test_api_contract.py",
         "test_pipeline_mvp.py",
         "test_testing_agent_submission.py",
+        "test_variable_path.py",
     }
     assert _source_names(SERVICE_ROOT / "tests" / "integration") <= allowed_integration_files
 
@@ -243,6 +245,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "__init__.py",
         "test_readonly.py",
         "test_schema_reference_mvp.py",
+        "test_variable_path_bounds.py",
         "test_validator_entrypoints.py",
     }
     assert _source_names(SERVICE_ROOT / "tests" / "cypher_validation") <= allowed_cypher_validation_tests
@@ -258,6 +261,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "__init__.py",
         "test_builder_named_path_pattern.py",
         "test_builder_single_hop.py",
+        "test_builder_variable_path.py",
         "test_operation_sequences.py",
         "test_parser.py",
     }
@@ -269,6 +273,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "test_named_path_pattern.py",
         "test_readonly_output.py",
         "test_single_hop.py",
+        "test_variable_path.py",
         "test_vertex_lookup.py",
     }
     assert _source_names(SERVICE_ROOT / "tests" / "compiler") <= allowed_compiler_tests

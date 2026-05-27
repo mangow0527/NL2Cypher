@@ -14,6 +14,7 @@ from services.cypher_generator_agent.app.dsl.ast import (
     RestrictedQueryAst,
     TraverseEdgeOperation,
     UsePathPatternOperation,
+    VariablePathOperation,
 )
 from services.cypher_generator_agent.app.dsl.models import QueryShape
 from services.cypher_generator_agent.app.semantic_model import GraphSemanticRegistry
@@ -28,6 +29,7 @@ SUPPORTED_QUERY_SHAPES = {
     QueryShape.VERTEX_LOOKUP,
     QueryShape.SINGLE_HOP_TRAVERSAL,
     QueryShape.NAMED_PATH_PATTERN,
+    QueryShape.VARIABLE_PATH_TRAVERSAL,
 }
 ROLE_VARIABLES = {
     "Service": "svc",
@@ -94,6 +96,8 @@ class CypherCompiler:
             cypher, parameters = self._compile_single_hop(ast)
         elif ast.query_shape is QueryShape.NAMED_PATH_PATTERN:
             cypher, parameters = self._compile_named_path_pattern(ast)
+        elif ast.query_shape is QueryShape.VARIABLE_PATH_TRAVERSAL:
+            cypher, parameters = self._compile_variable_path(ast)
         else:
             raise CypherCompilerError(f"unsupported query_shape: {ast.query_shape.value}")
 
@@ -178,6 +182,36 @@ class CypherCompiler:
         parameters = {key: value.effective_value for key, value in operation.parameters.items()}
         _validate_template_parameters(cypher, parameters)
         return cypher, parameters
+
+    def _compile_variable_path(self, ast: RestrictedQueryAst) -> tuple[str, dict[str, object]]:
+        operation = _single_operation(ast, VariablePathOperation)
+        if len(operation.allowed_edges) != 1:
+            raise CypherCompilerError("variable_path compiler MVP requires exactly one allowed edge")
+        if operation.max_hops > 8:
+            raise CypherCompilerError("variable_path max_hops must be <= 8")
+
+        used: set[str] = set()
+        start_var = _variable_for_owner(operation.start.vertex_name, used=used)
+        through_var = _variable_for_owner(operation.through.vertex_name, used=used)
+        role_variables = {
+            operation.start.alias: start_var,
+            operation.through.alias: through_var,
+        }
+        parameters = _ParameterBuilder()
+        edge_name = operation.allowed_edges[0]
+
+        clauses = [
+            (
+                f"MATCH {operation.bind_as} = ({start_var}:{operation.start.vertex_name})"
+                f"-[:{edge_name}*{operation.min_hops}..{operation.max_hops}]->"
+                f"({through_var}:{operation.through.vertex_name})"
+            )
+        ]
+        where = _compile_filters([*operation.through_filters, *ast.filters], role_variables, parameters)
+        if where:
+            clauses.append(f"WHERE {' AND '.join(where)}")
+        clauses.append(_compile_return(ast.projection, role_variables))
+        return "\n".join(clauses), parameters.values
 
 
 class _ParameterBuilder:

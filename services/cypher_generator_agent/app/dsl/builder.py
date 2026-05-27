@@ -30,6 +30,8 @@ class RestrictedDslBuilder:
             dsl = self._build_single_hop(plan, source_question=source_question, query_id=query_id)
         elif plan.query_shape == "named_path_pattern":
             dsl = self._build_named_path_pattern(plan, source_question=source_question, query_id=query_id)
+        elif plan.query_shape == "variable_path_traversal":
+            dsl = self._build_variable_path(plan, source_question=source_question, query_id=query_id)
         else:
             raise ValueError(f"unsupported query_shape for restricted DSL builder: {plan.query_shape}")
 
@@ -106,6 +108,49 @@ class RestrictedDslBuilder:
             }
         ]
         self._add_filters_projection_sort_limit(dsl, plan, role_by_owner={}, include_filters=False)
+        return dsl
+
+    def _build_variable_path(
+        self,
+        plan: BindingPlan,
+        *,
+        source_question: str,
+        query_id: str,
+    ) -> dict[str, Any]:
+        if len(plan.vertex_bindings) < 2:
+            raise ValueError("variable_path_traversal requires start/through vertices")
+        if len(plan.edge_bindings) != 1:
+            raise ValueError("variable_path_traversal requires exactly one edge binding")
+
+        start = plan.vertex_bindings[0]
+        through = plan.vertex_bindings[1]
+        edge = plan.edge_bindings[0]
+        role_by_owner = {start.name: "start", through.name: "through"}
+        through_filters = [item for item in plan.filters if item.owner == through.name]
+        remaining_filters = [item for item in plan.filters if item.owner != through.name]
+
+        dsl = self._base_payload(plan, source_question=source_question, query_id=query_id)
+        dsl["bindings"] = {
+            "start": {"vertex_name": start.name},
+            "through": {"vertex_name": through.name},
+        }
+        dsl["operations"] = [
+            {
+                "op": "variable_path",
+                "bind_as": "path",
+                "start": "start",
+                "through": {
+                    "vertex_ref": "through",
+                    "filters": [self._filter_item(item, role_by_owner) for item in through_filters],
+                },
+                "allowed_edges": [edge.name],
+                "min_hops": 1,
+                "max_hops": 8,
+            }
+        ]
+        if remaining_filters:
+            dsl["filters"] = [self._filter_item(item, role_by_owner) for item in remaining_filters]
+        dsl["projection"] = {"items": self._projection_items(plan, role_by_owner)}
         return dsl
 
     def _base_payload(

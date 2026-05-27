@@ -9,6 +9,7 @@ from .models import (
     CypherValidationIssue,
     SourceKind,
 )
+from .dialect import validate_target_dialect
 from .parser import parse_cypher
 from .readonly import validate_readonly
 from .schema_reference import validate_schema_references
@@ -71,6 +72,15 @@ class CypherSelfValidator:
             return _result(request, checks, errors, warnings)
         checks.append(CypherValidationCheck(name="readonly", status="passed"))
 
+        dialect_errors = validate_target_dialect(parsed)
+        if dialect_errors:
+            errors.extend(dialect_errors)
+            checks.append(CypherValidationCheck(name="dialect", status="failed"))
+            checks.append(CypherValidationCheck(name="schema_reference", status="skipped"))
+            checks.extend(_ir03b_check_slots())
+            return _result(request, checks, errors, warnings)
+        checks.append(CypherValidationCheck(name="dialect", status="passed"))
+
         schema_errors = validate_schema_references(parsed, self.registry)
         if schema_errors:
             errors.extend(schema_errors)
@@ -101,6 +111,7 @@ def _result(
 def _skipped_follow_up_checks() -> list[CypherValidationCheck]:
     return [
         CypherValidationCheck(name="readonly", status="skipped"),
+        CypherValidationCheck(name="dialect", status="skipped"),
         CypherValidationCheck(name="schema_reference", status="skipped"),
         *_ir03b_check_slots(),
     ]
@@ -108,6 +119,7 @@ def _skipped_follow_up_checks() -> list[CypherValidationCheck]:
 
 def _skipped_after_readonly_checks() -> list[CypherValidationCheck]:
     return [
+        CypherValidationCheck(name="dialect", status="skipped"),
         CypherValidationCheck(name="schema_reference", status="skipped"),
         *_ir03b_check_slots(),
     ]
@@ -116,6 +128,5 @@ def _skipped_after_readonly_checks() -> list[CypherValidationCheck]:
 def _ir03b_check_slots() -> list[CypherValidationCheck]:
     return [
         CypherValidationCheck(name="shape", status="skipped"),
-        CypherValidationCheck(name="dialect", status="skipped"),
         CypherValidationCheck(name="model_artifact", status="skipped"),
     ]

@@ -123,7 +123,7 @@ class VariablePathOperationModel(RestrictedDslBase):
     through: VariablePathThroughModel
     allowed_edges: list[str] = Field(min_length=1)
     min_hops: int = Field(default=1, ge=0)
-    max_hops: PositiveInt
+    max_hops: PositiveInt = Field(le=8)
 
     @model_validator(mode="after")
     def validate_hop_range(self) -> "VariablePathOperationModel":
