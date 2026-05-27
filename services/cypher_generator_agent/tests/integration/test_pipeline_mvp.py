@@ -70,14 +70,16 @@ def test_coverage_failure_does_not_emit_cypher_or_dsl() -> None:
         generation_run_id="run-coverage-failure",
     )
 
-    assert output.status in {"generation_failed", "unsupported_query_shape", "clarification_required"}
+    assert output.status == "clarification_required"
     assert output.cypher is None
     assert output.dsl is None
-    assert output.failure is not None
-    assert output.failure.reason == "coverage_failure"
+    assert output.failure is None
+    assert output.clarification is not None
+    assert "收入" in output.clarification.question
+    assert output.trace["final_outputs"]["clarification"]["question"] == output.clarification.question
     assert output.trace["final_outputs"]["cypher"] is None
     assert output.trace["final_outputs"]["dsl"] is None
-    assert _stage_names(output.trace)[-2:] == ["semantic_validator", "output"]
+    assert _stage_names(output.trace)[-3:] == ["semantic_validator", "repair_controller", "output"]
 
 
 def test_unsupported_query_shape_from_validator_returns_unsupported_output(
@@ -106,7 +108,7 @@ def test_unsupported_query_shape_from_validator_returns_unsupported_output(
     assert output.dsl is None
     assert output.failure is not None
     assert output.failure.reason == "unsupported_query_shape"
-    assert _stage_names(output.trace)[-2:] == ["semantic_validator", "output"]
+    assert _stage_names(output.trace)[-3:] == ["semantic_validator", "repair_controller", "output"]
 
 
 def test_unresolved_literal_stops_before_dsl_or_cypher_generation() -> None:
@@ -116,16 +118,18 @@ def test_unresolved_literal_stops_before_dsl_or_cypher_generation() -> None:
         generation_run_id="run-literal-unresolved",
     )
 
-    assert output.status == "generation_failed"
+    assert output.status == "clarification_required"
     assert output.cypher is None
     assert output.dsl is None
-    assert output.failure is not None
-    assert output.failure.reason == "literal_unresolved"
+    assert output.failure is None
+    assert output.clarification is not None
+    assert "Platinum" in output.clarification.question
     assert _stage_names(output.trace) == [
         "graph_model_loader",
         "question_decomposer",
         "candidate_retrieval",
         "literal_resolver",
+        "repair_controller",
         "output",
     ]
 
@@ -149,8 +153,8 @@ def test_self_validation_failure_records_self_validation_stage_without_final_cyp
     assert output.dsl is None
     assert output.failure is not None
     assert output.failure.reason == "cypher_readonly_violation"
-    assert _stage_names(output.trace)[-2:] == ["cypher_self_validation", "output"]
-    self_validation_stage = output.trace["stages"][-2]
+    assert _stage_names(output.trace)[-3:] == ["cypher_self_validation", "repair_controller", "output"]
+    self_validation_stage = output.trace["stages"][-3]
     assert self_validation_stage["status"] == "failed"
     assert self_validation_stage["output_ref"]["value"]["valid"] is False
 

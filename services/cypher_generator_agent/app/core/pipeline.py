@@ -18,6 +18,8 @@ from services.cypher_generator_agent.app.literals.resolver import LiteralResolve
 from services.cypher_generator_agent.app.literals.value_index import StaticValueIndex
 from services.cypher_generator_agent.app.observability.stages import StageName
 from services.cypher_generator_agent.app.observability.trace import GraphTraceBuilder, inline_ref
+from services.cypher_generator_agent.app.repair.controller import RepairController
+from services.cypher_generator_agent.app.repair.models import RepairDecision, RepairIssue
 from services.cypher_generator_agent.app.retrieval.retriever import CandidateRetriever
 from services.cypher_generator_agent.app.semantic_model.loader import load_graph_semantic_model
 from services.cypher_generator_agent.app.validation.coverage import CoverageReport
@@ -126,11 +128,17 @@ def _run_pipeline_steps(
     )
     unresolved_literals = [result for result in literal_results if not result.resolved]
     if unresolved_literals:
-        return _failure(
+        return _handle_repair_decision(
             trace,
-            reason="literal_unresolved",
-            message="Literal resolution failed for one or more query filters.",
-            details={"literals": [result.model_dump(mode="json") for result in unresolved_literals]},
+            decision=_run_repair_controller_stage(
+                trace,
+                question=question,
+                selected_bindings={},
+                validator_errors=[
+                    _literal_unresolved_issue(result).model_dump(mode="json")
+                    for result in unresolved_literals
+                ],
+            ),
         )
 
     grounded = _run_stage(
@@ -165,13 +173,19 @@ def _run_pipeline_steps(
         output_payload=lambda result: result.model_dump(mode="json"),
     )
     if not validation_result.is_valid:
-        first_error = validation_result.errors[0]
-        reason = _semantic_validation_failure_reason(first_error)
-        return _failure(
+        return _handle_repair_decision(
             trace,
-            reason=reason,
-            message=first_error.message,
-            details={"validation": validation_result.model_dump(mode="json")},
+            decision=_run_repair_controller_stage(
+                trace,
+                question=question,
+                selected_bindings=plan.model_dump(mode="json"),
+                validator_errors=[
+                    issue.model_dump(mode="json")
+                    for issue in validation_result.errors
+                ],
+                assumptions=validation_result.assumptions,
+            ),
+            fallback_details={"validation": validation_result.model_dump(mode="json")},
         )
 
     try:
@@ -218,12 +232,18 @@ def _run_pipeline_steps(
             validator=CypherSelfValidator(registry),
         )
         if not validation_result.valid:
-            first_error = validation_result.errors[0]
-            return _failure(
+            return _handle_repair_decision(
                 trace,
-                reason=first_error.code,
-                message=first_error.message,
-                details={"self_validation": validation_result.model_dump(mode="json")},
+                decision=_run_repair_controller_stage(
+                    trace,
+                    question=question,
+                    selected_bindings=plan.model_dump(mode="json"),
+                    cypher_validation_errors=[
+                        error.model_dump(mode="json")
+                        for error in validation_result.errors
+                    ],
+                ),
+                fallback_details={"self_validation": validation_result.model_dump(mode="json")},
             )
     except (CypherCompilerError, RestrictedDslValidationError, ValueError) as exc:
         return _failure(trace, reason="compiler_shape_mismatch", message=str(exc))
@@ -291,6 +311,36 @@ def _run_cypher_self_validation_stage(
         warnings=[warning.model_dump(mode="json") for warning in result.warnings],
     )
     return result
+
+
+def _run_repair_controller_stage(
+    trace: GraphTraceBuilder,
+    *,
+    question: str,
+    selected_bindings: dict[str, Any],
+    validator_errors: list[dict[str, Any]] | None = None,
+    cypher_validation_errors: list[dict[str, Any]] | None = None,
+    assumptions: list[dict[str, Any]] | None = None,
+) -> RepairDecision:
+    payload = {
+        "schema_version": "repair_controller_input_v1",
+        "trace_id": trace._trace_id,  # noqa: SLF001 - pipeline owns the trace builder lifecycle.
+        "question": question,
+        "attempt_no": 1,
+        "selected_bindings": selected_bindings,
+        "normalized_dsl": None,
+        "validator_errors": validator_errors or [],
+        "cypher_validation_errors": cypher_validation_errors or [],
+        "history": [],
+        "assumptions": assumptions or [],
+    }
+    return _run_stage(
+        trace,
+        stage=StageName.REPAIR_CONTROLLER,
+        input_payload=payload,
+        action=lambda: RepairController().decide(payload),
+        output_payload=lambda result: result.model_dump(mode="json"),
+    )
 
 
 def _mock_decompose(question: str) -> dict[str, Any]:
@@ -771,6 +821,65 @@ def _failure(
     return trace.finalize_failure(status=status, failure=failure)
 
 
+def _clarification(
+    trace: GraphTraceBuilder,
+    *,
+    question: str,
+    user_visible_notices: list[str] | None = None,
+) -> GenerationOutput:
+    clarification = {"question": question}
+    _add_output_stage(
+        trace,
+        status="clarification_required",
+        payload={"status": "clarification_required", "clarification": clarification},
+    )
+    return trace.finalize_clarification(
+        clarification=clarification,
+        user_visible_notices=user_visible_notices or [],
+    )
+
+
+def _handle_repair_decision(
+    trace: GraphTraceBuilder,
+    *,
+    decision: RepairDecision,
+    fallback_details: dict[str, Any] | None = None,
+) -> GenerationOutput:
+    if decision.decision == "ask_user" and decision.clarification is not None:
+        return _clarification(
+            trace,
+            question=decision.clarification.question or decision.clarification.question_zh or "请补充澄清信息。",
+            user_visible_notices=decision.derived_user_visible_notices,
+        )
+    if decision.decision == "unsupported":
+        return _failure(
+            trace,
+            reason="unsupported_query_shape",
+            message=decision.reason_code,
+            details=fallback_details,
+        )
+    if decision.decision == "generation_failed":
+        return _failure(
+            trace,
+            reason=decision.reason_code,
+            message=decision.stop_reason or decision.reason_code,
+            details=fallback_details,
+        )
+    if decision.decision == "repair_with_llm":
+        return _failure(
+            trace,
+            reason="semantic_match_rejected",
+            message=f"Repair with LLM is not connected in deterministic pipeline: {decision.reason_code}",
+            details={"repair_decision": decision.model_dump(mode="json"), **(fallback_details or {})},
+        )
+    return _failure(
+        trace,
+        reason="semantic_contract_unaligned",
+        message=f"Unexpected repair decision {decision.decision}",
+        details={"repair_decision": decision.model_dump(mode="json"), **(fallback_details or {})},
+    )
+
+
 def _generated(
     trace: GraphTraceBuilder,
     *,
@@ -816,12 +925,27 @@ def _status_for_failure_reason(reason: str) -> str:
     return "generation_failed"
 
 
-def _semantic_validation_failure_reason(issue: Any) -> str:
-    if issue.code == "coverage_failure":
-        return "coverage_failure"
-    if issue.code == "unsupported_query_shape" or issue.action == "unsupported_query_shape":
-        return "unsupported_query_shape"
-    return "semantic_match_rejected"
+def _literal_unresolved_issue(result: LiteralResolverResult) -> RepairIssue:
+    expected = ".".join(
+        part
+        for part in [result.expected_vertex or result.expected_edge, result.expected_property]
+        if part
+    )
+    return RepairIssue(
+        code="literal_unresolved",
+        message=f"literal {result.raw_literal!r} could not be resolved for {expected}",
+        severity="error",
+        repairable=False,
+        action="ask_user",
+        details={
+            "literal": result.raw_literal,
+            "property": expected,
+            "alternatives": [
+                alternative.model_dump(mode="json")
+                for alternative in result.alternatives
+            ],
+        },
+    )
 
 
 def _last_stage_name(trace: GraphTraceBuilder) -> str | None:

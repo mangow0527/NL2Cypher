@@ -206,7 +206,7 @@ golden_questions:
 
   - id: gq-017
     question: 设备 ne-9999 有哪些端口
-    expected_status: generation_failed
+    expected_status: clarification_required
     primary_ir: IR-03a
     expected_reason_code: literal_unresolved
     reason: failure
@@ -227,7 +227,7 @@ golden_questions:
 
   - id: gq-019
     question: 收入增长情况怎么样
-    expected_status: generation_failed
+    expected_status: clarification_required
     primary_ir: IR-13
     expected_reason_code: coverage_failure
     reason: failure

@@ -23,7 +23,7 @@ def test_performance_baseline_collects_generated_and_non_success_cases() -> None
     assert summary.schema_version == "cga_performance_baseline_v1"
     assert summary.case_count == 2
     assert summary.status_counts["generated"] == 1
-    assert summary.status_counts["generation_failed"] == 1
+    assert summary.status_counts["clarification_required"] == 1
     assert set(summary.latency_ms) == {"p50", "p95"}
     assert summary.llm_call_count == 0
     assert summary.schema_retry_count == 0

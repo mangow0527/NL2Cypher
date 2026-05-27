@@ -12,6 +12,6 @@ cases:
 
   - id: perf-gq-019
     question: 收入增长情况怎么样
-    expected_status: generation_failed
+    expected_status: clarification_required
     expected_reason: coverage_failure
     category: non_success_smoke

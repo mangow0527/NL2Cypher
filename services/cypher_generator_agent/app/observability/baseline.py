@@ -114,14 +114,14 @@ def write_baseline_artifact(
 def _case_result(case: BaselineCase, output: GenerationOutput) -> BaselineCaseResult:
     trace = output.trace
     stage_durations = _stage_durations(trace.get("stages", []))
-    failure = None if output.failure is None else output.failure.reason
+    reason = _output_reason(output)
     return BaselineCaseResult(
         id=case.id,
         question=case.question,
         expected_status=case.expected_status,
         actual_status=output.status,
         expected_reason=case.expected_reason,
-        actual_reason=failure,
+        actual_reason=reason,
         stage_count=sum(len(items) for items in stage_durations.values()),
         stage_durations_ms=stage_durations,
         total_stage_duration_ms=sum(duration for items in stage_durations.values() for duration in items),
@@ -130,6 +130,21 @@ def _case_result(case: BaselineCase, output: GenerationOutput) -> BaselineCaseRe
         token_usage_total=_token_usage_total(trace),
         trace=trace,
     )
+
+
+def _output_reason(output: GenerationOutput) -> str | None:
+    if output.failure is not None:
+        return output.failure.reason
+    for stage in reversed(output.trace.get("stages", [])):
+        if not isinstance(stage, dict) or stage.get("stage") != "repair_controller":
+            continue
+        output_ref = stage.get("output_ref", {})
+        if not isinstance(output_ref, dict):
+            continue
+        value = output_ref.get("value", {})
+        if isinstance(value, dict) and value.get("reason_code"):
+            return str(value["reason_code"])
+    return None
 
 
 def _stage_durations(stages: list[Any]) -> dict[str, list[int]]:

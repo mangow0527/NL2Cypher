@@ -105,6 +105,12 @@ def _assert_golden_case(case: dict[str, Any]) -> None:
     if case["expected_status"] != "generated":
         assert output.cypher is None
         assert output.dsl is None
+        if case["expected_status"] == "clarification_required":
+            assert output.failure is None
+            assert output.clarification is not None
+            assert output.trace["final_outputs"]["clarification"]["question"] == output.clarification.question
+            assert _last_repair_reason(output.trace) == case["expected_reason_code"]
+            return
         assert output.failure is not None
         assert output.failure.reason == case["expected_reason_code"]
         assert output.trace["final_outputs"]["failure"]["reason"] == case["expected_reason_code"]
@@ -122,3 +128,11 @@ def _assert_golden_case(case: dict[str, Any]) -> None:
     assert output.trace["final_status"] == "generated"
     assert output.trace["final_outputs"]["dsl"] == output.dsl
     assert output.trace["final_outputs"]["cypher"] == output.cypher
+
+
+def _last_repair_reason(trace: dict[str, object]) -> str:
+    for stage in reversed(trace["stages"]):
+        if stage["stage"] != "repair_controller":
+            continue
+        return stage["output_ref"]["value"]["reason_code"]
+    raise AssertionError("missing repair_controller stage")
