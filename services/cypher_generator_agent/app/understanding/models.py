@@ -128,6 +128,7 @@ class GroundedUnderstanding(UnderstandingBaseModel):
     filters: list[dict[str, Any]] = Field(default_factory=list)
     projection: list[dict[str, Any]] = Field(default_factory=list)
     group_by: list[dict[str, Any]] = Field(default_factory=list)
+    measures: list[dict[str, Any]] = Field(default_factory=list)
     sort: list[dict[str, Any]] = Field(default_factory=list)
     limit: int | None = Field(default=None, ge=1)
     assumptions: list[dict[str, Any]] = Field(default_factory=list)
@@ -176,6 +177,7 @@ class GroundedUnderstanding(UnderstandingBaseModel):
             "filters": self.filters,
             "projection": self.projection,
             "group_by": self.group_by,
+            "measures": self.measures,
             "sort": self.sort,
             "limit": self.limit,
             "assumptions": self.assumptions,

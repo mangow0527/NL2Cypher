@@ -32,6 +32,10 @@ class RestrictedDslBuilder:
             dsl = self._build_named_path_pattern(plan, source_question=source_question, query_id=query_id)
         elif plan.query_shape == "variable_path_traversal":
             dsl = self._build_variable_path(plan, source_question=source_question, query_id=query_id)
+        elif plan.query_shape == "metric_aggregate":
+            dsl = self._build_metric_aggregate(plan, source_question=source_question, query_id=query_id)
+        elif plan.query_shape == "ad_hoc_aggregate":
+            dsl = self._build_ad_hoc_aggregate(plan, source_question=source_question, query_id=query_id)
         else:
             raise ValueError(f"unsupported query_shape for restricted DSL builder: {plan.query_shape}")
 
@@ -151,6 +155,68 @@ class RestrictedDslBuilder:
         if remaining_filters:
             dsl["filters"] = [self._filter_item(item, role_by_owner) for item in remaining_filters]
         dsl["projection"] = {"items": self._projection_items(plan, role_by_owner)}
+        return dsl
+
+    def _build_metric_aggregate(
+        self,
+        plan: BindingPlan,
+        *,
+        source_question: str,
+        query_id: str,
+    ) -> dict[str, Any]:
+        if len(plan.metric_bindings) != 1:
+            raise ValueError("metric_aggregate requires exactly one metric binding")
+
+        metric_name = plan.metric_bindings[0].name
+        metric = self.registry.get_metric(metric_name)
+        alias_by_owner = {
+            owner: alias for alias, owner in _metric_aliases(metric.pattern or "").items()
+        }
+
+        dsl = self._base_payload(plan, source_question=source_question, query_id=query_id)
+        dsl["bindings"] = {"metric": {"metric_name": metric_name}}
+        dsl["operations"] = [
+            {
+                "op": "metric_aggregate",
+                "metric_name": metric_name,
+                "group_by": [self._dimension_item(item, alias_by_owner) for item in plan.group_by],
+                "filters": [self._filter_item(item, alias_by_owner) for item in plan.filters],
+            }
+        ]
+        dsl["projection"] = {"items": self._metric_projection_items(plan, metric_name)}
+        return dsl
+
+    def _build_ad_hoc_aggregate(
+        self,
+        plan: BindingPlan,
+        *,
+        source_question: str,
+        query_id: str,
+    ) -> dict[str, Any]:
+        if not plan.measures:
+            raise ValueError("ad_hoc_aggregate requires at least one measure")
+
+        role_by_owner = self._aggregate_role_by_owner(plan)
+        selected_vertices = {binding.name for binding in plan.vertex_bindings}
+        missing_vertices = sorted(owner for owner in role_by_owner if owner not in selected_vertices)
+        if missing_vertices:
+            raise ValueError(f"ad_hoc_aggregate missing vertex bindings for {missing_vertices}")
+
+        dsl = self._base_payload(plan, source_question=source_question, query_id=query_id)
+        dsl["bindings"] = {
+            alias: {"vertex_name": owner}
+            for owner, alias in sorted(role_by_owner.items(), key=lambda item: item[1])
+        }
+        dsl["operations"] = [
+            {
+                "op": "aggregate",
+                "group_by": [self._dimension_item(item, role_by_owner) for item in plan.group_by],
+                "measures": [self._measure_item(item, role_by_owner) for item in plan.measures],
+            }
+        ]
+        if plan.filters:
+            dsl["filters"] = [self._filter_item(item, role_by_owner) for item in plan.filters]
+        dsl["projection"] = {"items": self._aggregate_projection_items(plan)}
         return dsl
 
     def _base_payload(
@@ -273,6 +339,70 @@ class RestrictedDslBuilder:
         if "source" not in item:
             raise ValueError(f"restricted DSL sort item requires a source reference: {item!r}")
         return {"source": item["source"], "direction": item.get("direction", "asc")}
+
+    def _dimension_item(
+        self,
+        item: Mapping[str, Any],
+        role_by_owner: dict[str, str],
+    ) -> dict[str, Any]:
+        property_ref = _mapping_property(item)
+        owner = str(property_ref["owner"])
+        target = str(item.get("target") or role_by_owner[owner])
+        return {
+            "alias": str(item["alias"]),
+            "target": target,
+            "property": {"owner": owner, "name": str(property_ref["name"])},
+        }
+
+    def _measure_item(
+        self,
+        item: Mapping[str, Any],
+        role_by_owner: dict[str, str],
+    ) -> dict[str, Any]:
+        property_ref = _mapping_property(item)
+        owner = str(property_ref["owner"])
+        target = str(item.get("target") or role_by_owner[owner])
+        return {
+            "alias": str(item["alias"]),
+            "function": str(item["function"]),
+            "target": target,
+            "property": {"owner": owner, "name": str(property_ref["name"])},
+        }
+
+    def _aggregate_role_by_owner(self, plan: BindingPlan) -> dict[str, str]:
+        role_by_owner: dict[str, str] = {}
+        for item in [*plan.group_by, *plan.measures, *plan.projection]:
+            if not isinstance(item, Mapping):
+                continue
+            property_ref = item.get("property")
+            if not isinstance(property_ref, Mapping):
+                continue
+            owner = property_ref.get("owner")
+            target = item.get("target")
+            if owner and target:
+                role_by_owner[str(owner)] = str(target)
+        for binding in plan.vertex_bindings:
+            role_by_owner.setdefault(binding.name, _snake_case(binding.name))
+        return role_by_owner
+
+    def _metric_projection_items(
+        self,
+        plan: BindingPlan,
+        metric_name: str,
+    ) -> list[dict[str, Any]]:
+        if plan.projection:
+            return self._projection_items(plan, {})
+        items = [{"alias": str(item["alias"]), "source": f"group.{item['alias']}"} for item in plan.group_by]
+        items.append({"alias": metric_name, "source": f"metric.{metric_name}"})
+        return items
+
+    def _aggregate_projection_items(self, plan: BindingPlan) -> list[dict[str, Any]]:
+        if plan.projection:
+            return self._projection_items(plan, {})
+        return [
+            *({"alias": str(item["alias"]), "source": f"group.{item['alias']}"} for item in plan.group_by),
+            *({"alias": str(item["alias"]), "source": f"measure.{item['alias']}"} for item in plan.measures),
+        ]
 
     def _value_from_filter(self, item: FilterBinding) -> dict[str, Any]:
         if item.literal is not None:
@@ -410,3 +540,18 @@ def _snake_case(value: str) -> str:
     value = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", value)
     value = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", value)
     return value.replace("-", "_").lower()
+
+
+def _metric_aliases(pattern: str) -> dict[str, str]:
+    return dict(re.findall(r"\(([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z_][A-Za-z0-9_]*)\)", pattern))
+
+
+def _mapping_property(item: Mapping[str, Any]) -> Mapping[str, Any]:
+    property_ref = item.get("property")
+    if not isinstance(property_ref, Mapping):
+        raise ValueError(f"aggregate item requires property owner/name: {item!r}")
+    owner = property_ref.get("owner")
+    name = property_ref.get("name") or property_ref.get("property_name")
+    if not owner or not name:
+        raise ValueError(f"aggregate item requires property owner/name: {item!r}")
+    return {"owner": owner, "name": name}

@@ -352,6 +352,55 @@ def _mock_decompose(question: str) -> dict[str, Any]:
             "mock_intent": "tunnels_through_device",
         }
 
+    if "防火墙" in question and ("多少" in question or "数量" in question):
+        return {
+            "schema_version": "question_decomposition_v1",
+            "original_question": question,
+            "target_concepts": ["NetworkElement", "防火墙", "设备"],
+            "relation_phrases": [],
+            "literal_candidates": ["防火墙"],
+            "semantic_terms": ["device_count", "NetworkElement.elem_type"],
+            "substantive_terms": ["全网", "多少", "防火墙"],
+            "literal_requests": [
+                {
+                    "raw_literal": "防火墙",
+                    "expected_vertex": "NetworkElement",
+                    "expected_property": "elem_type",
+                    "literal_kind_hint": "enum",
+                }
+            ],
+            "coverage": _coverage(covered=["全网", "多少", "防火墙"]),
+            "mock_intent": "firewall_device_count",
+        }
+
+    if "按设备类型" in question and "设备数量" in question:
+        return {
+            "schema_version": "question_decomposition_v1",
+            "original_question": question,
+            "target_concepts": ["NetworkElement", "设备"],
+            "relation_phrases": [],
+            "literal_candidates": [],
+            "semantic_terms": ["device_count", "NetworkElement.elem_type"],
+            "substantive_terms": ["按设备类型", "统计", "设备数量"],
+            "literal_requests": [],
+            "coverage": _coverage(covered=["按设备类型", "统计", "设备数量"]),
+            "mock_intent": "device_count_by_elem_type",
+        }
+
+    if "按状态" in question and "端口数量" in question:
+        return {
+            "schema_version": "question_decomposition_v1",
+            "original_question": question,
+            "target_concepts": ["Port", "端口"],
+            "relation_phrases": [],
+            "literal_candidates": [],
+            "semantic_terms": ["Port.status", "Port.id"],
+            "substantive_terms": ["按状态", "统计", "端口数量"],
+            "literal_requests": [],
+            "coverage": _coverage(covered=["按状态", "统计", "端口数量"]),
+            "mock_intent": "port_count_by_status",
+        }
+
     return {
         "schema_version": "question_decomposition_v1",
         "original_question": question,
@@ -462,6 +511,70 @@ def _mock_understand(
                 }
             ],
             "projection": [{"semantic_type": "vertex", "name": "Tunnel"}],
+        }
+
+    if intent == "firewall_device_count":
+        return {
+            "query_shape": "metric_aggregate",
+            "selected_metrics": ["device_count"],
+            "selected_properties": [{"owner": "NetworkElement", "name": "elem_type"}],
+            "selected_literals": literal_payloads,
+            "filters": [
+                {
+                    "owner": "NetworkElement",
+                    "property": "elem_type",
+                    "operator": "=",
+                    "raw_literal": "防火墙",
+                }
+            ],
+            "projection": [{"alias": "device_count", "source": "metric.device_count"}],
+        }
+
+    if intent == "device_count_by_elem_type":
+        return {
+            "query_shape": "metric_aggregate",
+            "selected_metrics": ["device_count"],
+            "selected_properties": [{"owner": "NetworkElement", "name": "elem_type"}],
+            "group_by": [
+                {
+                    "alias": "elem_type",
+                    "target": "ne",
+                    "property": {"owner": "NetworkElement", "name": "elem_type"},
+                }
+            ],
+            "projection": [
+                {"alias": "elem_type", "source": "group.elem_type"},
+                {"alias": "device_count", "source": "metric.device_count"},
+            ],
+        }
+
+    if intent == "port_count_by_status":
+        return {
+            "query_shape": "ad_hoc_aggregate",
+            "selected_vertices": ["Port"],
+            "selected_properties": [
+                {"owner": "Port", "name": "status"},
+                {"owner": "Port", "name": "id"},
+            ],
+            "group_by": [
+                {
+                    "alias": "status",
+                    "target": "port",
+                    "property": {"owner": "Port", "name": "status"},
+                }
+            ],
+            "measures": [
+                {
+                    "alias": "port_count",
+                    "function": "count",
+                    "target": "port",
+                    "property": {"owner": "Port", "name": "id"},
+                }
+            ],
+            "projection": [
+                {"alias": "status", "source": "group.status"},
+                {"alias": "port_count", "source": "measure.port_count"},
+            ],
         }
 
     return {

@@ -69,7 +69,7 @@ def test_unsupported_query_shape_raises_compiler_error(
     unsupported_ast = ast.__class__(
         schema_version=ast.schema_version,
         query_id=ast.query_id,
-        query_shape=QueryShape.METRIC_AGGREGATE,
+        query_shape=QueryShape.TOP_N,
         source_question=ast.source_question,
         operations=ast.operations,
         projection=ast.projection,

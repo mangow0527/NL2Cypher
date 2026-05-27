@@ -149,7 +149,7 @@ class MetricAggregateOperationModel(RestrictedDslBase):
 class AggregateOperationModel(RestrictedDslBase):
     op: Literal["aggregate"]
     group_by: list[DimensionModel] = Field(default_factory=list)
-    measures: list[MeasureModel] = Field(default_factory=list)
+    measures: list[MeasureModel] = Field(min_length=1)
 
 
 class SortOperationModel(RestrictedDslBase):

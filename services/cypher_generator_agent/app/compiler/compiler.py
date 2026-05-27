@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+import re
 
 from services.cypher_generator_agent.app.cypher_validation import (
     CypherSelfValidationResult,
     CypherSelfValidator,
 )
 from services.cypher_generator_agent.app.dsl.ast import (
+    AggregateOperation,
     Filter,
+    MetricAggregateOperation,
     Projection,
     ProjectionItem,
     RestrictedQueryAst,
@@ -30,6 +33,8 @@ SUPPORTED_QUERY_SHAPES = {
     QueryShape.SINGLE_HOP_TRAVERSAL,
     QueryShape.NAMED_PATH_PATTERN,
     QueryShape.VARIABLE_PATH_TRAVERSAL,
+    QueryShape.METRIC_AGGREGATE,
+    QueryShape.AD_HOC_AGGREGATE,
 }
 ROLE_VARIABLES = {
     "Service": "svc",
@@ -98,6 +103,10 @@ class CypherCompiler:
             cypher, parameters = self._compile_named_path_pattern(ast)
         elif ast.query_shape is QueryShape.VARIABLE_PATH_TRAVERSAL:
             cypher, parameters = self._compile_variable_path(ast)
+        elif ast.query_shape is QueryShape.METRIC_AGGREGATE:
+            cypher, parameters = self._compile_metric_aggregate(ast)
+        elif ast.query_shape is QueryShape.AD_HOC_AGGREGATE:
+            cypher, parameters = self._compile_ad_hoc_aggregate(ast)
         else:
             raise CypherCompilerError(f"unsupported query_shape: {ast.query_shape.value}")
 
@@ -130,6 +139,66 @@ class CypherCompiler:
         if where:
             clauses.append(f"WHERE {' AND '.join(where)}")
         clauses.append(_compile_return(ast.projection, role_variables))
+        return "\n".join(clauses), parameters.values
+
+    def _compile_metric_aggregate(self, ast: RestrictedQueryAst) -> tuple[str, dict[str, object]]:
+        operation = _single_operation(ast, MetricAggregateOperation)
+        metric = self.registry.get_metric(operation.metric_name)
+        if not metric.pattern or not metric.expression:
+            raise CypherCompilerError("metric_aggregate compiler requires pattern + expression metric")
+
+        aliases = _metric_aliases(metric.pattern)
+        parameters = _ParameterBuilder()
+        role_variables = {
+            dimension.target_alias: dimension.target_alias for dimension in operation.group_by
+        }
+        for filter_item in operation.filters:
+            if filter_item.target is None:
+                raise CypherCompilerError("metric_aggregate filters require metric target alias")
+            role_variables[filter_item.target.alias] = filter_item.target.alias
+        for alias in aliases:
+            role_variables.setdefault(alias, alias)
+
+        source_expressions: dict[tuple[str, str], str] = {
+            ("metric", operation.metric_name): metric.expression,
+        }
+        for dimension in operation.group_by:
+            source_expressions[("group", dimension.alias)] = (
+                f"{dimension.target_alias}.{dimension.property.name}"
+            )
+
+        clauses = [f"MATCH {metric.pattern}"]
+        where = _compile_filters(operation.filters, role_variables, parameters)
+        if where:
+            clauses.append(f"WHERE {' AND '.join(where)}")
+        clauses.append(_compile_source_return(ast.projection, source_expressions))
+        return "\n".join(clauses), parameters.values
+
+    def _compile_ad_hoc_aggregate(self, ast: RestrictedQueryAst) -> tuple[str, dict[str, object]]:
+        operation = _single_operation(ast, AggregateOperation)
+        roles = _aggregate_roles(operation, ast.filters)
+        if len(roles) != 1:
+            raise CypherCompilerError("ad_hoc_aggregate compiler MVP requires exactly one vertex role")
+
+        role = next(iter(roles.values()))
+        role_variables = {role.alias: _variable_for_owner(role.vertex_name, used=set())}
+        parameters = _ParameterBuilder()
+        source_expressions: dict[tuple[str, str], str] = {}
+        for dimension in operation.group_by:
+            source_expressions[("group", dimension.alias)] = (
+                f"{role_variables[dimension.target.alias]}.{dimension.property.name}"
+            )
+        for measure in operation.measures:
+            variable = role_variables[measure.target.alias]
+            source_expressions[("measure", measure.alias)] = (
+                f"{measure.function}({variable}.{measure.property.name})"
+            )
+
+        clauses = [f"MATCH ({role_variables[role.alias]}:{role.vertex_name})"]
+        where = _compile_filters(ast.filters, role_variables, parameters)
+        if where:
+            clauses.append(f"WHERE {' AND '.join(where)}")
+        clauses.append(_compile_source_return(ast.projection, source_expressions))
         return "\n".join(clauses), parameters.values
 
     def _compile_single_hop(self, ast: RestrictedQueryAst) -> tuple[str, dict[str, object]]:
@@ -286,6 +355,29 @@ def _compile_return(projection: Projection, role_variables: Mapping[str, str]) -
     return f"RETURN {', '.join(items)}"
 
 
+def _compile_source_return(
+    projection: Projection,
+    source_expressions: Mapping[tuple[str, str], str],
+) -> str:
+    items = [_compile_source_projection_item(item, source_expressions) for item in projection.items]
+    return f"RETURN {', '.join(items)}"
+
+
+def _compile_source_projection_item(
+    item: ProjectionItem,
+    source_expressions: Mapping[tuple[str, str], str],
+) -> str:
+    if item.source is None:
+        raise CypherCompilerError("source projection is required for aggregate compiler MVP")
+    expression = source_expressions.get((item.source.namespace, item.source.name))
+    if expression is None:
+        raise CypherCompilerError(f"unknown aggregate projection source: {item.source.raw}")
+    alias = projection_item_alias(item)
+    if not is_cypher_identifier(alias):
+        raise CypherCompilerError(f"invalid projection alias: {alias}")
+    return f"{expression} AS {alias}"
+
+
 def _compile_projection_item(item: ProjectionItem, role_variables: Mapping[str, str]) -> str:
     if item.target is None or item.property is None:
         raise CypherCompilerError("target/property projection is required for generated query compiler MVP")
@@ -294,6 +386,21 @@ def _compile_projection_item(item: ProjectionItem, role_variables: Mapping[str, 
     if not is_cypher_identifier(alias):
         raise CypherCompilerError(f"invalid projection alias: {alias}")
     return f"{variable}.{item.property.name} AS {alias}"
+
+
+def _aggregate_roles(
+    operation: AggregateOperation,
+    filters: list[Filter],
+) -> dict[str, object]:
+    roles: dict[str, object] = {}
+    for dimension in operation.group_by:
+        roles[dimension.target.alias] = dimension.target
+    for measure in operation.measures:
+        roles[measure.target.alias] = measure.target
+    for filter_item in filters:
+        if filter_item.target is not None:
+            roles[filter_item.target.alias] = filter_item.target
+    return roles
 
 
 def _variable_for_owner(owner: str, *, used: set[str]) -> str:
@@ -314,6 +421,16 @@ def _sanitize_identifier(value: str) -> str:
     if sanitized[0].isdigit():
         return f"param_{sanitized}"
     return sanitized
+
+
+def _metric_aliases(pattern: str) -> dict[str, str]:
+    return dict(
+        match.groups()
+        for match in re.finditer(
+            r"\(([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z_][A-Za-z0-9_]*)\)",
+            pattern,
+        )
+    )
 
 
 def _get_path_pattern_template_for_compile(

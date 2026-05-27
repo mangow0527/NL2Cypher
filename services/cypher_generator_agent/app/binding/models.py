@@ -95,6 +95,7 @@ class BindingPlan(BindingBase):
     path_pattern_bindings: list[PathPatternBinding] = Field(default_factory=list)
     filters: list[FilterBinding] = Field(default_factory=list)
     group_by: list[dict[str, Any]] = Field(default_factory=list)
+    measures: list[dict[str, Any]] = Field(default_factory=list)
     projection: list[dict[str, Any]] = Field(default_factory=list)
     sort: list[dict[str, Any]] = Field(default_factory=list)
     limit: int | None = None

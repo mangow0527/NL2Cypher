@@ -146,6 +146,71 @@ def test_metric_group_by_dimensions_are_preserved_for_validation(
     ]
 
 
+def test_ad_hoc_measures_are_preserved_for_dsl_builder(
+    binder: SemanticBinder,
+) -> None:
+    plan = binder.bind(
+        {
+            "query_shape": "ad_hoc_aggregate",
+            "selected_vertices": ["Port"],
+            "selected_properties": [
+                {"owner": "Port", "name": "status"},
+                {"owner": "Port", "name": "id"},
+            ],
+            "group_by": [
+                {
+                    "alias": "status",
+                    "target": "port",
+                    "property": {"owner": "Port", "name": "status"},
+                }
+            ],
+            "measures": [
+                {
+                    "alias": "port_count",
+                    "function": "count",
+                    "target": "port",
+                    "property": {"owner": "Port", "name": "id"},
+                }
+            ],
+        },
+        candidates=[
+            _candidate("vertex", "Port"),
+            _candidate("property", "Port.status", owner="Port", semantic_name="status"),
+            _candidate("property", "Port.id", owner="Port", semantic_name="id"),
+        ],
+    )
+
+    assert plan.measures == [
+        {
+            "alias": "port_count",
+            "function": "count",
+            "target": "port",
+            "property": {"owner": "Port", "name": "id"},
+        }
+    ]
+
+
+def test_ad_hoc_measure_property_must_be_in_candidate_set(
+    binder: SemanticBinder,
+) -> None:
+    with pytest.raises(BindingValidationError, match="measures"):
+        binder.bind(
+            {
+                "query_shape": "ad_hoc_aggregate",
+                "selected_vertices": ["Port"],
+                "measures": [
+                    {
+                        "alias": "port_count",
+                        "function": "count",
+                        "target": "port",
+                        "property": {"owner": "Port", "name": "id"},
+                    }
+                ],
+            },
+            candidates=[_candidate("vertex", "Port")],
+        )
+
+
 def test_rejects_llm_vertex_name_without_candidate_or_registry_match(binder: SemanticBinder) -> None:
     with pytest.raises(BindingValidationError, match="NetworkDevice"):
         binder.bind(

@@ -99,6 +99,7 @@ class SemanticBinder:
         projection = self._bind_projection(grounded_understanding, candidate_index)
         sort = self._bind_sort(grounded_understanding, candidate_index)
         group_by = self._bind_group_by(grounded_understanding, candidate_index)
+        measures = self._bind_measures(grounded_understanding, candidate_index)
 
         return BindingPlan(
             query_shape=_normalize_query_shape(grounded_understanding.get("query_shape")),
@@ -110,6 +111,7 @@ class SemanticBinder:
             path_pattern_bindings=self._bind_path_patterns(grounded_understanding, candidate_index),
             filters=filter_bindings,
             group_by=group_by,
+            measures=measures,
             projection=projection,
             sort=sort,
             limit=grounded_understanding.get("limit"),
@@ -304,6 +306,21 @@ class SemanticBinder:
                 field_name="group_by",
             )
         return group_by
+
+    def _bind_measures(
+        self,
+        grounded: Mapping[str, Any],
+        candidate_index: "_CandidateIndex",
+    ) -> list[dict[str, Any]]:
+        measures = _coerce_dict_list(grounded.get("measures", []), "measures")
+        for item in measures:
+            _validate_measure_reference(item, field_name="measures")
+            self._validate_semantic_reference(
+                {"semantic_type": "property", "property": item["property"]},
+                candidate_index,
+                field_name="measures",
+            )
+        return measures
 
     def _validate_semantic_reference(
         self,
@@ -587,6 +604,25 @@ def _validate_dimension_reference(item: Mapping[str, Any], *, field_name: str) -
     name = property_ref.get("name") or property_ref.get("property_name")
     if not owner or not name:
         raise BindingValidationError(f"{field_name} dimension must include property owner/name")
+
+
+def _validate_measure_reference(item: Mapping[str, Any], *, field_name: str) -> None:
+    alias = item.get("alias")
+    function = item.get("function")
+    target = item.get("target")
+    property_ref = item.get("property")
+    if not isinstance(alias, str) or not alias:
+        raise BindingValidationError(f"{field_name} measure must include alias")
+    if function not in {"count", "sum", "avg", "min", "max"}:
+        raise BindingValidationError(f"{field_name} measure has unsupported function {function!r}")
+    if not isinstance(target, str) or not target:
+        raise BindingValidationError(f"{field_name} measure must include target")
+    if not isinstance(property_ref, Mapping):
+        raise BindingValidationError(f"{field_name} measure must include property owner/name")
+    owner = property_ref.get("owner")
+    name = property_ref.get("name") or property_ref.get("property_name")
+    if not owner or not name:
+        raise BindingValidationError(f"{field_name} measure must include property owner/name")
 
 
 def _coerce_dict_list(value: Any, field_name: str) -> list[dict[str, Any]]:

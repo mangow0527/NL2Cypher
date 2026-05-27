@@ -231,6 +231,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
 
     allowed_integration_files = {
         "__init__.py",
+        "test_aggregate.py",
         "test_api_contract.py",
         "test_pipeline_mvp.py",
         "test_testing_agent_submission.py",
@@ -259,6 +260,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
 
     allowed_dsl_tests = {
         "__init__.py",
+        "test_builder_aggregate.py",
         "test_builder_named_path_pattern.py",
         "test_builder_single_hop.py",
         "test_builder_variable_path.py",
@@ -270,6 +272,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
     allowed_compiler_tests = {
         "__init__.py",
         "conftest.py",
+        "test_aggregate.py",
         "test_named_path_pattern.py",
         "test_readonly_output.py",
         "test_single_hop.py",
@@ -328,6 +331,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
 
     allowed_validation_tests = {
         "__init__.py",
+        "test_aggregate.py",
         "test_coverage.py",
         "test_dsl_support.py",
         "test_edge_endpoint.py",

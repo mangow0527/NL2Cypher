@@ -14,6 +14,7 @@ from .models import SemanticValidationIssue, SemanticValidationResult
 
 SUPPORTED_QUERY_SHAPES = frozenset(shape.value for shape in QueryShape)
 METRIC_PATTERN_ALIAS_RE = re.compile(r"\((?:(?P<alias>\w+)\s*)?:(?P<label>[A-Z][A-Za-z0-9]*)\)")
+NUMERIC_PROPERTY_TYPES = frozenset({"int", "integer", "float", "number"})
 
 
 class SemanticValidator:
@@ -38,6 +39,7 @@ class SemanticValidator:
         self._validate_edge_endpoints(plan, errors)
         self._validate_property_owners(plan, errors)
         self._validate_metric_dimensions(plan, errors)
+        self._validate_aggregate_function_types(plan, errors)
 
         return SemanticValidationResult(
             errors=errors,
@@ -221,7 +223,7 @@ class SemanticValidator:
     ) -> None:
         if plan.query_shape != "metric_aggregate":
             return
-        if not plan.metric_bindings or not plan.group_by:
+        if not plan.metric_bindings:
             return
 
         for metric_binding in plan.metric_bindings:
@@ -307,13 +309,80 @@ class SemanticValidator:
                     )
                 )
 
+            alias_by_owner = {owner: alias for alias, owner in metric_aliases.items()}
+            for index, filter_item in enumerate(plan.filters):
+                alias = alias_by_owner.get(filter_item.owner)
+                dimension = f"{alias}.{filter_item.property}" if alias is not None else None
+                if dimension in valid_dimensions:
+                    continue
+                errors.append(
+                    SemanticValidationIssue(
+                        code="metric_dimension_invalid",
+                        message=(
+                            f"Metric {metric_binding.name} does not allow filter dimension "
+                            f"{dimension or filter_item.owner + '.' + filter_item.property}; "
+                            f"valid dimensions are {sorted(valid_dimensions)}."
+                        ),
+                        severity="error",
+                        recoverability="repairable",
+                        action="repair_binding",
+                        details={
+                            "metric": metric_binding.name,
+                            "dimension": dimension,
+                            "location": f"filters[{index}]",
+                            "valid_dimensions": sorted(valid_dimensions),
+                        },
+                    )
+                )
+
+    def _validate_aggregate_function_types(
+        self,
+        plan: BindingPlan,
+        errors: list[SemanticValidationIssue],
+    ) -> None:
+        for index, item in enumerate(plan.measures):
+            function = item.get("function")
+            if function == "count":
+                continue
+            if function not in {"sum", "avg", "min", "max"}:
+                continue
+
+            reference = _property_reference(item)
+            if reference is None:
+                continue
+            owner, property_name = reference
+            try:
+                property_type = self.registry.property_type(owner, property_name)
+            except RegistryLookupError:
+                continue
+            if function in {"sum", "avg"} and property_type not in NUMERIC_PROPERTY_TYPES:
+                errors.append(
+                    SemanticValidationIssue(
+                        code="invalid_aggregate_property_type",
+                        message=(
+                            f"{function} requires a numeric property, got "
+                            f"{owner}.{property_name}:{property_type}."
+                        ),
+                        severity="error",
+                        recoverability="repairable",
+                        action="repair_binding",
+                        details={
+                            "location": f"measures[{index}]",
+                            "function": function,
+                            "owner": owner,
+                            "property": property_name,
+                            "property_type": property_type,
+                        },
+                    )
+                )
+
 
 def _property_references(plan: BindingPlan) -> Iterable[tuple[str, str, str]]:
     for index, binding in enumerate(plan.property_bindings):
         yield binding.owner, binding.name, f"property_bindings[{index}]"
     for index, binding in enumerate(plan.filters):
         yield binding.owner, binding.property, f"filters[{index}]"
-    for field_name in ("projection", "sort", "group_by"):
+    for field_name in ("projection", "sort", "group_by", "measures"):
         values = getattr(plan, field_name, [])
         for index, item in enumerate(values):
             reference = _property_reference(item)
