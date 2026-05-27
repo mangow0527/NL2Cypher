@@ -69,13 +69,50 @@ def test_multistatement_or_semicolon_chaining_is_syntax_invalid(
     "cypher",
     [
         "MATCH (ne:NetworkElement) OPTIONAL MATCH (ne)-[:HAS_PORT]->(p:Port) RETURN ne",
+        "OPTIONAL MATCH (ne:NetworkElement) RETURN ne",
         "MATCH (ne:NetworkElement) USING INDEX ne:NetworkElement(id) RETURN ne",
         "MATCH (ne:NetworkElement) RETURN ne UNION MATCH (t:Tunnel) RETURN t",
         "MATCH (ne:NetworkElement) WHERE EXISTS { MATCH (ne)-[:HAS_PORT]->(p:Port) } RETURN ne",
-        "MATCH (ne:NetworkElement) DROP DATABASE graph RETURN ne",
     ],
 )
-def test_unsupported_read_clause_fragments_are_syntax_invalid(
+def test_unsupported_read_clause_fragments_are_target_dialect_errors(
+    validator: CypherSelfValidator,
+    cypher: str,
+) -> None:
+    result = validate(validator, cypher)
+
+    assert result.valid is False
+    assert result.errors[0].code == "target_dialect_static_error"
+    assert result.errors[0].check == "dialect"
+
+
+def test_unsupported_read_fragment_inside_string_literal_is_allowed(
+    validator: CypherSelfValidator,
+) -> None:
+    result = validate(validator, "RETURN 'OPTIONAL MATCH and UNION are documentation text' AS text")
+
+    assert result.valid is True
+    assert result.errors == []
+
+
+def test_multistatement_without_semicolon_is_syntax_invalid(
+    validator: CypherSelfValidator,
+) -> None:
+    result = validate(validator, "MATCH (ne:NetworkElement) RETURN ne MATCH (t:Tunnel) RETURN t")
+
+    assert result.valid is False
+    assert result.errors[0].code == "cypher_syntax_invalid"
+    assert result.errors[0].check == "syntax"
+
+
+@pytest.mark.parametrize(
+    "cypher",
+    [
+        "MATCH (ne:NetworkElement) RETURN 'UNION' AS text MATCH (t:Tunnel) RETURN t",
+        "MATCH (ne:NetworkElement) RETURN union_count AS text MATCH (t:Tunnel) RETURN t",
+    ],
+)
+def test_multistatement_without_semicolon_ignores_union_text(
     validator: CypherSelfValidator,
     cypher: str,
 ) -> None:
@@ -84,6 +121,24 @@ def test_unsupported_read_clause_fragments_are_syntax_invalid(
     assert result.valid is False
     assert result.errors[0].code == "cypher_syntax_invalid"
     assert result.errors[0].check == "syntax"
+
+
+@pytest.mark.parametrize(
+    "cypher",
+    [
+        "MATCH (ne:NetworkElement) DROP DATABASE graph RETURN ne",
+        "DROP DATABASE graph",
+    ],
+)
+def test_drop_database_returns_readonly_violation(
+    validator: CypherSelfValidator,
+    cypher: str,
+) -> None:
+    result = validate(validator, cypher)
+
+    assert result.valid is False
+    assert result.errors[0].code == "cypher_readonly_violation"
+    assert result.errors[0].check == "readonly"
 
 
 @pytest.mark.parametrize(
