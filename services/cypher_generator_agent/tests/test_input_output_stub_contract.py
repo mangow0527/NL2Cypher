@@ -233,6 +233,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "__init__.py",
         "test_aggregate.py",
         "test_api_contract.py",
+        "test_golden_questions.py",
         "test_pipeline_mvp.py",
         "test_testing_agent_submission.py",
         "test_two_step_aggregate.py",
@@ -294,6 +295,8 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
 
     allowed_fixture_files = {
         "__init__.py",
+        "expected_cypher",
+        "expected_dsl",
         "golden_questions.yaml",
         "network_topology_graph_model.yaml",
         "performance_baseline_cases.yaml",

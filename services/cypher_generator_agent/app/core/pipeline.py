@@ -288,6 +288,27 @@ def _run_cypher_self_validation_stage(
 
 
 def _mock_decompose(question: str) -> dict[str, Any]:
+    if "svc-gold-001" in question and "服务" in question and "隧道" in question:
+        return {
+            "schema_version": "question_decomposition_v1",
+            "original_question": question,
+            "target_concepts": ["Service", "Tunnel", "服务", "隧道"],
+            "relation_phrases": ["使用隧道", "SERVICE_USES_TUNNEL"],
+            "literal_candidates": ["svc-gold-001"],
+            "semantic_terms": ["Service.id", "SERVICE_USES_TUNNEL"],
+            "substantive_terms": ["服务", "svc-gold-001", "使用", "隧道"],
+            "literal_requests": [
+                {
+                    "raw_literal": "svc-gold-001",
+                    "expected_vertex": "Service",
+                    "expected_property": "id",
+                    "literal_kind_hint": "id",
+                }
+            ],
+            "coverage": _coverage(covered=["服务", "svc-gold-001", "使用", "隧道"]),
+            "mock_intent": "service_id_tunnels",
+        }
+
     if ("Gold" in question or "Platinum" in question) and "服务" in question and "隧道" in question:
         service_tier = "Gold" if "Gold" in question else "Platinum"
         return {
@@ -350,6 +371,28 @@ def _mock_decompose(question: str) -> dict[str, Any]:
             ],
             "coverage": _coverage(covered=["隧道", "经过", "设备", "ne-0001"]),
             "mock_intent": "tunnels_through_device",
+        }
+
+    if "设备" in question and "端口" in question and ("ne-0001" in question or "ne-9999" in question):
+        device_id = "ne-0001" if "ne-0001" in question else "ne-9999"
+        return {
+            "schema_version": "question_decomposition_v1",
+            "original_question": question,
+            "target_concepts": ["NetworkElement", "Port", "设备", "端口"],
+            "relation_phrases": ["HAS_PORT"],
+            "literal_candidates": [device_id],
+            "semantic_terms": ["NetworkElement.id", "HAS_PORT"],
+            "substantive_terms": ["设备", device_id, "端口"],
+            "literal_requests": [
+                {
+                    "raw_literal": device_id,
+                    "expected_vertex": "NetworkElement",
+                    "expected_property": "id",
+                    "literal_kind_hint": "id",
+                }
+            ],
+            "coverage": _coverage(covered=["设备", device_id, "端口"]),
+            "mock_intent": "device_ports",
         }
 
     if "防火墙" in question and ("多少" in question or "数量" in question):
@@ -483,6 +526,24 @@ def _mock_understand(
 ) -> dict[str, Any]:
     intent = decomposition["mock_intent"]
     literal_payloads = [result.model_dump(mode="json") for result in literal_results]
+    if intent == "service_id_tunnels":
+        return {
+            "query_shape": "single_hop",
+            "selected_vertices": ["Service", "Tunnel"],
+            "selected_edges": ["SERVICE_USES_TUNNEL"],
+            "selected_properties": [{"owner": "Service", "name": "id"}],
+            "selected_literals": literal_payloads,
+            "filters": [
+                {
+                    "owner": "Service",
+                    "property": "id",
+                    "operator": "=",
+                    "raw_literal": "svc-gold-001",
+                }
+            ],
+            "projection": [{"semantic_type": "vertex", "name": "Tunnel"}],
+        }
+
     if intent == "gold_service_tunnels":
         return {
             "query_shape": "single_hop",
@@ -539,6 +600,24 @@ def _mock_understand(
                 }
             ],
             "projection": [{"semantic_type": "vertex", "name": "Tunnel"}],
+        }
+
+    if intent == "device_ports":
+        return {
+            "query_shape": "single_hop",
+            "selected_vertices": ["NetworkElement", "Port"],
+            "selected_edges": ["HAS_PORT"],
+            "selected_properties": [{"owner": "NetworkElement", "name": "id"}],
+            "selected_literals": literal_payloads,
+            "filters": [
+                {
+                    "owner": "NetworkElement",
+                    "property": "id",
+                    "operator": "=",
+                    "raw_literal": decomposition["literal_candidates"][0],
+                }
+            ],
+            "projection": [{"semantic_type": "vertex", "name": "Port"}],
         }
 
     if intent == "firewall_device_count":

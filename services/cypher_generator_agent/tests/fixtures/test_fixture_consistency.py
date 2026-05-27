@@ -31,6 +31,7 @@ NON_SUCCESS_STATUSES = {
 EXPECTED_STATUSES = {"generated"} | NON_SUCCESS_STATUSES
 GENERATION_FAILURE_REASONS = set(GenerationFailureReason.__args__)
 NON_SUCCESS_REASON_GROUPS = {"failure", "clarification", "unsupported"}
+REGRESSION_SCOPES = {"smoke", "full"}
 EXPECTED_VERTICES = {"NetworkElement", "Tunnel", "Service", "Port"}
 EXPECTED_EDGES = {
     "SERVICE_USES_TUNNEL",
@@ -70,6 +71,9 @@ REQUIRED_GOLDEN_QUESTION_KEYS = {
 OPTIONAL_GOLDEN_QUESTION_KEYS = {
     "expected_dsl_ir",
     "cypher_filled_by_ir",
+    "expected_dsl_fixture",
+    "expected_cypher_fixture",
+    "regression_scope",
     "reason",
 }
 
@@ -199,6 +203,7 @@ def test_golden_questions_have_required_contract_fields_and_coverage() -> None:
         "path_pattern",
         "literal",
         "coverage_failure",
+        "aggregate",
         "unsupported_query",
         "repair_oscillation",
         "readonly_violation",
@@ -215,9 +220,16 @@ def test_golden_questions_have_required_contract_fields_and_coverage() -> None:
         assert case["expected_reason_code"]
         assert case["query_shape"] in SUPPORTED_OR_SENTINEL_QUERY_SHAPES
         assert isinstance(case["ci_smoke"], bool)
+        regression_scope = case.get("regression_scope")
+        if regression_scope is not None:
+            assert regression_scope in REGRESSION_SCOPES
+            assert case["ci_smoke"] is (regression_scope == "smoke")
 
         if case["expected_status"] == "generated":
             assert case.get("expected_dsl_ir") or case.get("cypher_filled_by_ir")
+            if regression_scope is not None:
+                assert case.get("expected_dsl_fixture")
+                assert case.get("expected_cypher_fixture")
 
         if case["expected_status"] in NON_SUCCESS_STATUSES:
             assert case["reason"] in NON_SUCCESS_REASON_GROUPS

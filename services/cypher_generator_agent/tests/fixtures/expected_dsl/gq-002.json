@@ -1,0 +1,53 @@
+{
+  "schema_version": "restricted_query_dsl_v1",
+  "query_id": "gq-002",
+  "query_shape": "single_hop_traversal",
+  "source_question": "服务 svc-gold-001 使用了哪些隧道",
+  "bindings": {
+    "start": {
+      "vertex_name": "Service"
+    },
+    "end": {
+      "vertex_name": "Tunnel"
+    },
+    "edge": {
+      "edge_name": "SERVICE_USES_TUNNEL"
+    }
+  },
+  "operations": [
+    {
+      "op": "traverse_edge",
+      "from": "start",
+      "edge": "edge",
+      "to": "end",
+      "direction": "forward"
+    }
+  ],
+  "filters": [
+    {
+      "target": "start",
+      "property": {
+        "owner": "Service",
+        "name": "id"
+      },
+      "operator": "eq",
+      "value": {
+        "raw": "svc-gold-001",
+        "normalized": "svc-gold-001",
+        "resolver_match_type": "value_index_exact"
+      }
+    }
+  ],
+  "projection": {
+    "items": [
+      {
+        "alias": "tunnel_id",
+        "target": "end",
+        "property": {
+          "owner": "Tunnel",
+          "name": "id"
+        }
+      }
+    ]
+  }
+}

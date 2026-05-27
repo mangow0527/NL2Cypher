@@ -85,3 +85,9 @@ questions:
   - id: gq-028
     question: Gold 和金牌服务分别使用哪些隧道
     coverage: literal
+  - id: gq-029
+    question: 端口最多的 5 台设备
+    coverage: aggregate
+  - id: gq-030
+    question: 先按状态统计端口，再取最多的 5 个状态
+    coverage: aggregate

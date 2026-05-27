@@ -13,6 +13,9 @@ golden_questions:
     query_shape: single_hop_traversal
     expected_dsl_ir: IR-05
     cypher_filled_by_ir: IR-10
+    expected_dsl_fixture: expected_dsl/gq-001.json
+    expected_cypher_fixture: expected_cypher/gq-001.cypher
+    regression_scope: smoke
     ci_smoke: true
 
   - id: gq-002
@@ -24,6 +27,9 @@ golden_questions:
     query_shape: single_hop_traversal
     expected_dsl_ir: IR-05
     cypher_filled_by_ir: IR-10
+    expected_dsl_fixture: expected_dsl/gq-002.json
+    expected_cypher_fixture: expected_cypher/gq-002.cypher
+    regression_scope: smoke
     ci_smoke: true
 
   - id: gq-003
@@ -35,6 +41,9 @@ golden_questions:
     query_shape: named_path_pattern
     expected_dsl_ir: IR-05
     cypher_filled_by_ir: IR-10
+    expected_dsl_fixture: expected_dsl/gq-003.json
+    expected_cypher_fixture: expected_cypher/gq-003.cypher
+    regression_scope: smoke
     ci_smoke: true
 
   - id: gq-004
@@ -68,6 +77,9 @@ golden_questions:
     query_shape: single_hop_traversal
     expected_dsl_ir: IR-05
     cypher_filled_by_ir: IR-10
+    expected_dsl_fixture: expected_dsl/gq-006.json
+    expected_cypher_fixture: expected_cypher/gq-006.cypher
+    regression_scope: smoke
     ci_smoke: true
 
   - id: gq-007
@@ -90,6 +102,9 @@ golden_questions:
     query_shape: metric_aggregate
     expected_dsl_ir: IR-18
     cypher_filled_by_ir: IR-18
+    expected_dsl_fixture: expected_dsl/gq-008.json
+    expected_cypher_fixture: expected_cypher/gq-008.cypher
+    regression_scope: smoke
     ci_smoke: true
 
   - id: gq-009
@@ -101,6 +116,9 @@ golden_questions:
     query_shape: metric_aggregate
     expected_dsl_ir: IR-18
     cypher_filled_by_ir: IR-18
+    expected_dsl_fixture: expected_dsl/gq-009.json
+    expected_cypher_fixture: expected_cypher/gq-009.cypher
+    regression_scope: full
     ci_smoke: false
 
   - id: gq-010
@@ -112,6 +130,9 @@ golden_questions:
     query_shape: ad_hoc_aggregate
     expected_dsl_ir: IR-18
     cypher_filled_by_ir: IR-18
+    expected_dsl_fixture: expected_dsl/gq-010.json
+    expected_cypher_fixture: expected_cypher/gq-010.cypher
+    regression_scope: full
     ci_smoke: false
 
   - id: gq-011
@@ -134,6 +155,9 @@ golden_questions:
     query_shape: variable_path_traversal
     expected_dsl_ir: IR-17
     cypher_filled_by_ir: IR-17
+    expected_dsl_fixture: expected_dsl/gq-012.json
+    expected_cypher_fixture: expected_cypher/gq-012.cypher
+    regression_scope: smoke
     ci_smoke: true
 
   - id: gq-013
@@ -182,12 +206,13 @@ golden_questions:
 
   - id: gq-017
     question: 设备 ne-9999 有哪些端口
-    expected_status: clarification_required
+    expected_status: generation_failed
     primary_ir: IR-03a
     expected_reason_code: literal_unresolved
-    reason: clarification
+    reason: failure
     coverage: literal
     query_shape: single_hop_traversal
+    regression_scope: smoke
     ci_smoke: true
 
   - id: gq-018
@@ -202,12 +227,13 @@ golden_questions:
 
   - id: gq-019
     question: 收入增长情况怎么样
-    expected_status: unsupported_query_shape
+    expected_status: generation_failed
     primary_ir: IR-13
-    expected_reason_code: coverage_gap_unknown_metric
-    reason: unsupported
+    expected_reason_code: coverage_failure
+    reason: failure
     coverage: coverage_failure
     query_shape: unsupported
+    regression_scope: smoke
     ci_smoke: true
 
   - id: gq-020
@@ -238,7 +264,7 @@ golden_questions:
     reason: failure
     coverage: readonly_violation
     query_shape: unsupported
-    ci_smoke: true
+    ci_smoke: false
 
   - id: gq-023
     question: 删除所有 down 端口
@@ -258,7 +284,7 @@ golden_questions:
     reason: failure
     coverage: repair_oscillation
     query_shape: single_hop_traversal
-    ci_smoke: true
+    ci_smoke: false
 
   - id: gq-025
     question: 返回设备端口服务的所有字段
@@ -298,4 +324,32 @@ golden_questions:
     reason: clarification
     coverage: literal
     query_shape: single_hop_traversal
+    ci_smoke: false
+
+  - id: gq-029
+    question: 端口最多的 5 台设备
+    expected_status: generated
+    primary_ir: IR-19
+    expected_reason_code: generated
+    coverage: aggregate
+    query_shape: top_n
+    expected_dsl_ir: IR-19
+    cypher_filled_by_ir: IR-19
+    expected_dsl_fixture: expected_dsl/gq-029.json
+    expected_cypher_fixture: expected_cypher/gq-029.cypher
+    regression_scope: smoke
+    ci_smoke: true
+
+  - id: gq-030
+    question: 先按状态统计端口，再取最多的 5 个状态
+    expected_status: generated
+    primary_ir: IR-19
+    expected_reason_code: generated
+    coverage: aggregate
+    query_shape: two_step_aggregate
+    expected_dsl_ir: IR-19
+    cypher_filled_by_ir: IR-19
+    expected_dsl_fixture: expected_dsl/gq-030.json
+    expected_cypher_fixture: expected_cypher/gq-030.cypher
+    regression_scope: full
     ci_smoke: false

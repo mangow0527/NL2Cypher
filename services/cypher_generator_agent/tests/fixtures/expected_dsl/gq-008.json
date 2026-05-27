@@ -1,0 +1,41 @@
+{
+  "schema_version": "restricted_query_dsl_v1",
+  "query_id": "gq-008",
+  "query_shape": "metric_aggregate",
+  "source_question": "全网有多少台防火墙",
+  "bindings": {
+    "metric": {
+      "metric_name": "device_count"
+    }
+  },
+  "operations": [
+    {
+      "op": "metric_aggregate",
+      "metric_name": "device_count",
+      "group_by": [],
+      "filters": [
+        {
+          "target": "ne",
+          "property": {
+            "owner": "NetworkElement",
+            "name": "elem_type"
+          },
+          "operator": "eq",
+          "value": {
+            "raw": "防火墙",
+            "normalized": "firewall",
+            "resolver_match_type": "value_synonym"
+          }
+        }
+      ]
+    }
+  ],
+  "projection": {
+    "items": [
+      {
+        "alias": "device_count",
+        "source": "metric.device_count"
+      }
+    ]
+  }
+}
