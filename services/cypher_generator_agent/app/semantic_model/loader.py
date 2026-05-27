@@ -19,6 +19,9 @@ from .validator import (
 )
 
 
+_ARTIFACT_VALIDATION_CACHE: set[str] = set()
+
+
 @dataclass(frozen=True)
 class GraphModelLoadResult:
     registry: GraphSemanticRegistry
@@ -37,9 +40,13 @@ def load_graph_semantic_model(source: str | Path | Mapping[str, Any]) -> GraphMo
     if not validation_result.is_valid:
         raise GraphModelValidationError(validation_result)
 
+    registry = GraphSemanticRegistry(model)
+    model_checksum = _model_checksum(model)
+    _validate_model_artifacts(registry, model_checksum)
+
     return GraphModelLoadResult(
-        registry=GraphSemanticRegistry(model),
-        model_checksum=_model_checksum(model),
+        registry=registry,
+        model_checksum=model_checksum,
         validation_result=validation_result,
     )
 
@@ -122,3 +129,63 @@ def _model_checksum(model: GraphSemanticModel) -> str:
         sort_keys=True,
     )
     return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
+
+
+def _validate_model_artifacts(registry: GraphSemanticRegistry, model_checksum: str) -> None:
+    if model_checksum in _ARTIFACT_VALIDATION_CACHE:
+        return
+
+    from services.cypher_generator_agent.app.cypher_validation import CypherSelfValidator
+
+    validator = CypherSelfValidator(registry)
+    errors: list[GraphModelValidationIssue] = []
+
+    for path_pattern in registry.model.path_patterns:
+        result = validator.validate_model_artifact(
+            path_pattern.cypher,
+            source_kind="path_pattern",
+            source_name=path_pattern.name,
+        )
+        _extend_artifact_errors(
+            errors,
+            result,
+            location=f"path_patterns.{path_pattern.name}.cypher",
+        )
+
+    for metric in registry.model.metrics:
+        if not metric.full_cypher:
+            continue
+        result = validator.validate_model_artifact(
+            metric.full_cypher,
+            source_kind="metric_full_cypher",
+            source_name=metric.name,
+        )
+        _extend_artifact_errors(
+            errors,
+            result,
+            location=f"metrics.{metric.name}.full_cypher",
+        )
+
+    if errors:
+        raise GraphModelValidationError(GraphModelValidationResult(is_valid=False, errors=errors))
+
+    _ARTIFACT_VALIDATION_CACHE.add(model_checksum)
+
+
+def _extend_artifact_errors(
+    errors: list[GraphModelValidationIssue],
+    result: Any,
+    *,
+    location: str,
+) -> None:
+    for issue in result.errors:
+        errors.append(
+            GraphModelValidationIssue(
+                code=issue.code,
+                message=(
+                    f"{location}: {issue.message} "
+                    f"(self_validation_check={issue.check}, self_validation_location={issue.location})"
+                ),
+                location=location,
+            )
+        )

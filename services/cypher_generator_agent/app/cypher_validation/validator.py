@@ -56,11 +56,11 @@ class CypherSelfValidator:
         if syntax_errors:
             errors.extend(syntax_errors)
             checks.append(CypherValidationCheck(name="syntax", status="failed"))
-            checks.extend(_skipped_follow_up_checks())
+            checks.extend(_skipped_follow_up_checks(request, model_artifact_status="failed"))
             return _result(request, checks, errors, warnings)
         if parsed is None:
             checks.append(CypherValidationCheck(name="syntax", status="failed"))
-            checks.extend(_skipped_follow_up_checks())
+            checks.extend(_skipped_follow_up_checks(request, model_artifact_status="failed"))
             return _result(request, checks, errors, warnings)
         checks.append(CypherValidationCheck(name="syntax", status="passed"))
 
@@ -68,7 +68,7 @@ class CypherSelfValidator:
         if readonly_errors:
             errors.extend(readonly_errors)
             checks.append(CypherValidationCheck(name="readonly", status="failed"))
-            checks.extend(_skipped_after_readonly_checks())
+            checks.extend(_skipped_after_readonly_checks(request, model_artifact_status="failed"))
             return _result(request, checks, errors, warnings)
         checks.append(CypherValidationCheck(name="readonly", status="passed"))
 
@@ -77,7 +77,7 @@ class CypherSelfValidator:
             errors.extend(dialect_errors)
             checks.append(CypherValidationCheck(name="dialect", status="failed"))
             checks.append(CypherValidationCheck(name="schema_reference", status="skipped"))
-            checks.extend(_ir03b_check_slots())
+            checks.extend(_ir03b_check_slots(request, model_artifact_status="failed"))
             return _result(request, checks, errors, warnings)
         checks.append(CypherValidationCheck(name="dialect", status="passed"))
 
@@ -85,10 +85,10 @@ class CypherSelfValidator:
         if schema_errors:
             errors.extend(schema_errors)
             checks.append(CypherValidationCheck(name="schema_reference", status="failed"))
-            checks.extend(_ir03b_check_slots())
+            checks.extend(_ir03b_check_slots(request, model_artifact_status="failed"))
             return _result(request, checks, errors, warnings)
         checks.append(CypherValidationCheck(name="schema_reference", status="passed"))
-        checks.extend(_ir03b_check_slots())
+        checks.extend(_ir03b_check_slots(request, model_artifact_status="passed"))
 
         return _result(request, checks, errors, warnings)
 
@@ -108,25 +108,38 @@ def _result(
     )
 
 
-def _skipped_follow_up_checks() -> list[CypherValidationCheck]:
+def _skipped_follow_up_checks(
+    request: CypherSelfValidationRequest,
+    *,
+    model_artifact_status: str,
+) -> list[CypherValidationCheck]:
     return [
         CypherValidationCheck(name="readonly", status="skipped"),
         CypherValidationCheck(name="dialect", status="skipped"),
         CypherValidationCheck(name="schema_reference", status="skipped"),
-        *_ir03b_check_slots(),
+        *_ir03b_check_slots(request, model_artifact_status=model_artifact_status),
     ]
 
 
-def _skipped_after_readonly_checks() -> list[CypherValidationCheck]:
+def _skipped_after_readonly_checks(
+    request: CypherSelfValidationRequest,
+    *,
+    model_artifact_status: str,
+) -> list[CypherValidationCheck]:
     return [
         CypherValidationCheck(name="dialect", status="skipped"),
         CypherValidationCheck(name="schema_reference", status="skipped"),
-        *_ir03b_check_slots(),
+        *_ir03b_check_slots(request, model_artifact_status=model_artifact_status),
     ]
 
 
-def _ir03b_check_slots() -> list[CypherValidationCheck]:
+def _ir03b_check_slots(
+    request: CypherSelfValidationRequest,
+    *,
+    model_artifact_status: str,
+) -> list[CypherValidationCheck]:
+    status = model_artifact_status if request.mode == "model_artifact" else "skipped"
     return [
         CypherValidationCheck(name="shape", status="skipped"),
-        CypherValidationCheck(name="model_artifact", status="skipped"),
+        CypherValidationCheck(name="model_artifact", status=status),
     ]

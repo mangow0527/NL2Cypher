@@ -36,3 +36,4 @@ def test_model_artifact_entrypoint_sets_model_artifact_mode(
 
     assert result.valid is True
     assert result.mode == "model_artifact"
+    assert {check.name: check.status for check in result.checks}["model_artifact"] == "passed"
