@@ -248,6 +248,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
     allowed_cypher_validation_tests = {
         "__init__.py",
         "test_readonly.py",
+        "test_dialect.py",
         "test_model_artifact_validation.py",
         "test_schema_reference_mvp.py",
         "test_shape.py",

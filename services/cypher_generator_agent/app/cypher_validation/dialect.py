@@ -10,10 +10,14 @@ DIALECT_FAILURE_CODE = "target_dialect_static_error"
 MAX_VARIABLE_PATH_HOPS = 8
 REL_PATTERN_RE = re.compile(r"\[(?P<body>[^\[\]]*)\]")
 VARIABLE_LENGTH_RE = re.compile(r"\*(?P<range>\d*(?:\.\.\d*)?)?")
+ALLOWED_FUNCTIONS = frozenset({"count", "sum", "avg", "min", "max"})
+FUNCTION_CALL_RE = re.compile(r"(?P<name>[A-Za-z_][A-Za-z0-9_.]*)\s*\(")
+CLAUSE_KEYWORDS = frozenset({"MATCH", "WHERE", "WITH", "RETURN", "ORDER", "LIMIT", "SKIP", "UNWIND"})
 
 
 def validate_target_dialect(parsed: ParsedCypher) -> list[CypherValidationIssue]:
     errors: list[CypherValidationIssue] = []
+    _validate_function_allowlist(parsed, errors)
     for match in REL_PATTERN_RE.finditer(parsed.cypher):
         body = match.group("body")
         variable_length = VARIABLE_LENGTH_RE.search(body)
@@ -41,6 +45,27 @@ def validate_target_dialect(parsed: ParsedCypher) -> list[CypherValidationIssue]
                 )
             )
     return errors
+
+
+def _validate_function_allowlist(
+    parsed: ParsedCypher,
+    errors: list[CypherValidationIssue],
+) -> None:
+    for match in FUNCTION_CALL_RE.finditer(parsed.cypher):
+        name = match.group("name")
+        if name.upper() in CLAUSE_KEYWORDS:
+            continue
+        normalized = name.lower()
+        if normalized in ALLOWED_FUNCTIONS:
+            continue
+        errors.append(
+            validation_error(
+                DIALECT_FAILURE_CODE,
+                f"function {name} is not allowed in target dialect static subset",
+                "dialect",
+                name,
+            )
+        )
 
 
 def _max_hops(range_text: str) -> int | None:
