@@ -46,3 +46,24 @@ def test_non_allowlisted_functions_fail_target_dialect(
     assert result.errors[0].code == "target_dialect_static_error"
     assert result.errors[0].check == "dialect"
     assert "function" in result.errors[0].message
+
+
+@pytest.mark.parametrize(
+    "cypher",
+    [
+        "MATCH (n:$(label)) RETURN n",
+        "MATCH (n:$label) RETURN n",
+        "MATCH (n)-[:$edge_type]->(m) RETURN m",
+        "MATCH (n:NetworkElement) RETURN n[$property_name] AS value",
+    ],
+)
+def test_dynamic_schema_references_fail_target_dialect(
+    validator: CypherSelfValidator,
+    cypher: str,
+) -> None:
+    result = validator.validate_generated_query(cypher)
+
+    assert result.valid is False
+    assert result.errors[0].code == "target_dialect_static_error"
+    assert result.errors[0].check == "dialect"
+    assert "dynamic" in result.errors[0].message

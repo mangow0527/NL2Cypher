@@ -13,10 +13,15 @@ VARIABLE_LENGTH_RE = re.compile(r"\*(?P<range>\d*(?:\.\.\d*)?)?")
 ALLOWED_FUNCTIONS = frozenset({"count", "sum", "avg", "min", "max"})
 FUNCTION_CALL_RE = re.compile(r"(?P<name>[A-Za-z_][A-Za-z0-9_.]*)\s*\(")
 CLAUSE_KEYWORDS = frozenset({"MATCH", "WHERE", "WITH", "RETURN", "ORDER", "LIMIT", "SKIP", "UNWIND"})
+DYNAMIC_SCHEMA_RES = (
+    re.compile(r"[\(\[][^\{\}\)\]]*:\s*\$"),
+    re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\s*\[\s*\$[A-Za-z_][A-Za-z0-9_]*\s*\]"),
+)
 
 
 def validate_target_dialect(parsed: ParsedCypher) -> list[CypherValidationIssue]:
     errors: list[CypherValidationIssue] = []
+    _validate_no_dynamic_schema_references(parsed, errors)
     _validate_function_allowlist(parsed, errors)
     for match in REL_PATTERN_RE.finditer(parsed.cypher):
         body = match.group("body")
@@ -45,6 +50,22 @@ def validate_target_dialect(parsed: ParsedCypher) -> list[CypherValidationIssue]
                 )
             )
     return errors
+
+
+def _validate_no_dynamic_schema_references(
+    parsed: ParsedCypher,
+    errors: list[CypherValidationIssue],
+) -> None:
+    for pattern in DYNAMIC_SCHEMA_RES:
+        for match in pattern.finditer(parsed.cypher):
+            errors.append(
+                validation_error(
+                    DIALECT_FAILURE_CODE,
+                    "dynamic label, relationship type, or property reference is not allowed",
+                    "dialect",
+                    match.group(0),
+                )
+            )
 
 
 def _validate_function_allowlist(
