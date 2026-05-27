@@ -235,6 +235,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "test_api_contract.py",
         "test_pipeline_mvp.py",
         "test_testing_agent_submission.py",
+        "test_two_step_aggregate.py",
         "test_variable_path.py",
     }
     assert _source_names(SERVICE_ROOT / "tests" / "integration") <= allowed_integration_files
@@ -263,6 +264,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "test_builder_aggregate.py",
         "test_builder_named_path_pattern.py",
         "test_builder_single_hop.py",
+        "test_builder_top_n_two_step.py",
         "test_builder_variable_path.py",
         "test_operation_sequences.py",
         "test_parser.py",
@@ -276,6 +278,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "test_named_path_pattern.py",
         "test_readonly_output.py",
         "test_single_hop.py",
+        "test_top_n_two_step_aggregate.py",
         "test_variable_path.py",
         "test_vertex_lookup.py",
     }

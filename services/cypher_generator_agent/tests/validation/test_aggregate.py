@@ -72,6 +72,29 @@ def test_metric_filter_dimension_must_be_declared_valid_dimension(
     assert "ne.id" in result.errors[0].message
 
 
+def test_top_n_metric_group_by_dimension_must_be_declared_valid_dimension(
+    validator: SemanticValidator,
+) -> None:
+    plan = BindingPlan(
+        query_shape="top_n",
+        metric_bindings=[MetricBinding(name="device_count", candidate=_candidate("metric", "device_count"))],
+        group_by=[
+            {
+                "alias": "device_id",
+                "target": "ne",
+                "property": {"owner": "NetworkElement", "name": "id"},
+            }
+        ],
+    )
+
+    result = validator.validate(plan)
+
+    assert result.is_valid is False
+    assert result.errors[0].code == "metric_dimension_invalid"
+    assert result.errors[0].recoverability == "repairable"
+    assert "ne.id" in result.errors[0].message
+
+
 def _candidate(semantic_type: str, semantic_id: str, *, metadata: dict[str, Any] | None = None) -> CandidateBinding:
     return CandidateBinding(
         semantic_type=semantic_type,

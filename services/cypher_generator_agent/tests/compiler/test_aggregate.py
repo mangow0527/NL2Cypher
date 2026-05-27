@@ -52,6 +52,40 @@ def test_metric_aggregate_compiles_group_by_dimension(
     assert result.validation_result.valid is True
 
 
+def test_metric_aggregate_compiles_sort_and_limit_tail(
+    registry: GraphSemanticRegistry,
+) -> None:
+    dsl = _device_count_firewall_dsl()
+    dsl["operations"][0]["filters"] = []
+    dsl["operations"][0]["group_by"] = [
+        {
+            "alias": "elem_type",
+            "target": "ne",
+            "property": {"owner": "NetworkElement", "name": "elem_type"},
+        }
+    ]
+    dsl["projection"]["items"] = [
+        {"alias": "elem_type", "source": "group.elem_type"},
+        {"alias": "device_count", "source": "metric.device_count"},
+    ]
+    dsl["operations"].extend(
+        [
+            {"op": "sort", "by": [{"source": "metric.device_count", "direction": "desc"}]},
+            {"op": "limit", "value": 5},
+        ]
+    )
+    ast = parse_dsl(dsl, registry)
+
+    result = compile_restricted_query_ast(ast, registry)
+
+    assert result.cypher == (
+        "MATCH (ne:NetworkElement)\n"
+        "RETURN ne.elem_type AS elem_type, count(ne) AS device_count\n"
+        "ORDER BY device_count DESC\n"
+        "LIMIT 5"
+    )
+
+
 def test_ad_hoc_aggregate_compiles_count_by_status(
     registry: GraphSemanticRegistry,
 ) -> None:
@@ -65,6 +99,28 @@ def test_ad_hoc_aggregate_compiles_count_by_status(
     )
     assert result.parameters == {}
     assert result.validation_result.valid is True
+
+
+def test_ad_hoc_aggregate_compiles_sort_and_limit_tail(
+    registry: GraphSemanticRegistry,
+) -> None:
+    dsl = _port_count_by_status_dsl()
+    dsl["operations"].extend(
+        [
+            {"op": "sort", "by": [{"source": "measure.port_count", "direction": "desc"}]},
+            {"op": "limit", "value": 5},
+        ]
+    )
+    ast = parse_dsl(dsl, registry)
+
+    result = compile_restricted_query_ast(ast, registry)
+
+    assert result.cypher == (
+        "MATCH (port:Port)\n"
+        "RETURN port.status AS status, count(port.id) AS port_count\n"
+        "ORDER BY port_count DESC\n"
+        "LIMIT 5"
+    )
 
 
 def _device_count_firewall_dsl() -> dict:

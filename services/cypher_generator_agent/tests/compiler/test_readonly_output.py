@@ -7,10 +7,13 @@ from services.cypher_generator_agent.app.compiler import (
     CypherCompilerError,
     compile_restricted_query_ast,
 )
-from services.cypher_generator_agent.app.dsl.models import QueryShape
 from services.cypher_generator_agent.app.semantic_model import GraphSemanticRegistry
 
 from .conftest import named_path_pattern_dsl, parse_dsl, single_hop_dsl
+
+
+class _UnsupportedQueryShape:
+    value = "unsupported"
 
 
 def test_compiler_blocks_mutating_template_output(
@@ -66,17 +69,7 @@ def test_unsupported_query_shape_raises_compiler_error(
     registry: GraphSemanticRegistry,
 ) -> None:
     ast = parse_dsl(single_hop_dsl(), registry)
-    unsupported_ast = ast.__class__(
-        schema_version=ast.schema_version,
-        query_id=ast.query_id,
-        query_shape=QueryShape.TOP_N,
-        source_question=ast.source_question,
-        operations=ast.operations,
-        projection=ast.projection,
-        filters=ast.filters,
-        sort=ast.sort,
-        limit=ast.limit,
-    )
+    object.__setattr__(ast, "query_shape", _UnsupportedQueryShape())
 
     with pytest.raises(CypherCompilerError, match="unsupported query_shape"):
-        compile_restricted_query_ast(unsupported_ast, registry)
+        compile_restricted_query_ast(ast, registry)

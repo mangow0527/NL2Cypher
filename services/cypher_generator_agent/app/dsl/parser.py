@@ -524,6 +524,20 @@ def _validate_subquery(
         )
     if not operation.measures:
         issues.append(_issue("missing_subquery_measures", "subquery must include at least one measure", f"{location}.measures"))
+        return
+
+    target_aliases = {dimension.target for dimension in operation.group_by} | {
+        measure.target for measure in operation.measures
+    }
+    if len(target_aliases) > 1:
+        issues.append(
+            _issue(
+                "unsupported_subquery_vertex_roles",
+                "two_step_aggregate subquery v1 must reference exactly one vertex role",
+                location,
+            )
+        )
+        return
 
     aggregate = AggregateOperationModel(op="aggregate", group_by=operation.group_by, measures=operation.measures)
     _validate_aggregate(aggregate, registry, vertex_bindings, location, issues)

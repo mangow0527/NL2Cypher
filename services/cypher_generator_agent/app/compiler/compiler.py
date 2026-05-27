@@ -10,11 +10,16 @@ from services.cypher_generator_agent.app.cypher_validation import (
 )
 from services.cypher_generator_agent.app.dsl.ast import (
     AggregateOperation,
+    Dimension,
     Filter,
+    FilterSubqueryOperation,
+    Measure,
     MetricAggregateOperation,
     Projection,
     ProjectionItem,
     RestrictedQueryAst,
+    RoleReference,
+    SubqueryOperation,
     TraverseEdgeOperation,
     UsePathPatternOperation,
     VariablePathOperation,
@@ -35,6 +40,8 @@ SUPPORTED_QUERY_SHAPES = {
     QueryShape.VARIABLE_PATH_TRAVERSAL,
     QueryShape.METRIC_AGGREGATE,
     QueryShape.AD_HOC_AGGREGATE,
+    QueryShape.TOP_N,
+    QueryShape.TWO_STEP_AGGREGATE,
 }
 ROLE_VARIABLES = {
     "Service": "svc",
@@ -107,6 +114,10 @@ class CypherCompiler:
             cypher, parameters = self._compile_metric_aggregate(ast)
         elif ast.query_shape is QueryShape.AD_HOC_AGGREGATE:
             cypher, parameters = self._compile_ad_hoc_aggregate(ast)
+        elif ast.query_shape is QueryShape.TOP_N:
+            cypher, parameters = self._compile_top_n(ast)
+        elif ast.query_shape is QueryShape.TWO_STEP_AGGREGATE:
+            cypher, parameters = self._compile_two_step_aggregate(ast)
         else:
             raise CypherCompilerError(f"unsupported query_shape: {ast.query_shape.value}")
 
@@ -172,33 +183,65 @@ class CypherCompiler:
         if where:
             clauses.append(f"WHERE {' AND '.join(where)}")
         clauses.append(_compile_source_return(ast.projection, source_expressions))
+        _append_order_limit(clauses, ast, source_expressions)
         return "\n".join(clauses), parameters.values
 
     def _compile_ad_hoc_aggregate(self, ast: RestrictedQueryAst) -> tuple[str, dict[str, object]]:
         operation = _single_operation(ast, AggregateOperation)
         roles = _aggregate_roles(operation, ast.filters)
-        if len(roles) != 1:
-            raise CypherCompilerError("ad_hoc_aggregate compiler MVP requires exactly one vertex role")
-
-        role = next(iter(roles.values()))
-        role_variables = {role.alias: _variable_for_owner(role.vertex_name, used=set())}
+        role_variables = _role_variables(roles.values())
         parameters = _ParameterBuilder()
-        source_expressions: dict[tuple[str, str], str] = {}
-        for dimension in operation.group_by:
-            source_expressions[("group", dimension.alias)] = (
-                f"{role_variables[dimension.target.alias]}.{dimension.property.name}"
-            )
-        for measure in operation.measures:
-            variable = role_variables[measure.target.alias]
-            source_expressions[("measure", measure.alias)] = (
-                f"{measure.function}({variable}.{measure.property.name})"
-            )
+        source_expressions = _aggregate_source_expressions(
+            operation.group_by,
+            operation.measures,
+            role_variables,
+        )
 
-        clauses = [f"MATCH ({role_variables[role.alias]}:{role.vertex_name})"]
+        clauses = [_compile_aggregate_match(roles, role_variables)]
         where = _compile_filters(ast.filters, role_variables, parameters)
         if where:
             clauses.append(f"WHERE {' AND '.join(where)}")
         clauses.append(_compile_source_return(ast.projection, source_expressions))
+        _append_order_limit(clauses, ast, source_expressions)
+        return "\n".join(clauses), parameters.values
+
+    def _compile_top_n(self, ast: RestrictedQueryAst) -> tuple[str, dict[str, object]]:
+        primary_operation = ast.operations[0] if ast.operations else None
+        if isinstance(primary_operation, MetricAggregateOperation):
+            return self._compile_metric_aggregate(ast)
+        if isinstance(primary_operation, AggregateOperation):
+            return self._compile_ad_hoc_aggregate(ast)
+        raise CypherCompilerError("top_n requires aggregate or metric_aggregate operation")
+
+    def _compile_two_step_aggregate(self, ast: RestrictedQueryAst) -> tuple[str, dict[str, object]]:
+        subquery = _single_operation(ast, SubqueryOperation)
+        roles = _aggregate_roles_from_parts(subquery.group_by, subquery.measures, [])
+        role_variables = _role_variables(roles.values())
+        parameters = _ParameterBuilder()
+        source_expressions = _aggregate_source_expressions(
+            subquery.group_by,
+            subquery.measures,
+            role_variables,
+        )
+
+        clauses = [_compile_aggregate_match(roles, role_variables)]
+        clauses.append(_compile_with(subquery.group_by, subquery.measures, source_expressions))
+
+        filter_where = _compile_filter_subqueries(ast, subquery, parameters)
+        if filter_where:
+            clauses.append(f"WHERE {' AND '.join(filter_where)}")
+
+        subquery_sources = {
+            (subquery.bind_as, dimension.alias): dimension.alias for dimension in subquery.group_by
+        }
+        subquery_sources.update(
+            {
+                (subquery.bind_as, measure.alias): measure.alias
+                for measure in subquery.measures
+            }
+        )
+        clauses.append(_compile_source_return(ast.projection, subquery_sources))
+        _append_order_limit(clauses, ast, subquery_sources)
         return "\n".join(clauses), parameters.values
 
     def _compile_single_hop(self, ast: RestrictedQueryAst) -> tuple[str, dict[str, object]]:
@@ -378,6 +421,37 @@ def _compile_source_projection_item(
     return f"{expression} AS {alias}"
 
 
+def _append_order_limit(
+    clauses: list[str],
+    ast: RestrictedQueryAst,
+    source_expressions: Mapping[tuple[str, str], str],
+) -> None:
+    if ast.sort:
+        source_aliases = _projection_source_aliases(ast.projection)
+        order_items = []
+        for sort_item in ast.sort:
+            key = (sort_item.source.namespace, sort_item.source.name)
+            expression = source_aliases.get(key) or source_expressions.get(key)
+            if expression is None:
+                raise CypherCompilerError(f"unknown sort source: {sort_item.source.raw}")
+            order_items.append(f"{expression} {sort_item.direction.upper()}")
+        clauses.append(f"ORDER BY {', '.join(order_items)}")
+    if ast.limit is not None:
+        clauses.append(f"LIMIT {ast.limit}")
+
+
+def _projection_source_aliases(projection: Projection) -> dict[tuple[str, str], str]:
+    aliases: dict[tuple[str, str], str] = {}
+    for item in projection.items:
+        if item.source is None:
+            continue
+        alias = projection_item_alias(item)
+        if not is_cypher_identifier(alias):
+            raise CypherCompilerError(f"invalid projection alias: {alias}")
+        aliases[(item.source.namespace, item.source.name)] = alias
+    return aliases
+
+
 def _compile_projection_item(item: ProjectionItem, role_variables: Mapping[str, str]) -> str:
     if item.target is None or item.property is None:
         raise CypherCompilerError("target/property projection is required for generated query compiler MVP")
@@ -388,19 +462,103 @@ def _compile_projection_item(item: ProjectionItem, role_variables: Mapping[str, 
     return f"{variable}.{item.property.name} AS {alias}"
 
 
+def _compile_with(
+    group_by: list[Dimension],
+    measures: list[Measure],
+    source_expressions: Mapping[tuple[str, str], str],
+) -> str:
+    items: list[str] = []
+    for dimension in group_by:
+        items.append(f"{source_expressions[('group', dimension.alias)]} AS {dimension.alias}")
+    for measure in measures:
+        items.append(f"{source_expressions[('measure', measure.alias)]} AS {measure.alias}")
+    return f"WITH {', '.join(items)}"
+
+
+def _compile_filter_subqueries(
+    ast: RestrictedQueryAst,
+    subquery: SubqueryOperation,
+    parameters: _ParameterBuilder,
+) -> list[str]:
+    output_aliases = {dimension.alias for dimension in subquery.group_by} | {
+        measure.alias for measure in subquery.measures
+    }
+    compiled: list[str] = []
+    for operation in ast.operations:
+        if not isinstance(operation, FilterSubqueryOperation):
+            continue
+        if operation.source != subquery.bind_as:
+            raise CypherCompilerError(f"filter_subquery source not found: {operation.source}")
+        if operation.predicate.property not in output_aliases:
+            raise CypherCompilerError(f"filter_subquery output not found: {operation.predicate.property}")
+        operator = OPERATOR_CYPHER.get(operation.predicate.operator)
+        if operator is None:
+            raise CypherCompilerError(f"unsupported filter_subquery operator: {operation.predicate.operator}")
+        parameter_name = parameters.add(operation.predicate.property, operation.predicate.value.effective_value)
+        compiled.append(f"{operation.predicate.property} {operator} ${parameter_name}")
+    return compiled
+
+
 def _aggregate_roles(
     operation: AggregateOperation,
     filters: list[Filter],
 ) -> dict[str, object]:
+    return _aggregate_roles_from_parts(operation.group_by, operation.measures, filters)
+
+
+def _aggregate_roles_from_parts(
+    group_by: list[Dimension],
+    measures: list[Measure],
+    filters: list[Filter],
+) -> dict[str, RoleReference]:
     roles: dict[str, object] = {}
-    for dimension in operation.group_by:
+    for dimension in group_by:
         roles[dimension.target.alias] = dimension.target
-    for measure in operation.measures:
+    for measure in measures:
         roles[measure.target.alias] = measure.target
     for filter_item in filters:
         if filter_item.target is not None:
             roles[filter_item.target.alias] = filter_item.target
     return roles
+
+
+def _role_variables(roles: object) -> dict[str, str]:
+    used: set[str] = set()
+    return {
+        role.alias: _variable_for_owner(role.vertex_name, used=used)
+        for role in roles
+    }
+
+
+def _aggregate_source_expressions(
+    group_by: list[Dimension],
+    measures: list[Measure],
+    role_variables: Mapping[str, str],
+) -> dict[tuple[str, str], str]:
+    source_expressions: dict[tuple[str, str], str] = {}
+    for dimension in group_by:
+        source_expressions[("group", dimension.alias)] = (
+            f"{role_variables[dimension.target.alias]}.{dimension.property.name}"
+        )
+    for measure in measures:
+        variable = role_variables[measure.target.alias]
+        source_expressions[("measure", measure.alias)] = (
+            f"{measure.function}({variable}.{measure.property.name})"
+        )
+    return source_expressions
+
+
+def _compile_aggregate_match(
+    roles: Mapping[str, RoleReference],
+    role_variables: Mapping[str, str],
+) -> str:
+    role_values = list(roles.values())
+    if len(role_values) == 1:
+        role = role_values[0]
+        return f"MATCH ({role_variables[role.alias]}:{role.vertex_name})"
+    raise CypherCompilerError(
+        "ad_hoc aggregate compiler requires exactly one vertex role; use a metric for edge-connected aggregates"
+    )
 
 
 def _variable_for_owner(owner: str, *, used: set[str]) -> str:

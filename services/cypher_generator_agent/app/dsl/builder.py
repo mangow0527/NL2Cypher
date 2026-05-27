@@ -36,6 +36,10 @@ class RestrictedDslBuilder:
             dsl = self._build_metric_aggregate(plan, source_question=source_question, query_id=query_id)
         elif plan.query_shape == "ad_hoc_aggregate":
             dsl = self._build_ad_hoc_aggregate(plan, source_question=source_question, query_id=query_id)
+        elif plan.query_shape == "top_n":
+            dsl = self._build_top_n(plan, source_question=source_question, query_id=query_id)
+        elif plan.query_shape == "two_step_aggregate":
+            dsl = self._build_two_step_aggregate(plan, source_question=source_question, query_id=query_id)
         else:
             raise ValueError(f"unsupported query_shape for restricted DSL builder: {plan.query_shape}")
 
@@ -43,7 +47,8 @@ class RestrictedDslBuilder:
         return dsl
 
     def _reject_uncompiled_sort_limit(self, plan: BindingPlan) -> None:
-        if plan.sort or plan.limit is not None:
+        compiled_sort_limit_shapes = {"metric_aggregate", "ad_hoc_aggregate", "top_n", "two_step_aggregate"}
+        if plan.query_shape not in compiled_sort_limit_shapes and (plan.sort or plan.limit is not None):
             raise ValueError(
                 f"{plan.query_shape} sort/limit is not supported until the Cypher compiler consumes it"
             )
@@ -184,6 +189,7 @@ class RestrictedDslBuilder:
             }
         ]
         dsl["projection"] = {"items": self._metric_projection_items(plan, metric_name)}
+        self._append_sort_limit(dsl, plan)
         return dsl
 
     def _build_ad_hoc_aggregate(
@@ -217,6 +223,55 @@ class RestrictedDslBuilder:
         if plan.filters:
             dsl["filters"] = [self._filter_item(item, role_by_owner) for item in plan.filters]
         dsl["projection"] = {"items": self._aggregate_projection_items(plan)}
+        self._append_sort_limit(dsl, plan)
+        return dsl
+
+    def _build_top_n(
+        self,
+        plan: BindingPlan,
+        *,
+        source_question: str,
+        query_id: str,
+    ) -> dict[str, Any]:
+        if not plan.sort or plan.limit is None:
+            raise ValueError("top_n requires sort and limit")
+        if plan.metric_bindings:
+            return self._build_metric_aggregate(plan, source_question=source_question, query_id=query_id)
+        return self._build_ad_hoc_aggregate(plan, source_question=source_question, query_id=query_id)
+
+    def _build_two_step_aggregate(
+        self,
+        plan: BindingPlan,
+        *,
+        source_question: str,
+        query_id: str,
+    ) -> dict[str, Any]:
+        if not plan.measures:
+            raise ValueError("two_step_aggregate requires at least one measure")
+
+        role_by_owner = self._aggregate_role_by_owner(plan)
+        selected_vertices = {binding.name for binding in plan.vertex_bindings}
+        missing_vertices = sorted(owner for owner in role_by_owner if owner not in selected_vertices)
+        if missing_vertices:
+            raise ValueError(f"two_step_aggregate missing vertex bindings for {missing_vertices}")
+
+        bind_as = self._subquery_bind_as(plan)
+        dsl = self._base_payload(plan, source_question=source_question, query_id=query_id)
+        dsl["bindings"] = {
+            alias: {"vertex_name": owner}
+            for owner, alias in sorted(role_by_owner.items(), key=lambda item: item[1])
+        }
+        dsl["operations"] = [
+            {
+                "op": "subquery",
+                "bind_as": bind_as,
+                "query_shape": "ad_hoc_aggregate",
+                "group_by": [self._dimension_item(item, role_by_owner) for item in plan.group_by],
+                "measures": [self._measure_item(item, role_by_owner) for item in plan.measures],
+            }
+        ]
+        dsl["projection"] = {"items": self._two_step_projection_items(plan, bind_as)}
+        self._append_sort_limit(dsl, plan)
         return dsl
 
     def _base_payload(
@@ -403,6 +458,30 @@ class RestrictedDslBuilder:
             *({"alias": str(item["alias"]), "source": f"group.{item['alias']}"} for item in plan.group_by),
             *({"alias": str(item["alias"]), "source": f"measure.{item['alias']}"} for item in plan.measures),
         ]
+
+    def _two_step_projection_items(self, plan: BindingPlan, bind_as: str) -> list[dict[str, Any]]:
+        if plan.projection:
+            return self._projection_items(plan, {})
+        return [
+            *({"alias": str(item["alias"]), "source": f"{bind_as}.{item['alias']}"} for item in plan.group_by),
+            *({"alias": str(item["alias"]), "source": f"{bind_as}.{item['alias']}"} for item in plan.measures),
+        ]
+
+    def _append_sort_limit(self, dsl: dict[str, Any], plan: BindingPlan) -> None:
+        if plan.sort:
+            dsl["operations"].append({"op": "sort", "by": [self._sort_item(item) for item in plan.sort]})
+        if plan.limit is not None:
+            dsl["operations"].append({"op": "limit", "value": plan.limit})
+
+    def _subquery_bind_as(self, plan: BindingPlan) -> str:
+        for item in [*plan.projection, *plan.sort]:
+            source = item.get("source") if isinstance(item, Mapping) else None
+            if not isinstance(source, str) or "." not in source:
+                continue
+            namespace = source.split(".", 1)[0]
+            if namespace not in {"group", "measure", "metric"}:
+                return namespace
+        return "subquery"
 
     def _value_from_filter(self, item: FilterBinding) -> dict[str, Any]:
         if item.literal is not None:

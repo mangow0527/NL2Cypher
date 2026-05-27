@@ -166,7 +166,7 @@ def _run_pipeline_steps(
     )
     if not validation_result.is_valid:
         first_error = validation_result.errors[0]
-        reason = "coverage_failure" if first_error.code == "coverage_failure" else "semantic_match_rejected"
+        reason = _semantic_validation_failure_reason(first_error)
         return _failure(
             trace,
             reason=reason,
@@ -387,6 +387,34 @@ def _mock_decompose(question: str) -> dict[str, Any]:
             "mock_intent": "device_count_by_elem_type",
         }
 
+    if "端口最多" in question and "设备" in question:
+        return {
+            "schema_version": "question_decomposition_v1",
+            "original_question": question,
+            "target_concepts": ["NetworkElement", "Port", "设备", "端口"],
+            "relation_phrases": ["HAS_PORT"],
+            "literal_candidates": [],
+            "semantic_terms": ["port_count", "NetworkElement.id"],
+            "substantive_terms": ["端口最多", "5", "设备"],
+            "literal_requests": [],
+            "coverage": _coverage(covered=["端口最多", "5", "设备"]),
+            "mock_intent": "top_n_devices_by_port_count",
+        }
+
+    if "先按状态统计端口" in question and "最多" in question:
+        return {
+            "schema_version": "question_decomposition_v1",
+            "original_question": question,
+            "target_concepts": ["Port", "端口"],
+            "relation_phrases": [],
+            "literal_candidates": [],
+            "semantic_terms": ["Port.status", "Port.id"],
+            "substantive_terms": ["先按状态", "统计端口", "最多"],
+            "literal_requests": [],
+            "coverage": _coverage(covered=["先按状态", "统计端口", "最多"]),
+            "mock_intent": "two_step_port_status_count",
+        }
+
     if "按状态" in question and "端口数量" in question:
         return {
             "schema_version": "question_decomposition_v1",
@@ -577,6 +605,57 @@ def _mock_understand(
             ],
         }
 
+    if intent == "top_n_devices_by_port_count":
+        return {
+            "query_shape": "top_n",
+            "selected_metrics": ["port_count"],
+            "selected_properties": [{"owner": "NetworkElement", "name": "id"}],
+            "group_by": [
+                {
+                    "alias": "device",
+                    "target": "ne",
+                    "property": {"owner": "NetworkElement", "name": "id"},
+                }
+            ],
+            "projection": [
+                {"alias": "device", "source": "group.device"},
+                {"alias": "port_count", "source": "metric.port_count"},
+            ],
+            "sort": [{"source": "metric.port_count", "direction": "desc"}],
+            "limit": 5,
+        }
+
+    if intent == "two_step_port_status_count":
+        return {
+            "query_shape": "two_step_aggregate",
+            "selected_vertices": ["Port"],
+            "selected_properties": [
+                {"owner": "Port", "name": "status"},
+                {"owner": "Port", "name": "id"},
+            ],
+            "group_by": [
+                {
+                    "alias": "status",
+                    "target": "port",
+                    "property": {"owner": "Port", "name": "status"},
+                }
+            ],
+            "measures": [
+                {
+                    "alias": "port_count",
+                    "function": "count",
+                    "target": "port",
+                    "property": {"owner": "Port", "name": "id"},
+                }
+            ],
+            "projection": [
+                {"alias": "status", "source": "port_status_counts.status"},
+                {"alias": "port_count", "source": "port_status_counts.port_count"},
+            ],
+            "sort": [{"source": "port_status_counts.port_count", "direction": "desc"}],
+            "limit": 5,
+        }
+
     return {
         "query_shape": "vertex_lookup",
         "selected_vertices": ["Service"],
@@ -650,6 +729,14 @@ def _status_for_failure_reason(reason: str) -> str:
     if reason not in set(GenerationFailureReason.__args__):
         return "service_failed"
     return "generation_failed"
+
+
+def _semantic_validation_failure_reason(issue: Any) -> str:
+    if issue.code == "coverage_failure":
+        return "coverage_failure"
+    if issue.code == "unsupported_query_shape" or issue.action == "unsupported_query_shape":
+        return "unsupported_query_shape"
+    return "semantic_match_rejected"
 
 
 def _last_stage_name(trace: GraphTraceBuilder) -> str | None:

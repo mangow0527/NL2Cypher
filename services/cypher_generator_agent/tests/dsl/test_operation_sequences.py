@@ -76,6 +76,42 @@ def test_two_step_aggregate_subquery_shape_must_be_ad_hoc_aggregate(
     assert _error_codes(error.value) == {"invalid_subquery_shape"}
 
 
+def test_two_step_aggregate_subquery_requires_measures(
+    registry: GraphSemanticRegistry,
+) -> None:
+    dsl = _two_step_aggregate_dsl()
+    dsl["operations"][0]["measures"] = []
+
+    with pytest.raises(RestrictedDslValidationError) as error:
+        parse_restricted_query_dsl(dsl, registry)
+
+    assert "missing_subquery_measures" in _error_codes(error.value)
+
+
+def test_filter_subquery_source_must_reference_subquery(
+    registry: GraphSemanticRegistry,
+) -> None:
+    dsl = _two_step_aggregate_dsl()
+    dsl["operations"][1]["source"] = "missing_source"
+
+    with pytest.raises(RestrictedDslValidationError) as error:
+        parse_restricted_query_dsl(dsl, registry)
+
+    assert _error_codes(error.value) == {"unknown_subquery_source"}
+
+
+def test_filter_subquery_predicate_property_must_reference_subquery_output(
+    registry: GraphSemanticRegistry,
+) -> None:
+    dsl = _two_step_aggregate_dsl()
+    dsl["operations"][1]["predicate"]["property"] = "missing_output"
+
+    with pytest.raises(RestrictedDslValidationError) as error:
+        parse_restricted_query_dsl(dsl, registry)
+
+    assert _error_codes(error.value) == {"unknown_subquery_output"}
+
+
 def test_variable_path_through_filter_target_must_match_owner(
     registry: GraphSemanticRegistry,
 ) -> None:
@@ -124,6 +160,24 @@ def test_filter_subquery_operator_must_be_supported(
         parse_restricted_query_dsl(dsl, registry)
 
     assert "model_parse_error" in _error_codes(error.value)
+
+
+def test_two_step_aggregate_subquery_must_use_single_vertex_role(
+    registry: GraphSemanticRegistry,
+) -> None:
+    dsl = _two_step_aggregate_dsl()
+    dsl["bindings"]["device"] = {"vertex_name": "NetworkElement"}
+    dsl["operations"][0]["group_by"][0] = {
+        "alias": "device",
+        "target": "device",
+        "property": {"owner": "NetworkElement", "name": "id"},
+    }
+    dsl["projection"]["items"][0] = {"alias": "device", "source": "port_status_counts.device"}
+
+    with pytest.raises(RestrictedDslValidationError) as error:
+        parse_restricted_query_dsl(dsl, registry)
+
+    assert _error_codes(error.value) == {"unsupported_subquery_vertex_roles"}
 
 
 @pytest.mark.parametrize(
@@ -196,21 +250,20 @@ def _two_step_aggregate_dsl() -> dict[str, Any]:
         "schema_version": "restricted_query_dsl_v1",
         "query_id": "q-two-step",
         "query_shape": "two_step_aggregate",
-        "source_question": "端口最多的 5 台设备",
+        "source_question": "先按状态统计端口，再取最多的 5 个状态",
         "bindings": {
-            "device": {"vertex_name": "NetworkElement"},
             "port": {"vertex_name": "Port"},
         },
         "operations": [
             {
                 "op": "subquery",
-                "bind_as": "device_port_counts",
+                "bind_as": "port_status_counts",
                 "query_shape": "ad_hoc_aggregate",
                 "group_by": [
                     {
-                        "alias": "device",
-                        "target": "device",
-                        "property": {"owner": "NetworkElement", "name": "id"},
+                        "alias": "status",
+                        "target": "port",
+                        "property": {"owner": "Port", "name": "status"},
                     }
                 ],
                 "measures": [
@@ -224,16 +277,16 @@ def _two_step_aggregate_dsl() -> dict[str, Any]:
             },
             {
                 "op": "filter_subquery",
-                "source": "device_port_counts",
+                "source": "port_status_counts",
                 "predicate": {"property": "port_count", "operator": "gt", "value": 10},
             },
-            {"op": "sort", "by": [{"source": "device_port_counts.port_count", "direction": "desc"}]},
+            {"op": "sort", "by": [{"source": "port_status_counts.port_count", "direction": "desc"}]},
             {"op": "limit", "value": 5},
         ],
         "projection": {
             "items": [
-                {"alias": "device", "source": "device_port_counts.device"},
-                {"alias": "port_count", "source": "device_port_counts.port_count"},
+                {"alias": "status", "source": "port_status_counts.status"},
+                {"alias": "port_count", "source": "port_status_counts.port_count"},
             ]
         },
     }

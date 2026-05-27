@@ -4,6 +4,7 @@ import pytest
 
 from services.cypher_generator_agent.app.api.main import parse_semantics
 from services.cypher_generator_agent.app.api.models import SemanticParseRequest
+from services.cypher_generator_agent.app.core import pipeline as pipeline_module
 from services.cypher_generator_agent.app.core.pipeline import run_pipeline
 
 
@@ -76,6 +77,35 @@ def test_coverage_failure_does_not_emit_cypher_or_dsl() -> None:
     assert output.failure.reason == "coverage_failure"
     assert output.trace["final_outputs"]["cypher"] is None
     assert output.trace["final_outputs"]["dsl"] is None
+    assert _stage_names(output.trace)[-2:] == ["semantic_validator", "output"]
+
+
+def test_unsupported_query_shape_from_validator_returns_unsupported_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unsupported_understanding(
+        decomposition: dict[str, object],
+        literal_results: list[object],
+    ) -> dict[str, object]:
+        return {
+            "query_shape": "shortest_path",
+            "selected_vertices": ["Service"],
+            "projection": [{"semantic_type": "vertex", "name": "Service"}],
+        }
+
+    monkeypatch.setattr(pipeline_module, "_mock_understand", unsupported_understanding)
+
+    output = run_pipeline(
+        question="Gold 服务使用了哪些隧道",
+        qa_id="unsupported-shape",
+        generation_run_id="run-unsupported-shape",
+    )
+
+    assert output.status == "unsupported_query_shape"
+    assert output.cypher is None
+    assert output.dsl is None
+    assert output.failure is not None
+    assert output.failure.reason == "unsupported_query_shape"
     assert _stage_names(output.trace)[-2:] == ["semantic_validator", "output"]
 
 

@@ -138,6 +138,19 @@ def test_two_step_aggregate_subquery_fingerprint_distinguishes_substantive_chang
     assert from_dsl(limit_changed) != base_fingerprint
 
 
+def test_two_step_aggregate_subquery_fingerprint_distinguishes_measure_identity() -> None:
+    base = _two_step_aggregate_dsl()
+    service_count_changed = deepcopy(base)
+    service_count_changed["operations"][0]["measures"][0]["alias"] = "service_count"
+    service_count_changed["operations"][0]["measures"][0]["property"] = {
+        "owner": "Service",
+        "name": "id",
+    }
+    service_count_changed["operations"][0]["measures"][0]["target"] = "service"
+
+    assert from_dsl(service_count_changed) != from_dsl(base)
+
+
 def test_use_path_pattern_parameters_change_fingerprint() -> None:
     base = _path_pattern_dsl()
     changed = deepcopy(base)

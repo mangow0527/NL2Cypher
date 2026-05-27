@@ -221,7 +221,7 @@ class SemanticValidator:
         plan: BindingPlan,
         errors: list[SemanticValidationIssue],
     ) -> None:
-        if plan.query_shape != "metric_aggregate":
+        if plan.query_shape not in {"metric_aggregate", "top_n"}:
             return
         if not plan.metric_bindings:
             return
