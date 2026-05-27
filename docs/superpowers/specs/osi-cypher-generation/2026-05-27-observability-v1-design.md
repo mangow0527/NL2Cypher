@@ -42,6 +42,7 @@ final_outputs:
   dsl: {}
   cypher: "MATCH ..."
   clarification: null
+  user_visible_notices: []
   failure: null
 ```
 
@@ -86,6 +87,7 @@ warnings: []
 
 | stage | 关键内容 |
 | --- | --- |
+| `input_clarification_gate` | 原始问题是否缺少指代对象、Decomposer schema 失败后的澄清决策 |
 | `question_decomposer` | 结构化拆解、substantive/stopword/modality/time/unparsed 分类、LLM 调用次数 |
 | `candidate_retrieval` | 每类候选数量、match_type、score、evidence |
 | `literal_resolver` | 每个 literal 的解析结果、alternatives、cache/live lookup 信号 |
@@ -111,6 +113,7 @@ warnings: []
     items_resolved: 2
     cache_hits: 1
     live_lookup_count: 0
+    live_lookup_rate_limited_count: 0
   output_ref:
     type: inline
     value:
@@ -151,6 +154,7 @@ Repair stage 示例：
       clarification:
         expected_answer_type: single_choice
         options_count: 2
+      user_visible_notices: []
   errors: []
   warnings:
     - code: repair_limit_near
@@ -199,7 +203,11 @@ coverage:
 - `cga_osi_repair_oscillation_count`
 - `cga_osi_literal_cache_hit_rate`
 - `cga_osi_literal_live_lookup_hit_rate`
+- `cga_osi_literal_live_lookup_rate_limited_count`
+- `cga_osi_literal_live_lookup_singleflight_join_count`
 - `cga_osi_coverage_failure_count`
+- `cga_osi_input_clarification_required_count`
+- `cga_osi_assumption_notice_count`
 - `cga_osi_compiler_shape_mismatch_count`
 
 严重告警：
@@ -209,6 +217,7 @@ coverage:
 - schema registry 引用不存在。
 - repair oscillation 频繁发生。
 - literal cache stale suspected 突增。
+- live lookup rate limited 突增。
 - coverage failure 在某类问题上持续上升。
 
 ## 8. 隐私与截断
@@ -228,6 +237,7 @@ trace 可进入 testing-agent 和 runtime console，因此需要截断策略：
 非成功输出也必须提交 trace：
 
 - `clarification_required`：保留 clarification、coverage、候选歧义证据。
+- `clarification_required` 也覆盖 input clarification，例如问题缺少指代对象或 Decomposer 无法产出有效结构。
 - `unsupported_query_shape`：保留 unsupported reason 和 suggested rewrites。
 - `generation_failed`：保留 validator/compiler/execution 错误和最后可用 DSL/Cypher。
 - `service_failed`：保留工程异常，但不构造正式评测 attempt。
@@ -244,6 +254,7 @@ runtime console 至少应能展示：
 - LiteralResolver 的 resolved/unresolved/alternatives。
 - 覆盖报告。
 - repair loop 历史、fingerprint 和停止原因。
+- 用户可见 assumption notices。
 - DSL、AST 摘要、Cypher。
 - 执行结果摘要和反馈分类。
 

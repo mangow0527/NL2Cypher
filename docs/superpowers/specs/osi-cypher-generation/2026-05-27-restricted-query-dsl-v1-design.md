@@ -38,7 +38,43 @@ v1 不支持：
 - 未命名、无界的全图遍历。
 - 原生 Cypher escape hatch。
 
-## 3. 顶层 DSL 结构
+## 3. v1 Operation Enum 与组合规则
+
+v1 只允许以下 `op`：
+
+| op | 作用 | 主要字段 |
+| --- | --- | --- |
+| `traverse` | 单跳 relationship 遍历 | `from`、`relationship`、`to`、`direction` |
+| `variable_path` | 变长路径遍历 | `start`、`through`、`allowed_relationships`、`min_hops`、`max_hops` |
+| `use_path_pattern` | 引用命名 path pattern | `pattern_id`、`bind_as`、`filters` |
+| `aggregate` | 分组聚合 | `group_by`、`measures` |
+| `sort` | 排序 | `by` |
+| `limit` | 限制返回数量 | `value` |
+| `subquery` | v1 受限子查询 | `bind_as`、`query_shape`、`group_by`、`measures` |
+| `filter_subquery` | 对 subquery 输出做过滤 | `source`、`predicate` |
+
+query shape 与 op 序列约束：
+
+| query_shape | 允许 op 序列 |
+| --- | --- |
+| `entity_lookup` | 无 operation，或只使用顶层 `filters`、`projection`、`order_by`、`limit` |
+| `single_hop_traversal` | `traverse`，之后可选 `sort`、`limit` |
+| `variable_path_traversal` | `variable_path`，之后可选 `sort`、`limit` |
+| `named_path_pattern` | `use_path_pattern`，之后可选 `sort`、`limit` |
+| `aggregate_group_by` | `aggregate`，之后可选 `sort`、`limit` |
+| `top_n` | `aggregate`，然后必须有 `sort` 和 `limit` |
+| `two_step_aggregate` | `subquery`，之后可选 `filter_subquery`，之后可选 `sort`，最后可选 `limit` |
+
+子查询边界：
+
+- `subquery.query_shape` v1 只能是 `aggregate_group_by`。
+- `subquery` 内不能再嵌套 `subquery`。
+- `subquery` 内不能包含 `sort` 或 `limit`；排序和限制只能作用在子查询输出之后。
+- `filter_subquery` 的 `source` 必须引用同一层前面出现过的 `subquery.bind_as`。
+- `filter_subquery.predicate.field` 必须引用该 subquery 的 `group_by` alias 或 `measures.alias`。
+- 不允许不带 `measures` 的 `subquery`。只过滤实体应使用 `entity_lookup` 或 traversal query shape。
+
+## 4. 顶层 DSL 结构
 
 ```yaml
 schema_version: restricted_query_dsl_v1
@@ -89,7 +125,7 @@ assumptions: []
 | `limit` | 否 | 限制条数 |
 | `assumptions` | 否 | 高置信 fuzzy 绑定或 warning-only 解释 |
 
-## 4. 单跳遍历
+## 5. 单跳遍历
 
 ```yaml
 query_shape: single_hop_traversal
@@ -132,9 +168,9 @@ projection:
 - `direction` 只能是 `forward` 或 `backward`，不能靠编译器猜。
 - filter field 必须属于对应 target 的 dataset 或可达 metric context。
 
-## 5. 变长路径
+## 6. 变长路径
 
-变长路径用 `variable_path` 表达，必须有 hop 范围和边类型白名单。
+变长路径用 `variable_path` 表达，必须有 hop 范围和 relationship 白名单。
 
 ```yaml
 query_shape: variable_path_traversal
@@ -178,7 +214,7 @@ projection:
 - `through` 节点必须在路径节点类型集合内。
 - 如果用户没有给 hop 上限，Semantic Binder 可以使用 path pattern 默认上限；若无默认上限则反问或拒绝。
 
-## 6. 命名 path pattern
+## 7. 命名 path pattern
 
 path pattern 由 OSI `custom_extensions` 或独立 registry 声明。DSL 通过 `pattern_id` 引用，不内联展开规则。
 
@@ -216,7 +252,7 @@ relationships:
   - link_connects_network_element
 ```
 
-## 7. Path Pattern 角色绑定边界
+## 8. Path Pattern 角色绑定边界
 
 角色命名空间规则：
 
@@ -244,7 +280,7 @@ fallback 规则：
 - 如果无法安全降级，返回 `unsupported_query_shape` 或触发澄清，提示该 path pattern 未暴露所需角色。
 - 不允许编译器临时探入 pattern 内部结构并绕过 registry role 边界。
 
-## 8. 聚合、Top-N 与两步聚合
+## 9. 聚合、Top-N 与两步聚合
 
 单层聚合：
 
@@ -326,9 +362,9 @@ operations:
     value: 5
 ```
 
-v1 的 `subquery` 只允许包裹 `aggregate_group_by`，不能任意嵌套。
+v1 的 `subquery` 只允许包裹 `aggregate_group_by`，不能任意嵌套。`filter_subquery` 是 v1 显式支持的 op，但只允许过滤同一层 `subquery` 输出的 group alias 或 measure alias。
 
-## 9. DSL 不支持时的产品策略
+## 10. DSL 不支持时的产品策略
 
 不支持分三类处理：
 
@@ -344,7 +380,7 @@ v1 的 `subquery` 只允许包裹 `aggregate_group_by`，不能任意嵌套。
 - 不允许 DSL 中出现 `raw_cypher`、`cypher_fragment`、`where_text`。
 - 不允许用字符串拼接绕过 AST。
 
-## 10. 编译前校验
+## 11. 编译前校验
 
 DSL Parser 必须在进入 compiler 前完成：
 

@@ -148,6 +148,14 @@ literal_resolver:
     max_values_per_field: 5000
     hot_value_window_seconds: 86400
     allow_live_lookup_on_cache_miss_for_id_like_values: true
+  live_lookup:
+    single_flight_enabled: true
+    global_rate_limit_per_second: 50
+    per_field_rate_limit_per_second: 10
+    max_concurrent_requests: 20
+    retry_max_attempts: 2
+    retry_backoff_ms: [50, 200]
+    rate_limited_degradation: unresolved_system_busy
 ```
 
 缓存键：
@@ -181,7 +189,39 @@ semantic_model_id + dataset_id + field_id + tenant_id + data_version
 
 上线后如果某字段 cache hit rate 长期偏低，需调整 TTL、主动失效或 hot value 策略。
 
-## 6. Alternatives 生成规则
+## 6. Live Lookup 限流与去重
+
+live lookup 只用于缓存 miss 后的精确确认，不能变成绕过缓存的默认路径。
+
+并发控制：
+
+- 同一 lookup key 必须使用 single-flight 合并并发请求。
+- lookup key 至少包含 `tenant_id`、`semantic_model_id`、`dataset_id`、`field_id`、`normalized_literal`。
+- 同一 key 在 single-flight 窗口内只允许一个实际数据库查询，其余请求等待同一结果。
+- single-flight 结果可短暂写入 hot value 或 negative cache，避免请求风暴。
+
+限流：
+
+- 全局 live lookup 必须有 token bucket 限流。
+- 每个 field 也必须有独立限流，避免某个高频字段压垮数据库。
+- 分布式部署时，限流状态应使用共享存储或网关层限流；如果 v1 只能本地限流，必须在部署文档中标明风险。
+
+失败与降级：
+
+- live lookup 失败最多重试 2 次，使用指数或阶梯退避。
+- 超过限流时返回 `resolved=false`，`match_type=unresolved`，错误码为 `literal_live_lookup_rate_limited`。
+- 用户可见提示使用“系统正忙，暂时无法确认该值是否存在”，不能谎称值不存在。
+- TuGraph 或数据源返回限流/超时错误时，不写入长 TTL negative cache。
+
+监控补充：
+
+- `literal_live_lookup_rate_limited_count`
+- `literal_live_lookup_inflight_count`
+- `literal_live_lookup_singleflight_join_count`
+- `literal_live_lookup_retry_count`
+- `literal_live_lookup_timeout_count`
+
+## 7. Alternatives 生成规则
 
 alternatives 面向用户澄清，必须简短、可选择、有证据：
 
@@ -202,7 +242,7 @@ alternatives 面向用户澄清，必须简短、可选择、有证据：
 - 不能返回跨字段候选，例如把 `status=down` 候选给 `quality_of_service`。
 - 对用户可见的 display 使用业务展示值，不暴露内部编码，除非编码本身就是用户输入对象。
 
-## 7. 与语义校验的关系
+## 8. 与语义校验的关系
 
 LiteralResolver 不决定整个查询是否可生成。它只输出：
 
@@ -219,7 +259,7 @@ Semantic Validator 根据这些信号决策：
 - unresolved 的 substantive literal 必须澄清或失败。
 - 低置信高风险枚举不能自动通过。
 
-## 8. 错误码
+## 9. 错误码
 
 | 错误码 | 含义 | 默认处理 |
 | --- | --- | --- |
@@ -228,8 +268,9 @@ Semantic Validator 根据这些信号决策：
 | `literal_field_mismatch` | 字面值被绑定到错误字段 | repair loop |
 | `literal_cache_stale_suspected` | cache miss 但 live lookup 命中 | 记录 stale signal 并刷新缓存 |
 | `literal_live_lookup_failed` | 实时查询失败 | 保留缓存结果，不静默误判 |
+| `literal_live_lookup_rate_limited` | live lookup 被限流 | 返回 unresolved_system_busy，提示用户稍后重试或收窄条件 |
 
-## 9. 测试要求
+## 10. 测试要求
 
 v1 实现时至少覆盖：
 
@@ -239,3 +280,5 @@ v1 实现时至少覆盖：
 - 高风险枚举不因 embedding 相近被自动改写。
 - top-2 候选接近时要求用户选择。
 - negative cache 在短 TTL 后允许重新查询。
+- 同一 lookup key 并发请求只触发一次实际 live lookup。
+- live lookup 超过限流时不写入长 TTL negative cache。

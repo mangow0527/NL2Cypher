@@ -46,7 +46,9 @@ OSI schema 只能保证结构格式。以下语义约束必须由本系统补充
 
 ```mermaid
 flowchart TD
-  A["NL Question"] --> B["Question Decomposer"]
+  A["NL Question"] --> A1["Input Clarification Gate"]
+  A1 --> B["Question Decomposer"]
+  A1 -->|"underspecified input"| K["Clarification Required"]
   B --> C["Candidate Retriever"]
   C --> D["LiteralResolver"]
   D --> E["Grounded LLM Understanding"]
@@ -70,6 +72,7 @@ flowchart TD
 
 | 层级 | 输入 | 输出 | 主要职责 |
 | --- | --- | --- | --- |
+| Input Clarification Gate | 原始问题 + Decomposer 失败信号 | 继续/澄清 | 在问题本身明显缺少指代对象或 Decomposer 无法产出有效结构时，前置反问用户 |
 | Question Decomposer | 原始问题 | 领域无关问题结构 | 拆出实质词、概念候选、关系动词、字面值、时间词、语气词、输出形态 |
 | Candidate Retriever | 问题结构 + OSI 索引 | 候选集合 | 按 concept、field、metric、relationship、path pattern 召回候选，并携带证据和置信度 |
 | LiteralResolver | 字面值 + 期望字段/实体 | 解析值或 alternatives | 精确匹配、同义词、模糊匹配、distinct value lookup、必要时 live lookup |
@@ -128,8 +131,10 @@ flowchart TD
 所有 LLM 调用必须使用结构化输出 schema。违反 schema 的处理策略：
 
 1. 同一输入最多重试 2 次，重试 prompt 只包含 schema violation 和最小必要上下文。
-2. 连续失败后返回 `generation_failed`，reason 为 `llm_structured_output_invalid`。
-3. 不允许把非 JSON 文本用正则“猜”成可用结果。
+2. Question Decomposer 连续 schema 失败时，先进入 Input Clarification Gate 判断是否属于输入本身不可解析。
+3. 如果问题是“那个东西怎么样了”这类缺少指代对象的输入，返回 `clarification_required`，由 Input Clarification Gate 构造澄清问题。
+4. 如果输入正常但 LLM 仍连续输出非法结构，返回 `generation_failed`，reason 为 `question_decomposer_schema_invalid` 或对应 stage 的 `llm_structured_output_invalid`。
+5. 不允许把非 JSON 文本用正则“猜”成可用结果。
 
 schema 演进策略：
 
@@ -138,12 +143,29 @@ schema 演进策略：
 - 新增字段必须可选；删除或改名字段需要新增 schema version。
 - trace 中必须保留原始输出和 schema 校验错误。
 
+Input Clarification Gate 输出示例：
+
+```json
+{
+  "generation_status": "clarification_required",
+  "source_stage": "input_clarification_gate",
+  "reason_code": "underspecified_reference",
+  "question_zh": "你说的“那个东西”具体指设备、服务、隧道还是端口？",
+  "expected_answer_type": "single_choice",
+  "options": [
+    {"id": "device", "label": "设备"},
+    {"id": "service", "label": "服务"},
+    {"id": "tunnel", "label": "隧道"}
+  ]
+}
+```
+
 ## 6. 校验与反馈决策矩阵
 
 | 情况 | 处理 |
 | --- | --- |
 | 类型错误、边方向错误、metric/dimension 误用 | 进入 repair loop，不打扰用户 |
-| fuzzy match 且首选高置信 | 可继续，但 trace 和结果解释中标记 `assumed_binding` |
+| fuzzy match 且首选高置信 | 可继续，但必须返回用户可见的 `assumption_notice` |
 | 多个候选分数接近 | 反问用户，最多列 3 个选项 |
 | substantive_terms 未覆盖 | 必须反问或告知缺失，不允许静默生成 |
 | time_terms 未覆盖 | 若能映射为明确时间过滤则继续，否则反问 |
@@ -151,10 +173,11 @@ schema 演进策略：
 | DSL 不支持该查询形态 | 返回 `unsupported_query_shape`，必要时给可改写建议 |
 | 编译后 shape 与计划不一致 | 视为 compiler bug，严重告警，不自动重试 |
 
-## 7. 四个先行子设计
+## 7. 先行子设计
 
-本总体设计依赖四个必须先落地的 v1 子设计：
+本总体设计依赖以下必须先落地的设计：
 
+- [Sprint 0 Glossary](./2026-05-27-glossary-design.md)
 - [Restricted Query DSL v1](./2026-05-27-restricted-query-dsl-v1-design.md)
 - [LiteralResolver v1](./2026-05-27-literal-resolver-v1-design.md)
 - [Repair and Clarification Controller v1](./2026-05-27-repair-clarification-controller-v1-design.md)
@@ -177,6 +200,7 @@ v1 明确不支持以下能力：
 设计进入实现前应满足：
 
 - OSI 模型可被加载为 semantic registry。
+- Sprint 0 术语表已固化到代码命名约定。
 - Question Decomposer 能稳定区分 substantive、stopword、modality、time、unparsed。
 - LiteralResolver 对枚举值、ID、名称的解析路径独立可测。
 - Restricted DSL 能覆盖单跳、变长路径、命名 path pattern、聚合、Top-N、两步聚合的 v1 子集。
