@@ -130,6 +130,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "infrastructure",
         "literals",
         "observability",
+        "retrieval",
         "semantic_model",
     }
     assert _source_names(SERVICE_ROOT / "app") <= allowed_app_children
@@ -174,6 +175,15 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
     }
     assert _source_names(SERVICE_ROOT / "app" / "literals") <= allowed_literals_files
 
+    allowed_retrieval_files = {
+        "__init__.py",
+        "index.py",
+        "models.py",
+        "retriever.py",
+        "scoring.py",
+    }
+    assert _source_names(SERVICE_ROOT / "app" / "retrieval") <= allowed_retrieval_files
+
     allowed_tests = {
         "__init__.py",
         "compiler",
@@ -183,6 +193,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "integration",
         "literals",
         "observability",
+        "retrieval",
         "semantic_model",
         "test_input_output_stub_contract.py",
     }
@@ -235,6 +246,9 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
 
     allowed_observability_tests = {"__init__.py", "test_stage_contract.py", "test_trace_builder.py"}
     assert _source_names(SERVICE_ROOT / "tests" / "observability") <= allowed_observability_tests
+
+    allowed_retrieval_tests = {"__init__.py", "test_candidate_retriever.py"}
+    assert _source_names(SERVICE_ROOT / "tests" / "retrieval") <= allowed_retrieval_tests
 
 
 def _source_names(path: Path) -> set[str]:
