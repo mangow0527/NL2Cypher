@@ -198,6 +198,8 @@ services/cypher_generator_agent/tests/
 | infra | 配置、CI、testing-agent 对接、trace/metrics、发布边界 |
 | QA | fixture、golden tests、回归矩阵 |
 
+本 IR 的 sprint 容量估算默认团队规模为 2-3 名 backend、0.5 名 LLM、0.5 名 infra、0.5 名 QA。团队规模不同，需要按关键路径和角色可用性调整 sprint 承诺，不应机械照搬每个 sprint 的 IR 数量。
+
 ## 5. MVP 分层
 
 ### MVP-0：确定性底座
@@ -787,7 +789,7 @@ RETURN tun.id AS tunnel_id
 
 目标：在完整 LLM 接入前，用 2-3 天验证 Question Decomposer 和 Grounded Understanding 的 prompt 可行性，避免 Sprint 3 才暴露 prompt/schema 风险。
 
-依赖：IR-01、IR-08，可与 IR-09 到 IR-12 并行。
+依赖：IR-01，可与 IR-08 后续验证对齐。
 估算：S，time-box 2-3 天。
 角色：LLM、backend。
 
@@ -795,7 +797,7 @@ RETURN tun.id AS tunnel_id
 
 - 选定 v1 LLM provider 候选，例如 OpenAI、Anthropic 或自建模型。
 - 用 Golden Test Set v1 中 5 个真实问题跑 Question Decomposer prompt。
-- 用同一批问题和候选集合跑 Grounded Understanding prompt。
+- 用同一批问题和手工编排的候选集合跑 Grounded Understanding prompt；不要求真实 Candidate Retriever 已完成。
 - 记录 schema failure rate、term classification accuracy、candidate invention rate、平均 token usage。
 - 输出 spike report，不接入主 pipeline，不阻塞确定性底座开发。
 
@@ -951,7 +953,7 @@ RETURN tun.id AS tunnel_id
 
 - 跑 Golden Test Set v1 的 generated 和 non-success 子集。
 - 记录每个 stage latency、总 latency、LLM call count、schema retry count、token usage。
-- 输出本地 baseline artifact，例如 JSON summary。
+- 输出 baseline artifact 到 `reports/baseline_YYYYMMDD.json`；CI 可作为 artifact 保存，发布前由 infra/QA 手动对比关键指标变化。
 - 不在此 IR 中做性能优化。
 
 验收：
@@ -959,6 +961,7 @@ RETURN tun.id AS tunnel_id
 - baseline artifact 包含 p50/p95 latency、LLM call count、token usage。
 - trace 中每个 stage 都有 duration。
 - CI 可选择只跑小样本；完整 baseline 可作为 nightly 或手动任务。
+- PR 不因 baseline 数值波动自动失败，除非后续单独定义 SLO。
 
 ### IR-17 Variable Path Traversal
 
@@ -1137,6 +1140,12 @@ Sprint 0 容量边界：
 - 如果团队只有 1 名后端工程师，Sprint 0 应只承诺 IR-00、IR-01、IR-02，IR-03a 作为 stretch。
 - 如果 Sprint 固定为 2 周，不建议把 IR-03b 放入 Sprint 0。
 
+Sprint 4 容量边界：
+
+- Sprint 4 同时包含 IR-03b、IR-17、IR-18、IR-19、IR-20，是 v1 最重的 sprint。
+- Sprint 4 启动前必须重新评估团队容量；如果只能保一个 query shape 扩展，应优先 IR-17 或 IR-18，而不是同时打开全部形态。
+- 如果 Sprint 4 跑超时，IR-20 可以推到 v1.1，因为 Golden Test Set v1 已在 IR-01 建立，IR-20 主要是 regression matrix 和 CI 自动化收束。
+
 ## 8. 跨 IR 验收矩阵
 
 | 架构要求 | 对应 IR |
@@ -1192,6 +1201,17 @@ Sprint 0 容量边界：
 - 把 `user_visible_notices` 当 Controller 手写字段，而不是 assumptions 的派生展示。
 - 只比较 Cypher 字符串，不比较 DSL AST 和 shape。
 - 在 trace 里记录数据库执行结果或敏感连接信息。
+
+## 10.5 Risk Register
+
+| 风险 | 可能性 | 影响 | 主要缓解 |
+| --- | --- | --- | --- |
+| Sprint 0 关键路径超载 | 中 | 高 | Self-Validation 拆成 IR-03a/IR-03b；1 名后端时 IR-03a 作为 stretch |
+| 静态 value index 新鲜度不足 | 高 | 中 | v1 明确只消费静态 `value_index`，产品文档提示新实体需等下一次发布 |
+| LLM schema failure 或候选发明率过高 | 中 | 高 | Sprint 1 执行 SP-01，Sprint 3 前调整 prompt 或降级策略 |
+| Self-Validation Full 工作量外溢 | 中 | 高 | Sprint 0 只做 MVP；IR-03b 单独估算为 L，并允许延后 query shape 扩展 |
+| Sprint 4 容量过重 | 高 | 中 | Sprint 4 启动前重排，必要时把 IR-20 推到 v1.1 |
+| Testing-agent trace contract 过渡期不一致 | 中 | 中 | IR-12 标记为过渡 smoke path，IR-16 专门收口完整 contract |
 
 ## 11. 后续计划文档拆分建议
 
