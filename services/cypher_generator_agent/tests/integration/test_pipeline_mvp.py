@@ -161,6 +161,30 @@ def test_self_validation_failure_records_self_validation_stage_without_final_cyp
     assert self_validation_stage["output_ref"]["value"]["valid"] is False
 
 
+def test_path_pattern_shape_mismatch_is_reported_by_self_validation_stage() -> None:
+    output = run_pipeline(
+        question="隧道 tun-mpls-001 经过哪些设备",
+        qa_id="shape-mismatch",
+        generation_run_id="run-shape-mismatch",
+        _path_pattern_template_overrides_for_tests={
+            "tunnel_full_path": (
+                "MATCH (t:Tunnel {id: $tunnel_id})-[p:PATH_THROUGH]->(ne:NetworkElement)\n"
+                "RETURN ne AS wrong_device, p.hop_order AS hop"
+            )
+        },
+    )
+
+    assert output.status == "generation_failed"
+    assert output.cypher is None
+    assert output.dsl is None
+    assert output.failure is not None
+    assert output.failure.reason == "compiler_shape_mismatch"
+    assert _stage_names(output.trace)[-3:] == ["cypher_self_validation", "repair_controller", "output"]
+    self_validation_stage = output.trace["stages"][-3]
+    assert self_validation_stage["status"] == "failed"
+    assert self_validation_stage["errors"][0]["code"] == "compiler_shape_mismatch"
+
+
 def test_dsl_parser_failure_is_recorded_in_dsl_parser_stage(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

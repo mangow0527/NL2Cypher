@@ -27,7 +27,7 @@ from services.cypher_generator_agent.app.dsl.ast import (
 from services.cypher_generator_agent.app.dsl.models import QueryShape
 from services.cypher_generator_agent.app.semantic_model import GraphSemanticRegistry
 
-from .projection import extract_return_aliases, projection_aliases, projection_item_alias
+from .projection import projection_aliases, projection_item_alias
 from .projection import extract_parameter_names, is_cypher_identifier
 from .templates import get_path_pattern_template
 
@@ -289,13 +289,6 @@ class CypherCompiler:
             operation.path_pattern_name,
             self._path_pattern_template_overrides_for_tests,
         )
-        expected_aliases = projection_aliases(ast.projection)
-        actual_aliases = extract_return_aliases(cypher)
-        if actual_aliases != expected_aliases:
-            raise CypherCompilerError(
-                "path_pattern RETURN aliases must match DSL projection aliases: "
-                f"expected {expected_aliases}, got {actual_aliases}"
-            )
         parameters = {key: value.effective_value for key, value in operation.parameters.items()}
         _validate_template_parameters(cypher, parameters)
         return cypher, parameters
