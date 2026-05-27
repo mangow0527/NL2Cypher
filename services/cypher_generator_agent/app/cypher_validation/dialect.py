@@ -10,7 +10,20 @@ DIALECT_FAILURE_CODE = "target_dialect_static_error"
 MAX_VARIABLE_PATH_HOPS = 8
 REL_PATTERN_RE = re.compile(r"\[(?P<body>[^\[\]]*)\]")
 VARIABLE_LENGTH_RE = re.compile(r"\*(?P<range>\d*(?:\.\.\d*)?)?")
-ALLOWED_FUNCTIONS = frozenset({"count", "sum", "avg", "min", "max"})
+ALLOWED_FUNCTIONS = frozenset(
+    {
+        "avg",
+        "coalesce",
+        "collect",
+        "count",
+        "max",
+        "min",
+        "sum",
+        "tofloat",
+        "tointeger",
+        "tostring",
+    }
+)
 FUNCTION_CALL_RE = re.compile(r"(?P<name>[A-Za-z_][A-Za-z0-9_.]*)\s*\(")
 CLAUSE_KEYWORDS = frozenset({"MATCH", "WHERE", "WITH", "RETURN", "ORDER", "LIMIT", "SKIP", "UNWIND"})
 DYNAMIC_SCHEMA_RES = (

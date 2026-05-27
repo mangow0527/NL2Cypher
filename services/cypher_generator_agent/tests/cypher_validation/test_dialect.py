@@ -44,6 +44,26 @@ def test_allowed_aggregate_functions_pass_target_dialect(
 @pytest.mark.parametrize(
     "cypher",
     [
+        "MATCH (ne:NetworkElement) RETURN collect(ne.id) AS device_ids",
+        "MATCH (ne:NetworkElement) RETURN toString(ne.id) AS device_id",
+        "MATCH (ne:NetworkElement) RETURN toInteger(ne.id) AS numeric_id",
+        "MATCH (t:Tunnel) RETURN toFloat(t.bandwidth) AS bandwidth",
+        "MATCH (ne:NetworkElement) RETURN coalesce(ne.name, 'unknown') AS device_name",
+    ],
+)
+def test_spec_allowlisted_scalar_functions_pass_target_dialect(
+    validator: CypherSelfValidator,
+    cypher: str,
+) -> None:
+    result = validator.validate_generated_query(cypher)
+
+    assert result.valid is True
+    assert {check.name: check.status for check in result.checks}["dialect"] == "passed"
+
+
+@pytest.mark.parametrize(
+    "cypher",
+    [
         "MATCH p = shortestPath((a:NetworkElement)-[:HAS_PORT*1..8]->(b:Port)) RETURN p",
         "MATCH (ne:NetworkElement) RETURN apoc.text.join([ne.id], ',') AS joined",
     ],
