@@ -142,6 +142,8 @@ def _validate_function_allowlist(
     errors: list[CypherValidationIssue],
 ) -> None:
     for match in FUNCTION_CALL_RE.finditer(parsed.cypher):
+        if _inside_string(parsed.cypher, match.start()):
+            continue
         name = match.group("name")
         if name.upper() in CLAUSE_KEYWORDS:
             continue

@@ -175,3 +175,14 @@ def test_pattern_like_text_inside_list_string_literal_is_allowed(
 
     assert result.valid is True
     assert result.errors == []
+
+
+def test_function_like_text_inside_string_literal_is_allowed(
+    validator: CypherSelfValidator,
+) -> None:
+    result = validator.validate_generated_query(
+        "MATCH (ne:NetworkElement) RETURN 'shortestPath((a)-->(b)) and apoc.text.join()' AS text"
+    )
+
+    assert result.valid is True
+    assert result.errors == []

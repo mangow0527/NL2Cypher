@@ -192,6 +192,8 @@ def _validate_var_properties(
     errors: list[CypherValidationIssue],
 ) -> None:
     for match in VAR_PROPERTY_RE.finditer(cypher):
+        if _inside_string(cypher, match.start()):
+            continue
         variable = match.group("var")
         property_name = match.group("property")
         binding = bindings.get(variable)
@@ -321,6 +323,8 @@ def _iter_property_operator_matches(cypher: str):
 def _iter_numeric_aggregate_calls(cypher: str) -> list[tuple[str, str, str]]:
     calls: list[tuple[str, str, str]] = []
     for match in NUMERIC_AGG_START_RE.finditer(cypher):
+        if _inside_string(cypher, match.start()):
+            continue
         open_index = cypher.find("(", match.start())
         close_index = _matching_parenthesis(cypher, open_index)
         if close_index is None:

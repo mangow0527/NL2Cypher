@@ -169,6 +169,18 @@ def test_operators_accept_compatible_property_types(
     assert result.errors == []
 
 
+def test_schema_reference_ignores_property_like_text_inside_string_literals(
+    validator: CypherSelfValidator,
+) -> None:
+    result = validate(
+        validator,
+        "MATCH (ne:NetworkElement) RETURN 'ne.unknown_property and avg(ne.name)' AS text",
+    )
+
+    assert result.valid is True
+    assert result.errors == []
+
+
 def test_reverse_edge_direction_uses_reversed_endpoint_validation(
     validator: CypherSelfValidator,
 ) -> None:
