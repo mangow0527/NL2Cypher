@@ -110,7 +110,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
     allowed_top_level = {"__init__.py", "app", "tests"}
     assert _source_names(SERVICE_ROOT) <= allowed_top_level
 
-    allowed_app_children = {"__init__.py", "api", "core", "infrastructure", "semantic_model"}
+    allowed_app_children = {"__init__.py", "api", "core", "cypher_validation", "infrastructure", "semantic_model"}
     assert _source_names(SERVICE_ROOT / "app") <= allowed_app_children
 
     allowed_core_files = {"__init__.py", "errors.py", "result.py"}
@@ -128,7 +128,24 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
     }
     assert _source_names(SERVICE_ROOT / "app" / "semantic_model") <= allowed_semantic_model_files
 
-    allowed_tests = {"__init__.py", "fixtures", "integration", "semantic_model", "test_input_output_stub_contract.py"}
+    allowed_cypher_validation_files = {
+        "__init__.py",
+        "models.py",
+        "parser.py",
+        "readonly.py",
+        "schema_reference.py",
+        "validator.py",
+    }
+    assert _source_names(SERVICE_ROOT / "app" / "cypher_validation") <= allowed_cypher_validation_files
+
+    allowed_tests = {
+        "__init__.py",
+        "cypher_validation",
+        "fixtures",
+        "integration",
+        "semantic_model",
+        "test_input_output_stub_contract.py",
+    }
     assert _source_names(SERVICE_ROOT / "tests") <= allowed_tests
 
     allowed_integration_files = {"__init__.py", "test_api_contract.py"}
@@ -136,6 +153,14 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
 
     allowed_semantic_model_tests = {"__init__.py", "test_loader.py", "test_registry.py"}
     assert _source_names(SERVICE_ROOT / "tests" / "semantic_model") <= allowed_semantic_model_tests
+
+    allowed_cypher_validation_tests = {
+        "__init__.py",
+        "test_readonly.py",
+        "test_schema_reference_mvp.py",
+        "test_validator_entrypoints.py",
+    }
+    assert _source_names(SERVICE_ROOT / "tests" / "cypher_validation") <= allowed_cypher_validation_tests
 
     allowed_fixture_files = {
         "__init__.py",

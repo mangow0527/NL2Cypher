@@ -1,0 +1,121 @@
+from __future__ import annotations
+
+from services.cypher_generator_agent.app.semantic_model import GraphSemanticRegistry
+
+from .models import (
+    CypherSelfValidationRequest,
+    CypherSelfValidationResult,
+    CypherValidationCheck,
+    CypherValidationIssue,
+    SourceKind,
+)
+from .parser import parse_cypher
+from .readonly import validate_readonly
+from .schema_reference import validate_schema_references
+
+
+class CypherSelfValidator:
+    def __init__(self, registry: GraphSemanticRegistry) -> None:
+        self.registry = registry
+
+    def validate(self, request: CypherSelfValidationRequest) -> CypherSelfValidationResult:
+        return self._validate(request)
+
+    def validate_generated_query(self, cypher: str) -> CypherSelfValidationResult:
+        return self._validate(
+            CypherSelfValidationRequest(
+                mode="generated_query",
+                source_kind="compiled_query",
+                cypher=cypher,
+            )
+        )
+
+    def validate_model_artifact(
+        self,
+        cypher: str,
+        *,
+        source_kind: SourceKind,
+        source_name: str,
+    ) -> CypherSelfValidationResult:
+        return self._validate(
+            CypherSelfValidationRequest(
+                mode="model_artifact",
+                source_kind=source_kind,
+                source_name=source_name,
+                cypher=cypher,
+            )
+        )
+
+    def _validate(self, request: CypherSelfValidationRequest) -> CypherSelfValidationResult:
+        checks: list[CypherValidationCheck] = []
+        errors: list[CypherValidationIssue] = []
+        warnings: list[CypherValidationIssue] = []
+
+        parsed, syntax_errors = parse_cypher(request.cypher)
+        if syntax_errors:
+            errors.extend(syntax_errors)
+            checks.append(CypherValidationCheck(name="syntax", status="failed"))
+            checks.extend(_skipped_follow_up_checks())
+            return _result(request, checks, errors, warnings)
+        if parsed is None:
+            checks.append(CypherValidationCheck(name="syntax", status="failed"))
+            checks.extend(_skipped_follow_up_checks())
+            return _result(request, checks, errors, warnings)
+        checks.append(CypherValidationCheck(name="syntax", status="passed"))
+
+        readonly_errors = validate_readonly(parsed)
+        if readonly_errors:
+            errors.extend(readonly_errors)
+            checks.append(CypherValidationCheck(name="readonly", status="failed"))
+            checks.extend(_skipped_after_readonly_checks())
+            return _result(request, checks, errors, warnings)
+        checks.append(CypherValidationCheck(name="readonly", status="passed"))
+
+        schema_errors = validate_schema_references(parsed, self.registry)
+        if schema_errors:
+            errors.extend(schema_errors)
+            checks.append(CypherValidationCheck(name="schema_reference", status="failed"))
+            checks.extend(_ir03b_check_slots())
+            return _result(request, checks, errors, warnings)
+        checks.append(CypherValidationCheck(name="schema_reference", status="passed"))
+        checks.extend(_ir03b_check_slots())
+
+        return _result(request, checks, errors, warnings)
+
+
+def _result(
+    request: CypherSelfValidationRequest,
+    checks: list[CypherValidationCheck],
+    errors: list[CypherValidationIssue],
+    warnings: list[CypherValidationIssue],
+) -> CypherSelfValidationResult:
+    return CypherSelfValidationResult(
+        valid=not errors,
+        mode=request.mode,
+        checks=checks,
+        errors=errors,
+        warnings=warnings,
+    )
+
+
+def _skipped_follow_up_checks() -> list[CypherValidationCheck]:
+    return [
+        CypherValidationCheck(name="readonly", status="skipped"),
+        CypherValidationCheck(name="schema_reference", status="skipped"),
+        *_ir03b_check_slots(),
+    ]
+
+
+def _skipped_after_readonly_checks() -> list[CypherValidationCheck]:
+    return [
+        CypherValidationCheck(name="schema_reference", status="skipped"),
+        *_ir03b_check_slots(),
+    ]
+
+
+def _ir03b_check_slots() -> list[CypherValidationCheck]:
+    return [
+        CypherValidationCheck(name="shape", status="skipped"),
+        CypherValidationCheck(name="dialect", status="skipped"),
+        CypherValidationCheck(name="model_artifact", status="skipped"),
+    ]
