@@ -123,6 +123,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
     allowed_app_children = {
         "__init__.py",
         "api",
+        "binding",
         "compiler",
         "core",
         "cypher_validation",
@@ -184,8 +185,12 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
     }
     assert _source_names(SERVICE_ROOT / "app" / "retrieval") <= allowed_retrieval_files
 
+    allowed_binding_files = {"__init__.py", "binder.py", "models.py"}
+    assert _source_names(SERVICE_ROOT / "app" / "binding") <= allowed_binding_files
+
     allowed_tests = {
         "__init__.py",
+        "binding",
         "compiler",
         "cypher_validation",
         "dsl",
@@ -249,6 +254,9 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
 
     allowed_retrieval_tests = {"__init__.py", "test_candidate_retriever.py"}
     assert _source_names(SERVICE_ROOT / "tests" / "retrieval") <= allowed_retrieval_tests
+
+    allowed_binding_tests = {"__init__.py", "test_binder.py"}
+    assert _source_names(SERVICE_ROOT / "tests" / "binding") <= allowed_binding_tests
 
 
 def _source_names(path: Path) -> set[str]:

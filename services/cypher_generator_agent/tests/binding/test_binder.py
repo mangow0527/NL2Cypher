@@ -1,0 +1,553 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from services.cypher_generator_agent.app.binding import (
+    BindingValidationError,
+    SemanticBinder,
+)
+from services.cypher_generator_agent.app.literals.models import (
+    LiteralAlternative,
+    LiteralEvidence,
+    LiteralResolverResult,
+)
+from services.cypher_generator_agent.app.retrieval.models import (
+    CandidateEvidence,
+    SemanticCandidate,
+)
+from services.cypher_generator_agent.app.semantic_model.loader import load_graph_semantic_model
+
+
+FIXTURE_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "fixtures"
+    / "network_topology_graph_model.yaml"
+)
+
+
+@pytest.fixture
+def binder() -> SemanticBinder:
+    return SemanticBinder(load_graph_semantic_model(FIXTURE_PATH).registry)
+
+
+def test_gold_service_tunnel_question_binds_stable_plan(binder: SemanticBinder) -> None:
+    literal_result = LiteralResolverResult(
+        raw_literal="Gold",
+        resolved=True,
+        resolved_value="GOLD",
+        normalized_value="GOLD",
+        match_type="value_synonym",
+        confidence=0.98,
+        expected_vertex="Service",
+        expected_property="quality_of_service",
+        evidence=[
+            LiteralEvidence(
+                source="property.value_synonyms",
+                matched="Gold",
+                target="GOLD",
+            )
+        ],
+    )
+
+    plan = binder.bind(
+        {
+            "query_shape": "single_hop",
+            "selected_vertices": ["Service", "Tunnel"],
+            "selected_edges": ["SERVICE_USES_TUNNEL"],
+            "selected_properties": [
+                {"owner": "Service", "name": "quality_of_service"},
+            ],
+            "selected_literals": [literal_result.model_dump()],
+            "filters": [
+                {
+                    "owner": "Service",
+                    "property": "quality_of_service",
+                    "operator": "=",
+                    "raw_literal": "Gold",
+                }
+            ],
+            "projection": [{"semantic_type": "vertex", "name": "Tunnel"}],
+            "limit": 50,
+        },
+        candidates=_gold_candidates(),
+    )
+
+    assert plan.query_shape == "single_hop_traversal"
+    assert [binding.name for binding in plan.vertex_bindings] == ["Service", "Tunnel"]
+    assert [binding.name for binding in plan.edge_bindings] == ["SERVICE_USES_TUNNEL"]
+    assert [(binding.owner, binding.name) for binding in plan.property_bindings] == [
+        ("Service", "quality_of_service")
+    ]
+    assert plan.literal_bindings[0].raw_literal == "Gold"
+    assert plan.literal_bindings[0].value == "GOLD"
+    assert plan.filters[0].owner == "Service"
+    assert plan.filters[0].property == "quality_of_service"
+    assert plan.filters[0].operator == "eq"
+    assert plan.filters[0].value == "GOLD"
+    assert plan.filters[0].literal.raw_literal == "Gold"
+    assert plan.projection == [{"semantic_type": "vertex", "name": "Tunnel"}]
+    assert plan.limit == 50
+
+
+def test_rejects_llm_vertex_name_without_candidate_or_registry_match(binder: SemanticBinder) -> None:
+    with pytest.raises(BindingValidationError, match="NetworkDevice"):
+        binder.bind(
+            {
+                "query_shape": "lookup",
+                "selected_vertices": ["NetworkDevice"],
+            },
+            candidates=[
+                _candidate("vertex", "NetworkElement"),
+                _candidate("vertex", "Service"),
+            ],
+        )
+
+
+def test_rejects_registry_vertex_when_candidate_is_missing(binder: SemanticBinder) -> None:
+    with pytest.raises(BindingValidationError, match="not present in candidate set"):
+        binder.bind(
+            {
+                "query_shape": "lookup",
+                "selected_vertices": ["Tunnel"],
+            },
+            candidates=[
+                _candidate("vertex", "Service"),
+            ],
+        )
+
+
+def test_rejects_candidate_property_when_registry_property_is_missing(binder: SemanticBinder) -> None:
+    with pytest.raises(BindingValidationError, match="not found in semantic registry"):
+        binder.bind(
+            {
+                "query_shape": "lookup",
+                "selected_properties": ["Service.missing_property"],
+            },
+            candidates=[
+                _candidate(
+                    "property",
+                    "Service.missing_property",
+                    owner="Service",
+                    semantic_name="missing_property",
+                ),
+            ],
+        )
+
+
+def test_rejects_hallucinated_projection_reference(binder: SemanticBinder) -> None:
+    with pytest.raises(BindingValidationError, match="projection"):
+        binder.bind(
+            {
+                "query_shape": "lookup",
+                "selected_vertices": ["Service"],
+                "projection": [{"semantic_type": "vertex", "name": "NetworkDevice"}],
+            },
+            candidates=[
+                _candidate("vertex", "Service"),
+            ],
+        )
+
+
+def test_rejects_projection_name_without_semantic_type(binder: SemanticBinder) -> None:
+    with pytest.raises(BindingValidationError, match="projection"):
+        binder.bind(
+            {
+                "query_shape": "lookup",
+                "selected_vertices": ["Service"],
+                "projection": [{"name": "NetworkDevice"}],
+            },
+            candidates=[
+                _candidate("vertex", "Service"),
+            ],
+        )
+
+
+def test_rejects_projection_source_without_namespace(binder: SemanticBinder) -> None:
+    with pytest.raises(BindingValidationError, match="projection"):
+        binder.bind(
+            {
+                "query_shape": "lookup",
+                "selected_vertices": ["Service"],
+                "projection": [{"source": "NetworkDevice"}],
+            },
+            candidates=[
+                _candidate("vertex", "Service"),
+            ],
+        )
+
+
+def test_allows_namespaced_projection_source_reference(binder: SemanticBinder) -> None:
+    plan = binder.bind(
+        {
+            "query_shape": "lookup",
+            "selected_vertices": ["Service"],
+            "projection": [{"source": "service_counts.total"}],
+        },
+        candidates=[
+            _candidate("vertex", "Service"),
+        ],
+    )
+
+    assert plan.projection == [{"source": "service_counts.total"}]
+
+
+def test_rejects_source_reference_with_extra_reference_like_fields(binder: SemanticBinder) -> None:
+    with pytest.raises(BindingValidationError, match="source"):
+        binder.bind(
+            {
+                "query_shape": "lookup",
+                "selected_vertices": ["Service"],
+                "projection": [{"source": "service_counts.total", "name": "NetworkDevice"}],
+            },
+            candidates=[
+                _candidate("vertex", "Service"),
+            ],
+        )
+
+
+def test_dsl_shaped_projection_property_is_validated_against_candidates(
+    binder: SemanticBinder,
+) -> None:
+    plan = binder.bind(
+        {
+            "query_shape": "single_hop",
+            "selected_vertices": ["Service", "Tunnel"],
+            "projection": [
+                {
+                    "target": "tunnel",
+                    "property": {"owner": "Tunnel", "name": "id"},
+                }
+            ],
+        },
+        candidates=[
+            _candidate("vertex", "Service"),
+            _candidate("vertex", "Tunnel"),
+            _candidate("property", "Tunnel.id", owner="Tunnel", semantic_name="id"),
+        ],
+    )
+
+    assert plan.projection == [{"target": "tunnel", "property": {"owner": "Tunnel", "name": "id"}}]
+
+
+def test_rejects_hallucinated_sort_reference(binder: SemanticBinder) -> None:
+    with pytest.raises(BindingValidationError, match="sort"):
+        binder.bind(
+            {
+                "query_shape": "lookup",
+                "selected_vertices": ["Service"],
+                "sort": [{"semantic_type": "property", "owner": "Service", "name": "missing_property"}],
+            },
+            candidates=[
+                _candidate("vertex", "Service"),
+            ],
+        )
+
+
+def test_rejects_sort_name_without_semantic_type(binder: SemanticBinder) -> None:
+    with pytest.raises(BindingValidationError, match="sort"):
+        binder.bind(
+            {
+                "query_shape": "lookup",
+                "selected_vertices": ["Service"],
+                "sort": [{"name": "NetworkDevice"}],
+            },
+            candidates=[
+                _candidate("vertex", "Service"),
+            ],
+        )
+
+
+def test_rejects_sort_source_without_namespace(binder: SemanticBinder) -> None:
+    with pytest.raises(BindingValidationError, match="sort"):
+        binder.bind(
+            {
+                "query_shape": "lookup",
+                "selected_vertices": ["Service"],
+                "sort": [{"source": "name", "direction": "asc"}],
+            },
+            candidates=[
+                _candidate("vertex", "Service"),
+            ],
+        )
+
+
+def test_rejects_filter_value_without_literal_resolver_result(binder: SemanticBinder) -> None:
+    with pytest.raises(BindingValidationError, match="literal"):
+        binder.bind(
+            {
+                "query_shape": "lookup",
+                "selected_vertices": ["Service"],
+                "selected_properties": ["Service.quality_of_service"],
+                "filters": [
+                    {
+                        "owner": "Service",
+                        "property": "quality_of_service",
+                        "operator": "=",
+                        "raw_literal": "Gold",
+                        "value": "GOLD",
+                    }
+                ],
+            },
+            candidates=[
+                _candidate("vertex", "Service"),
+                _candidate(
+                    "property",
+                    "Service.quality_of_service",
+                    owner="Service",
+                    semantic_name="quality_of_service",
+                ),
+            ],
+        )
+
+
+def test_rejects_filter_literal_result_for_wrong_property(binder: SemanticBinder) -> None:
+    wrong_literal = LiteralResolverResult(
+        raw_literal="Gold",
+        resolved=True,
+        resolved_value="GOLD",
+        normalized_value="GOLD",
+        match_type="value_synonym",
+        confidence=0.98,
+        expected_vertex="Service",
+        expected_property="service_type",
+    )
+
+    with pytest.raises(BindingValidationError, match="does not match filter"):
+        binder.bind(
+            {
+                "query_shape": "lookup",
+                "selected_vertices": ["Service"],
+                "selected_properties": ["Service.quality_of_service"],
+                "filters": [
+                    {
+                        "owner": "Service",
+                        "property": "quality_of_service",
+                        "operator": "=",
+                        "raw_literal": "Gold",
+                        "literal_result": wrong_literal.model_dump(),
+                    }
+                ],
+            },
+            candidates=[
+                _candidate("vertex", "Service"),
+                _candidate(
+                    "property",
+                    "Service.quality_of_service",
+                    owner="Service",
+                    semantic_name="quality_of_service",
+                ),
+            ],
+        )
+
+
+def test_rejects_unsupported_query_shape_alias(binder: SemanticBinder) -> None:
+    with pytest.raises(BindingValidationError, match="query_shape"):
+        binder.bind(
+            {
+                "query_shape": "shortest_path",
+                "selected_vertices": ["Service"],
+            },
+            candidates=[
+                _candidate("vertex", "Service"),
+            ],
+        )
+
+
+def test_rejects_unsupported_filter_operator(binder: SemanticBinder) -> None:
+    literal_result = LiteralResolverResult(
+        raw_literal="Gold",
+        resolved=True,
+        resolved_value="GOLD",
+        normalized_value="GOLD",
+        match_type="value_synonym",
+        confidence=0.98,
+        expected_vertex="Service",
+        expected_property="quality_of_service",
+    )
+
+    with pytest.raises(BindingValidationError, match="operator"):
+        binder.bind(
+            {
+                "query_shape": "lookup",
+                "selected_vertices": ["Service"],
+                "selected_properties": ["Service.quality_of_service"],
+                "selected_literals": [literal_result.model_dump()],
+                "filters": [
+                    {
+                        "owner": "Service",
+                        "property": "quality_of_service",
+                        "operator": "roughly_equals",
+                        "raw_literal": "Gold",
+                    }
+                ],
+            },
+            candidates=[
+                _candidate("vertex", "Service"),
+                _candidate(
+                    "property",
+                    "Service.quality_of_service",
+                    owner="Service",
+                    semantic_name="quality_of_service",
+                ),
+            ],
+        )
+
+
+def test_high_confidence_fuzzy_literal_result_becomes_assumption(binder: SemanticBinder) -> None:
+    fuzzy_result = LiteralResolverResult(
+        raw_literal="voic",
+        resolved=True,
+        resolved_value="VOICE",
+        normalized_value="VOICE",
+        match_type="fuzzy_text",
+        confidence=0.97,
+        expected_vertex="Service",
+        expected_property="service_type",
+        evidence=[
+            LiteralEvidence(
+                source="property.valid_values",
+                matched="voic",
+                target="VOICE",
+            )
+        ],
+    )
+
+    plan = binder.bind(
+        {
+            "query_shape": "lookup",
+            "selected_vertices": ["Service"],
+            "selected_properties": ["Service.service_type"],
+            "selected_literals": [fuzzy_result.model_dump()],
+            "filters": [
+                {
+                    "owner": "Service",
+                    "property": "service_type",
+                    "operator": "=",
+                    "raw_literal": "voic",
+                }
+            ],
+        },
+        candidates=[
+            _candidate("vertex", "Service"),
+            _candidate("property", "Service.service_type", owner="Service", semantic_name="service_type"),
+        ],
+    )
+
+    assert plan.filters[0].value == "VOICE"
+    assert plan.assumptions == [
+        {
+            "type": "literal_fuzzy_match",
+            "raw_literal": "voic",
+            "owner": "Service",
+            "property": "service_type",
+            "value": "VOICE",
+            "confidence": 0.97,
+        }
+    ]
+
+
+def test_unresolved_literal_and_alternatives_are_preserved_in_filter_value(
+    binder: SemanticBinder,
+) -> None:
+    unresolved_result = LiteralResolverResult(
+        raw_literal="gol",
+        resolved=False,
+        resolved_value=None,
+        normalized_value=None,
+        match_type="unresolved",
+        confidence=0.0,
+        expected_vertex="Service",
+        expected_property="quality_of_service",
+        alternatives=[
+            LiteralAlternative(
+                value="GOLD",
+                display="Gold",
+                confidence=0.83,
+                source="property.valid_values",
+                why="closest local literal candidate",
+            ),
+            LiteralAlternative(
+                value="SILVER",
+                display="Silver",
+                confidence=0.52,
+                source="property.valid_values",
+                why="closest local literal candidate",
+            ),
+        ],
+        requires_user_choice=True,
+        error_code="literal_ambiguous",
+    )
+
+    plan = binder.bind(
+        {
+            "query_shape": "lookup",
+            "selected_vertices": ["Service"],
+            "selected_properties": ["Service.quality_of_service"],
+            "literal_resolver_results": [unresolved_result.model_dump()],
+            "filters": [
+                {
+                    "owner": "Service",
+                    "property": "quality_of_service",
+                    "operator": "=",
+                    "raw_literal": "gol",
+                }
+            ],
+        },
+        candidates=[
+            _candidate("vertex", "Service"),
+            _candidate(
+                "property",
+                "Service.quality_of_service",
+                owner="Service",
+                semantic_name="quality_of_service",
+            ),
+        ],
+    )
+
+    literal = plan.filters[0].literal
+    assert plan.filters[0].value is None
+    assert literal.resolved is False
+    assert literal.raw_literal == "gol"
+    assert literal.requires_user_choice is True
+    assert [alternative.value for alternative in literal.alternatives] == ["GOLD", "SILVER"]
+    assert plan.literal_bindings[0] == literal
+
+
+def _gold_candidates() -> list[SemanticCandidate]:
+    return [
+        _candidate("vertex", "Service"),
+        _candidate("vertex", "Tunnel"),
+        _candidate("edge", "SERVICE_USES_TUNNEL"),
+        _candidate(
+            "property",
+            "Service.quality_of_service",
+            owner="Service",
+            semantic_name="quality_of_service",
+        ),
+    ]
+
+
+def _candidate(
+    semantic_type: str,
+    semantic_id: str,
+    *,
+    owner: str | None = None,
+    semantic_name: str | None = None,
+) -> SemanticCandidate:
+    return SemanticCandidate(
+        semantic_type=semantic_type,
+        semantic_id=semantic_id,
+        semantic_name=semantic_name or semantic_id,
+        owner=owner,
+        score=1.0,
+        match_type="exact",
+        evidence=[
+            CandidateEvidence(
+                term=semantic_id,
+                source="test",
+                matched_text=semantic_id,
+            )
+        ],
+    )
