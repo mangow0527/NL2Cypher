@@ -65,33 +65,43 @@ async def test_semantic_parse_returns_empty_io_skeleton() -> None:
         SemanticParseRequest(id="qa-osi-2", question="查询端口信息", generation_run_id="run-osi-2")
     )
 
-    assert result == {
-        "status": "unsupported_query_shape",
-        "trace": {
-            "trace_schema_version": "cga_graph_trace_v1",
-            "trace_id": "run-osi-2",
-            "question_id": "qa-osi-2",
-            "generation_run_id": "run-osi-2",
-            "source_question": "查询端口信息",
-            "final_status": "unsupported_query_shape",
-            "semantic_model": {},
-            "stages": [],
-            "final_outputs": {
-                "failure": {
-                    "reason": "unsupported_query_shape",
-                    "message": "Graph-native Cypher generation is not implemented in the IR-00 stub.",
-                    "suggested_rewrites": [],
-                },
-                "user_visible_notices": [],
-            },
-        },
-        "failure": {
-            "reason": "unsupported_query_shape",
-            "message": "Graph-native Cypher generation is not implemented in the IR-00 stub.",
-            "suggested_rewrites": [],
-        },
-        "user_visible_notices": [],
+    assert result["status"] == "unsupported_query_shape"
+    assert result["failure"] == {
+        "reason": "unsupported_query_shape",
+        "message": "Graph-native Cypher generation is not implemented in the IR-00 stub.",
+        "suggested_rewrites": [],
     }
+    assert result["user_visible_notices"] == []
+
+    trace = result["trace"]
+    assert trace["started_at"]
+    assert trace["finished_at"]
+    trace_without_timestamps = {key: value for key, value in trace.items() if key not in {"started_at", "finished_at"}}
+    assert trace_without_timestamps == {
+        "trace_schema_version": "cga_graph_trace_v1",
+        "trace_id": "run-osi-2",
+        "question_id": "qa-osi-2",
+        "generation_run_id": "run-osi-2",
+        "source_question": "查询端口信息",
+        "final_status": "unsupported_query_shape",
+        "semantic_model": {},
+        "stages": [],
+        "final_outputs": {
+            "failure": {
+                "reason": "unsupported_query_shape",
+                "message": "Graph-native Cypher generation is not implemented in the IR-00 stub.",
+                "suggested_rewrites": [],
+            },
+            "user_visible_notices": [],
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_semantic_parse_without_question_id_still_has_trace_question_id() -> None:
+    result = await parse_semantics(SemanticParseRequest(question="查询端口信息", generation_run_id="run-no-qa"))
+
+    assert result["trace"]["question_id"] == "run-no-qa"
 
 
 @pytest.mark.asyncio
@@ -118,6 +128,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "cypher_validation",
         "dsl",
         "infrastructure",
+        "observability",
         "semantic_model",
     }
     assert _source_names(SERVICE_ROOT / "app") <= allowed_app_children
@@ -160,6 +171,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "dsl",
         "fixtures",
         "integration",
+        "observability",
         "semantic_model",
         "test_input_output_stub_contract.py",
     }
@@ -201,6 +213,9 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "value_index.json",
     }
     assert _source_names(SERVICE_ROOT / "tests" / "fixtures") <= allowed_fixture_files
+
+    allowed_observability_tests = {"__init__.py", "test_stage_contract.py", "test_trace_builder.py"}
+    assert _source_names(SERVICE_ROOT / "tests" / "observability") <= allowed_observability_tests
 
 
 def _source_names(path: Path) -> set[str]:
