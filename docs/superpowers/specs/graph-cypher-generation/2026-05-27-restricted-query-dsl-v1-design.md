@@ -131,7 +131,7 @@ bindings:
   start:
     vertex_name: Service
   edge:
-    edge_name: USES_TUNNEL
+    edge_name: SERVICE_USES_TUNNEL
   end:
     vertex_name: Tunnel
 operations:
@@ -237,10 +237,13 @@ projection:
 校验规则：
 
 - `path_pattern_name` 必须存在。
+- 引用的 path pattern 必须在 Graph Model Loader 阶段通过 `validate_model_artifact`，且缓存状态为 `passed`。
 - `parameters` 必须覆盖 path pattern 定义中必填参数。
 - 参数类型必须与 path pattern `parameters[].type` 一致。
-- path pattern 的模板 Cypher 必须通过 self-validation。
+- path pattern 的模板 Cypher 必须只包含只读子句；如果加载期校验发现 `SET`、`CREATE`、`MERGE`、`DELETE`、`CALL` 等非 v1 子集能力，拒绝加载整个 graph semantic model。
 - v1 不允许在 DSL 中修改 path pattern 模板内部 Cypher。
+- 如果用户过滤条件不能绑定到 path pattern 已声明参数、返回 alias 或 role，不能临时改模板；应返回 `unsupported_query_shape`，或改用 `variable_path_traversal`。
+- v1 不支持 path pattern 内部嵌套另一个 path pattern。后续版本若支持，必须给 role namespace 加前缀，例如 `outer.transit_device` 和 `inner.link_device`。
 
 ## 8. 聚合、Top-N 与两步聚合
 
@@ -253,9 +256,15 @@ operations:
     metric_name: device_count
     group_by:
       - alias: elem_type
-        dimension: ne.elem_type
+        target: ne
+        property:
+          owner: NetworkElement
+          name: elem_type
     filters:
-      - dimension: ne.elem_type
+      - target: ne
+        property:
+          owner: NetworkElement
+          name: elem_type
         operator: eq
         value:
           raw: 防火墙
@@ -268,6 +277,12 @@ projection:
     - alias: device_count
       source: metric.device_count
 ```
+
+`metric_aggregate` 和 `ad_hoc_aggregate` 使用同一套 `target + property` 结构，不允许 `dimension: ne.elem_type` 字符串简写。差异只在 `target` 的来源：
+
+- `metric_aggregate.target` 必须引用 metric `pattern` 中的变量 alias，例如 `ne`。
+- `ad_hoc_aggregate.target` 必须引用 DSL bindings 或当前 query shape 中声明的角色 alias，例如 `port`。
+- 两者的 `property.owner/name` 都必须能在 graph semantic model 中校验。
 
 ad hoc 聚合：
 

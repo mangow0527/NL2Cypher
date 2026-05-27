@@ -38,7 +38,7 @@ Question Decomposer 之前或之内的输入不清晰问题不由本 Controller 
       "code": "edge_endpoint_mismatch",
       "severity": "error",
       "repairable": true,
-      "message": "USES_TUNNEL cannot connect Service to NetworkElement"
+      "message": "SERVICE_USES_TUNNEL cannot connect Service to NetworkElement"
     }
   ],
   "history": []
@@ -55,7 +55,6 @@ Question Decomposer 之前或之内的输入不清晰问题不由本 Controller 
   "repair_prompt_delta": {},
   "clarification": null,
   "assumptions": [],
-  "user_visible_notices": [],
   "stop_reason": null
 }
 ```
@@ -155,14 +154,65 @@ repair_controller:
 
 `two_step_aggregate` 必须递归生成子查询指纹：
 
+顶层字段只描述外层查询状态；子查询内部的 vertex、edge、property、group、measure 必须进入对应 `subqueries[].fingerprint_payload`。如果外层只消费子查询输出，顶层 `vertices`、`edges`、`properties` 可以为空，不能把子查询内部对象重复摊平到顶层。
+
 ```json
 {
   "query_shape": "two_step_aggregate",
+  "vertices": [],
+  "edges": [],
+  "properties": [],
+  "path_patterns": [],
+  "projections": [
+    {
+      "alias": "device",
+      "source": "device_port_counts.device"
+    },
+    {
+      "alias": "port_count",
+      "source": "device_port_counts.port_count"
+    }
+  ],
+  "groups": [],
+  "metrics": [],
+  "measures": [],
   "subqueries": [
     {
       "bind_as": "device_port_counts",
       "fingerprint_payload": {
         "query_shape": "ad_hoc_aggregate",
+        "vertices": [
+          {
+            "role": "device",
+            "name": "NetworkElement"
+          },
+          {
+            "role": "port",
+            "name": "Port"
+          }
+        ],
+        "edges": [
+          {
+            "role": "device_ports",
+            "name": "HAS_PORT",
+            "direction": "forward"
+          }
+        ],
+        "properties": [
+          {
+            "owner": "NetworkElement",
+            "name": "id",
+            "role": "group"
+          },
+          {
+            "owner": "Port",
+            "name": "id",
+            "role": "measure"
+          }
+        ],
+        "filters": [],
+        "path_patterns": [],
+        "projections": [],
         "groups": [
           {
             "target": "device",
@@ -176,7 +226,10 @@ repair_controller:
             "target": "port",
             "property": "Port.id"
           }
-        ]
+        ],
+        "sorts": [],
+        "limits": [],
+        "subqueries": []
       }
     }
   ],
@@ -239,7 +292,7 @@ canonicalization：
 
 ## 6. Continue With Assumption 的用户可见性
 
-`continue_with_assumption` 不能只写 trace。Controller 必须输出 `user_visible_notices`，由 API 响应和 runtime console 展示。
+`continue_with_assumption` 不能只写 trace。Controller 的源输出只包含结构化 `assumptions`；用户可见 notice 必须由 API 响应层或 runtime console 根据 assumption 模板确定性渲染。`user_visible_notices` 是派生字段，不是 Controller 可自由填写的独立事实来源。
 
 ```json
 {
@@ -253,8 +306,15 @@ canonicalization：
       "confidence": 0.87,
       "property": "NetworkElement.elem_type"
     }
-  ],
-  "user_visible_notices": [
+  ]
+}
+```
+
+派生 notice 示例：
+
+```json
+{
+  "derived_user_visible_notices": [
     "我把“防火墙”理解为设备类型 firewall。"
   ]
 }
@@ -262,8 +322,9 @@ canonicalization：
 
 规则：
 
-- 每个会影响查询语义的 assumption 必须有用户可见 notice。
-- notice 由 Repair Controller 基于结构化 assumption 模板生成，不由自由文本 LLM 生成。
+- 每个会影响查询语义的 assumption 必须能渲染出用户可见 notice。
+- notice 由固定模板基于结构化 assumption 生成，不由自由文本 LLM 生成。
+- `assumptions[]` 是机器可读源数据；`user_visible_notices[]` 是最终响应中的派生展示字段。
 - warning-only modality 也应生成 notice，例如“问题中的‘应该’没有被解释为查询约束”。
 - notice 不阻塞查询，但必须随结果返回。
 
@@ -318,6 +379,8 @@ canonicalization：
 
 cypher-generator-agent 不连接数据库，因此 Controller 只接收生成链路内部的自校验错误。
 
+具体判定规则以 [Cypher Self-Validation v1](./2026-05-27-cypher-self-validation-v1-design.md) 为准；本节只定义 Controller 如何消费这些错误。
+
 | 自校验反馈 | 决策 |
 | --- | --- |
 | Cypher 语法解析失败 | `generation_failed`，reason 为 `cypher_syntax_invalid` |
@@ -359,4 +422,4 @@ v1 实现时至少覆盖：
 - DSL 不支持时不出现 raw Cypher fallback。
 - compiler shape mismatch 标为严重失败，不自动重试。
 - two_step_aggregate 的子查询递归指纹能区分 measure、filter_subquery、sort、limit 的实质变化。
-- continue_with_assumption 必须输出用户可见 notice。
+- continue_with_assumption 的 assumptions 必须能派生用户可见 notice。

@@ -45,12 +45,19 @@
 - property 的 `value_synonyms` key 必须全部出现在 `valid_values`。
 - edge 的 `cardinality` 必须是允许枚举值。
 - metric 的 `pattern + expression` 与 `full_cypher` 互斥。
-- path pattern 和 metric `full_cypher` 通过 openCypher 弱解析。
+- path pattern 和 metric `full_cypher` 必须调用 Cypher Self-Validation 的 `validate_model_artifact`，在模型加载期完成 syntax、readonly、schema reference 和 target dialect 静态校验。
+
+Graph Model Loader 是流水线前置依赖，不等待用户问题触发。它加载模型、构建 graph semantic registry、构建检索索引、校验 path_pattern/metric Cypher 模板，并把通过校验的模板结果按模型 checksum 缓存。加载失败时，cypher-generator-agent 不应接受该模型的生成请求。
 
 ## 3. 端到端流水线
 
 ```mermaid
 flowchart TD
+  S["Graph Model Loader<br/>图语义模型加载器"] --> C
+  S --> D
+  S --> G
+  S --> N
+  S --> O
   A["NL Question<br/>自然语言问题"] --> A1["Input Clarification Gate<br/>输入澄清门禁"]
   A1 --> B["Question Decomposer<br/>问题拆解器"]
   A1 -->|"underspecified input / 输入信息不足"| K["Clarification Required<br/>需要澄清"]
@@ -121,6 +128,27 @@ cypher-generator-agent 的边界到 `Generation Output` 为止。它不连接 Tu
 
 覆盖硬约束只作用于会改变查询语义的词，包括 vertex/edge/property/metric/path_pattern、过滤值、时间范围、排序、数量词和聚合意图。礼貌用语和口语引导不触发覆盖失败。
 
+分类决策规则：
+
+| 类别 | 定义 | 失败影响 |
+| --- | --- | --- |
+| `substantive_terms` | 会改变查询对象、edge、property、metric、path_pattern、过滤、聚合、排序或数量限制的实质词 | 未覆盖时不得生成 Cypher |
+| `stopword_terms` | 礼貌、语气、口语引导，不改变查询语义 | 只记录，不触发失败 |
+| `time_terms` | 时间点、时间范围、相对时间，例如“最近”“2024 年” | 未能解析为明确时间约束时进入澄清 |
+| `modality_terms` | 不确定性、期望、估计、应然表达，例如“大概”“应该”“可能” | v1 默认 warning-only，并生成 assumption notice |
+| `unparsed_terms` | 不属于以上类别、但可能改变查询语义的残留内容词 | 非空时进入 clarification 或 generation_failed |
+
+边界示例：
+
+| 用户表达 | 分类 | 说明 |
+| --- | --- | --- |
+| “麻烦帮我查一下 Gold 服务” | `stopword_terms=["麻烦","帮我","查一下"]`，`substantive_terms=["Gold","服务"]` | 礼貌用语不触发覆盖失败 |
+| “显示大概有多少防火墙” | `modality_terms=["大概"]`，`substantive_terms=["多少","防火墙"]` | “大概”不应进入 `unparsed_terms` |
+| “最近 down 的端口” | `time_terms=["最近"]`，`substantive_terms=["down","端口"]` | 若没有默认时间窗口，必须澄清“最近”的范围 |
+| “应该经过哪些设备” | `modality_terms=["应该"]`，`substantive_terms=["经过","设备"]` | “应该”作为 warning-only，不直接变成过滤条件 |
+| “收入增长情况” | `substantive_terms=["收入","增长"]` | 如果 graph semantic model 无增长 metric 或时间对比能力，这是 coverage failure |
+| “异常高的带宽隧道” | `substantive_terms=["异常高","带宽","隧道"]` | 若无异常阈值或对应 metric，不能把“异常高”丢到 `unparsed_terms` 后静默继续 |
+
 ## 5. 结构化 LLM 输出要求
 
 所有 LLM 调用必须使用结构化输出 schema。违反 schema 的处理策略：
@@ -157,10 +185,13 @@ schema 演进策略：
 
 - [Graph Semantic Model Specification v1](./2026-05-27-graph-semantic-model-spec-v1.md)
 - [Graph-native Terminology](./2026-05-27-graph-terminology-design.md)
+- [Network Topology Vocabulary](./2026-05-27-network-topology-vocabulary.md)
 - [Restricted Query DSL v1](./2026-05-27-restricted-query-dsl-v1-design.md)
 - [LiteralResolver v1](./2026-05-27-literal-resolver-v1-design.md)
 - [Repair and Clarification Controller v1](./2026-05-27-repair-clarification-controller-v1-design.md)
+- [Cypher Self-Validation v1](./2026-05-27-cypher-self-validation-v1-design.md)
 - [Observability v1](./2026-05-27-observability-v1-design.md)
+- [Schema Versioning Policy](./2026-05-27-schema-versioning-policy.md)
 
 ## 8. 产品边界
 
@@ -184,4 +215,5 @@ v1 明确不支持以下能力：
 - LiteralResolver 对枚举值、ID、名称的解析路径独立可测。
 - Restricted DSL 能覆盖单跳、变长路径、命名 path_pattern、聚合、Top-N、两步聚合的 v1 子集。
 - repair loop 有最大轮次、状态指纹、震荡检测和降级策略。
+- Cypher Self-Validation 有明确的 syntax、readonly、schema reference、compiler shape 和 target dialect 静态规则。
 - 每次查询都有完整 trace，能复盘候选、绑定、语义校验、编译和自校验。

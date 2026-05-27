@@ -42,7 +42,7 @@ final_outputs:
   dsl: {}
   cypher: "MATCH ..."
   clarification: null
-  user_visible_notices: []
+  user_visible_notices: []   # 由 assumptions 派生的展示字段
   failure: null
 ```
 
@@ -87,7 +87,7 @@ warnings: []
 
 | stage | 关键内容 |
 | --- | --- |
-| `graph_model_loader` | model name、checksum、vertex/edge/property/metric/path_pattern 数量、validator 结果 |
+| `graph_model_loader` | model name、checksum、vertex/edge/property/metric/path_pattern 数量、validator 结果、path_pattern/metric Cypher 模板自校验结果 |
 | `input_clarification_gate` | 原始问题是否缺少指代对象、Decomposer schema 失败后的澄清决策 |
 | `question_decomposer` | 结构化拆解、substantive/stopword/modality/time/unparsed 分类、LLM 调用次数 |
 | `candidate_retrieval` | 每类 vertex/edge/property/metric/path_pattern 候选数量、match_type、score、evidence |
@@ -153,7 +153,7 @@ Repair stage 示例：
       clarification:
         expected_answer_type: single_choice
         options_count: 2
-      user_visible_notices: []
+      assumptions: []
   errors: []
   warnings:
     - code: repair_limit_near
@@ -186,26 +186,29 @@ coverage:
 - `substantive_terms.uncovered` 非空时不得生成 Cypher。
 - `stopword_terms` 只记录，不触发失败。
 - `modality_terms` 可以 warning-only，但必须出现在 trace 中。
-- `unparsed_terms` 非空时必须进入 clarification 或 generation_failed。
+- `unparsed_terms.unresolved` 非空时必须进入 clarification 或 generation_failed。`unparsed_terms` 只允许保存仍有潜在语义影响、且不能归入 substantive/stopword/modality/time 的残留词。
 
 ## 7. 指标与告警
 
 核心指标：
 
-- `cga_graph_generation_success_count`
-- `cga_graph_clarification_required_count`
-- `cga_graph_unsupported_query_shape_count`
-- `cga_graph_generation_failed_count`
-- `cga_graph_stage_duration_ms`
-- `cga_graph_llm_call_count`
-- `cga_graph_repair_attempt_count`
-- `cga_graph_repair_oscillation_count`
-- `cga_graph_literal_cache_hit_rate`
-- `cga_graph_coverage_failure_count`
-- `cga_graph_input_clarification_required_count`
-- `cga_graph_assumption_notice_count`
-- `cga_graph_compiler_shape_mismatch_count`
-- `cga_graph_cypher_self_validation_failure_count`
+| metric | 计数粒度 | 说明 |
+| --- | --- | --- |
+| `cga_graph_generation_success_count` | 每次生成 run | `final_status=generated` 时 +1 |
+| `cga_graph_clarification_required_count` | 每次生成 run | 任一阶段返回用户澄清时 +1 |
+| `cga_graph_unsupported_query_shape_count` | 每次生成 run | 返回 `unsupported_query_shape` 时 +1 |
+| `cga_graph_generation_failed_count` | 每次生成 run | 返回 `generation_failed` 时 +1 |
+| `cga_graph_stage_duration_ms` | 每个 stage | 记录 stage 耗时分布 |
+| `cga_graph_llm_call_count` | 每次 LLM 调用 | 包含重试和 repair loop 调用 |
+| `cga_graph_repair_attempt_count` | 每次 repair attempt | 每进入一次 `repair_with_llm` +1 |
+| `cga_graph_repair_oscillation_count` | 每次生成 run | 检测到震荡时 +1 |
+| `cga_graph_literal_cache_hit_rate` | 按 property/window 聚合 | 命中次数 / lookup 总次数 |
+| `cga_graph_coverage_failure_count` | 每个 uncovered term | 每个未覆盖 substantive/time/unparsed term +1 |
+| `cga_graph_input_clarification_required_count` | 每次生成 run | Input Clarification Gate 返回澄清时 +1 |
+| `cga_graph_assumption_notice_count` | 每个 assumption | 每个可渲染为用户 notice 的 assumption +1 |
+| `cga_graph_query_with_assumption_count` | 每次生成 run | 本次 run 存在至少一个 assumption 时 +1 |
+| `cga_graph_compiler_shape_mismatch_count` | 每次生成 run | self-validation 发现 shape mismatch 时 +1 |
+| `cga_graph_cypher_self_validation_failure_count` | 每个 failed check | syntax/readonly/schema/shape/dialect 任一 check 失败时 +1 |
 
 严重告警：
 
