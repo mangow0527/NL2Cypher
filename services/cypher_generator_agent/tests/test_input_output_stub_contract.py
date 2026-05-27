@@ -116,6 +116,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "compiler",
         "core",
         "cypher_validation",
+        "decomposition",
         "dsl",
         "infrastructure",
         "literals",
@@ -150,6 +151,15 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "validator.py",
     }
     assert _source_names(SERVICE_ROOT / "app" / "cypher_validation") <= allowed_cypher_validation_files
+
+    allowed_decomposition_files = {
+        "__init__.py",
+        "coverage_terms.py",
+        "decomposer.py",
+        "models.py",
+        "prompt.py",
+    }
+    assert _source_names(SERVICE_ROOT / "app" / "decomposition") <= allowed_decomposition_files
 
     allowed_dsl_files = {"__init__.py", "ast.py", "builder.py", "models.py", "parser.py"}
     assert _source_names(SERVICE_ROOT / "app" / "dsl") <= allowed_dsl_files
@@ -186,6 +196,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "binding",
         "compiler",
         "cypher_validation",
+        "decomposition",
         "dsl",
         "fixtures",
         "integration",
@@ -211,6 +222,13 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "test_validator_entrypoints.py",
     }
     assert _source_names(SERVICE_ROOT / "tests" / "cypher_validation") <= allowed_cypher_validation_tests
+
+    allowed_decomposition_tests = {
+        "__init__.py",
+        "test_schema_retry.py",
+        "test_term_classification.py",
+    }
+    assert _source_names(SERVICE_ROOT / "tests" / "decomposition") <= allowed_decomposition_tests
 
     allowed_dsl_tests = {
         "__init__.py",

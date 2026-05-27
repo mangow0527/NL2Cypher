@@ -60,6 +60,34 @@ def test_question_decomposition_v1_terms_drive_candidate_retrieval(
     assert _candidate(result.candidates, "path_pattern", "tunnel_full_path")
 
 
+def test_question_decomposition_v1_structured_literal_candidates_drive_retrieval(
+    retriever: CandidateRetriever,
+) -> None:
+    result = retriever.retrieve(
+        {
+            "schema_version": "question_decomposition_v1",
+            "intent_type": "list",
+            "original_question": "Gold 服务使用了哪些隧道",
+            "target_concepts": ["服务", "隧道"],
+            "relation_phrases": ["使用"],
+            "literal_candidates": [
+                {"text": "Gold", "kind_hint": "enum_or_name", "attached_to": "服务"}
+            ],
+            "filter_phrases": ["Gold 服务"],
+            "substantive_terms": ["Gold", "服务", "使用", "隧道"],
+            "stopword_terms": [],
+            "modality_terms": [],
+            "time_terms": [],
+            "unparsed_terms": [],
+            "output_shape": "rows",
+        }
+    )
+
+    assert _candidate(result.candidates, "vertex", "Service")
+    assert _candidate(result.candidates, "edge", "SERVICE_USES_TUNNEL")
+    assert _candidate(result.candidates, "property", "Service.quality_of_service")
+
+
 def test_used_phrase_recalls_service_uses_tunnel_edge(retriever: CandidateRetriever) -> None:
     result = retriever.retrieve(_decomposition("Gold 服务用了哪些隧道", "用了"))
 
