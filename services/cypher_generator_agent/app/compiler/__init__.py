@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .compiler import (
     CYPHER_COMPILATION_RESULT_SCHEMA_VERSION,
+    CypherCompilationDraft,
     CypherCompilationResult,
     CypherCompiler,
     CypherCompilerError,
@@ -10,6 +11,7 @@ from .compiler import (
 
 __all__ = [
     "CYPHER_COMPILATION_RESULT_SCHEMA_VERSION",
+    "CypherCompilationDraft",
     "CypherCompilationResult",
     "CypherCompiler",
     "CypherCompilerError",

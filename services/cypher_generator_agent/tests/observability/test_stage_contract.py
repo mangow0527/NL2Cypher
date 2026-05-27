@@ -19,6 +19,7 @@ def test_stage_enum_contains_all_observability_v1_required_stages() -> None:
         "dsl_parser",
         "cypher_compiler",
         "cypher_self_validation",
+        "output",
     }
 
 

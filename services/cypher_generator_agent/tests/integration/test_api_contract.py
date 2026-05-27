@@ -233,36 +233,27 @@ async def test_service_can_submit_non_success_generation_output_to_testing_agent
 
 
 @pytest.mark.asyncio
-async def test_semantic_parse_returns_graph_trace_skeleton_without_empty_success_cypher() -> None:
+async def test_semantic_parse_returns_pipeline_failure_without_empty_success_cypher() -> None:
     result = await parse_semantics(
-        SemanticParseRequest(id="qa-osi-2", question="查询端口信息", generation_run_id="run-osi-2")
+        SemanticParseRequest(id="qa-osi-2", question="2024 年收入增长情况", generation_run_id="run-osi-2")
     )
 
-    assert result["status"] == "unsupported_query_shape"
+    assert result["status"] == "generation_failed"
     assert "cypher" not in result
-    assert result["failure"]["reason"] == "unsupported_query_shape"
+    assert result["failure"]["reason"] == "coverage_failure"
     trace = result["trace"]
     assert trace["started_at"]
     assert trace["finished_at"]
-    trace_without_timestamps = {key: value for key, value in trace.items() if key not in {"started_at", "finished_at"}}
-    assert trace_without_timestamps == {
-        "trace_schema_version": "cga_graph_trace_v1",
-        "trace_id": "run-osi-2",
-        "question_id": "qa-osi-2",
-        "generation_run_id": "run-osi-2",
-        "source_question": "查询端口信息",
-        "final_status": "unsupported_query_shape",
-        "semantic_model": {},
-        "stages": [],
-        "final_outputs": {
-            "failure": {
-                "reason": "unsupported_query_shape",
-                "message": "Graph-native Cypher generation is not implemented in the IR-00 stub.",
-                "suggested_rewrites": [],
-            },
-            "user_visible_notices": [],
-        },
-    }
+    assert trace["trace_id"] == "run-osi-2"
+    assert trace["question_id"] == "qa-osi-2"
+    assert trace["generation_run_id"] == "run-osi-2"
+    assert trace["source_question"] == "2024 年收入增长情况"
+    assert trace["final_status"] == "generation_failed"
+    assert trace["semantic_model"]["name"] == "network_topology"
+    assert [stage["stage"] for stage in trace["stages"]][-2:] == ["semantic_validator", "output"]
+    assert trace["final_outputs"]["cypher"] is None
+    assert trace["final_outputs"]["dsl"] is None
+    assert trace["final_outputs"]["failure"]["reason"] == "coverage_failure"
 
 
 def _generated_output() -> GenerationOutput:

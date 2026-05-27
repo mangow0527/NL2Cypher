@@ -210,8 +210,22 @@ def _validated_graph_trace(
 def get_generator_status() -> Dict[str, object]:
     return {
         "status": "ok",
-        "pipeline": "io_stub",
-        "internal_flow": {},
+        "pipeline": "ir12_deterministic_mvp",
+        "internal_flow": {
+            "semantic_parse": [
+                "graph_model_loader",
+                "question_decomposer",
+                "candidate_retrieval",
+                "literal_resolver",
+                "grounded_understanding",
+                "semantic_binder",
+                "semantic_validator",
+                "dsl_builder",
+                "dsl_parser",
+                "cypher_compiler",
+                "cypher_self_validation",
+            ]
+        },
     }
 
 

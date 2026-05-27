@@ -17,6 +17,7 @@ class StageName(str, Enum):
     DSL_PARSER = "dsl_parser"
     CYPHER_COMPILER = "cypher_compiler"
     CYPHER_SELF_VALIDATION = "cypher_self_validation"
+    OUTPUT = "output"
 
 
 class StageStatus(str, Enum):

@@ -59,6 +59,13 @@ class CypherCompilerError(ValueError):
 
 
 @dataclass(frozen=True)
+class CypherCompilationDraft:
+    schema_version: str
+    cypher: str
+    parameters: dict[str, object]
+
+
+@dataclass(frozen=True)
 class CypherCompilationResult:
     schema_version: str
     cypher: str
@@ -77,7 +84,7 @@ class CypherCompiler:
         self._path_pattern_template_overrides_for_tests = _path_pattern_template_overrides_for_tests
         self.validator = CypherSelfValidator(registry)
 
-    def compile(self, ast: RestrictedQueryAst) -> CypherCompilationResult:
+    def compile_draft(self, ast: RestrictedQueryAst) -> CypherCompilationDraft:
         if ast.query_shape not in SUPPORTED_QUERY_SHAPES:
             raise CypherCompilerError(f"unsupported query_shape: {ast.query_shape.value}")
 
@@ -90,13 +97,21 @@ class CypherCompiler:
         else:
             raise CypherCompilerError(f"unsupported query_shape: {ast.query_shape.value}")
 
-        validation_result = self.validator.validate_generated_query(cypher)
+        return CypherCompilationDraft(
+            schema_version=CYPHER_COMPILATION_RESULT_SCHEMA_VERSION,
+            cypher=cypher,
+            parameters=parameters,
+        )
+
+    def compile(self, ast: RestrictedQueryAst) -> CypherCompilationResult:
+        draft = self.compile_draft(ast)
+        validation_result = self.validator.validate_generated_query(draft.cypher)
         if not validation_result.valid:
             raise CypherCompilerError("compiled Cypher self-validation failed", validation_result=validation_result)
         return CypherCompilationResult(
             schema_version=CYPHER_COMPILATION_RESULT_SCHEMA_VERSION,
-            cypher=cypher,
-            parameters=parameters,
+            cypher=draft.cypher,
+            parameters=draft.parameters,
             validation_result=validation_result,
         )
 

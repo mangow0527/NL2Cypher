@@ -60,41 +60,30 @@ async def test_ingest_question_preserves_io_contract_with_empty_generation_body(
 
 
 @pytest.mark.asyncio
-async def test_semantic_parse_returns_empty_io_skeleton() -> None:
+async def test_semantic_parse_returns_pipeline_failure_without_cypher() -> None:
     result = await parse_semantics(
-        SemanticParseRequest(id="qa-osi-2", question="查询端口信息", generation_run_id="run-osi-2")
+        SemanticParseRequest(id="qa-osi-2", question="2024 年收入增长情况", generation_run_id="run-osi-2")
     )
 
-    assert result["status"] == "unsupported_query_shape"
-    assert result["failure"] == {
-        "reason": "unsupported_query_shape",
-        "message": "Graph-native Cypher generation is not implemented in the IR-00 stub.",
-        "suggested_rewrites": [],
-    }
+    assert result["status"] == "generation_failed"
+    assert "cypher" not in result
+    assert "dsl" not in result
+    assert result["failure"]["reason"] == "coverage_failure"
     assert result["user_visible_notices"] == []
 
     trace = result["trace"]
     assert trace["started_at"]
     assert trace["finished_at"]
-    trace_without_timestamps = {key: value for key, value in trace.items() if key not in {"started_at", "finished_at"}}
-    assert trace_without_timestamps == {
-        "trace_schema_version": "cga_graph_trace_v1",
-        "trace_id": "run-osi-2",
-        "question_id": "qa-osi-2",
-        "generation_run_id": "run-osi-2",
-        "source_question": "查询端口信息",
-        "final_status": "unsupported_query_shape",
-        "semantic_model": {},
-        "stages": [],
-        "final_outputs": {
-            "failure": {
-                "reason": "unsupported_query_shape",
-                "message": "Graph-native Cypher generation is not implemented in the IR-00 stub.",
-                "suggested_rewrites": [],
-            },
-            "user_visible_notices": [],
-        },
-    }
+    assert trace["trace_id"] == "run-osi-2"
+    assert trace["question_id"] == "qa-osi-2"
+    assert trace["generation_run_id"] == "run-osi-2"
+    assert trace["source_question"] == "2024 年收入增长情况"
+    assert trace["final_status"] == "generation_failed"
+    assert trace["semantic_model"]["name"] == "network_topology"
+    assert [stage["stage"] for stage in trace["stages"]][-2:] == ["semantic_validator", "output"]
+    assert trace["final_outputs"]["cypher"] is None
+    assert trace["final_outputs"]["dsl"] is None
+    assert trace["final_outputs"]["failure"]["reason"] == "coverage_failure"
 
 
 @pytest.mark.asyncio
@@ -137,7 +126,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
     }
     assert _source_names(SERVICE_ROOT / "app") <= allowed_app_children
 
-    allowed_core_files = {"__init__.py", "errors.py", "result.py"}
+    allowed_core_files = {"__init__.py", "errors.py", "pipeline.py", "result.py"}
     assert _source_names(SERVICE_ROOT / "app" / "core") <= allowed_core_files
 
     allowed_infrastructure_files = {"__init__.py", "clients.py", "config.py"}
@@ -209,7 +198,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
     }
     assert _source_names(SERVICE_ROOT / "tests") <= allowed_tests
 
-    allowed_integration_files = {"__init__.py", "test_api_contract.py"}
+    allowed_integration_files = {"__init__.py", "test_api_contract.py", "test_pipeline_mvp.py"}
     assert _source_names(SERVICE_ROOT / "tests" / "integration") <= allowed_integration_files
 
     allowed_semantic_model_tests = {"__init__.py", "test_loader.py", "test_registry.py"}
