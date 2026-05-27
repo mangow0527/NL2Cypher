@@ -18,6 +18,22 @@ from services.cypher_generator_agent.app.infrastructure.config import get_settin
 from services.cypher_generator_agent.app.observability.trace import GraphTraceRecord
 
 
+GENERATED_STAGE_ORDER = [
+    "graph_model_loader",
+    "question_decomposer",
+    "candidate_retrieval",
+    "literal_resolver",
+    "grounded_understanding",
+    "semantic_binder",
+    "semantic_validator",
+    "dsl_builder",
+    "dsl_parser",
+    "cypher_compiler",
+    "cypher_self_validation",
+    "output",
+]
+
+
 class GeneratedCypherSubmitter(Protocol):
     async def submit(self, payload: GeneratedCypherSubmissionRequest) -> Dict[str, object]:
         ...
@@ -129,6 +145,7 @@ def _validated_graph_trace(
         raise ValueError("trace source_question does not match submitted question")
     if trace.final_status != output.status:
         raise ValueError(f"trace final_status {trace.final_status} does not match output.status {output.status}")
+    _validate_stage_contract(trace)
 
     outputs = trace.final_outputs
     if outputs.user_visible_notices != output.user_visible_notices:
@@ -149,6 +166,23 @@ def _validated_graph_trace(
         if outputs.failure != output.failure:
             raise ValueError("failure trace payload does not match output.failure")
     return trace
+
+
+def _validate_stage_contract(trace: GraphTraceRecord) -> None:
+    stage_names = [str(stage.stage) for stage in trace.stages]
+    if trace.final_status == "generated":
+        if stage_names != GENERATED_STAGE_ORDER:
+            raise ValueError(
+                "generated trace stages must match cga_graph_trace_v1 generated stage order: "
+                f"{GENERATED_STAGE_ORDER}"
+            )
+        return
+
+    if not stage_names:
+        raise ValueError("non-success trace stages must not be empty before testing-agent submission")
+
+    if stage_names[-1] != "output":
+        raise ValueError("non-success trace stages must end with output before testing-agent submission")
 
 
 def get_generator_status() -> Dict[str, object]:

@@ -201,6 +201,35 @@ def test_testing_agent_payload_adapter_rejects_user_visible_notice_drift() -> No
         )
 
 
+def test_testing_agent_payload_adapter_rejects_empty_generated_trace_stages() -> None:
+    generated = _generated_output()
+    generated.trace["stages"] = []
+
+    with pytest.raises(ValueError, match="generated trace stages"):
+        build_testing_agent_payload(
+            qa_id="qa-generated",
+            question="query devices",
+            generation_run_id="run-generated",
+            output=generated,
+        )
+
+
+def test_testing_agent_payload_adapter_rejects_non_success_trace_without_output_stage() -> None:
+    non_success = _unsupported_output()
+    non_success.trace["stages"] = [
+        _stage("graph_model_loader"),
+        _stage("semantic_validator"),
+    ]
+
+    with pytest.raises(ValueError, match="end with output"):
+        build_testing_agent_payload(
+            qa_id="qa-unsupported",
+            question="query shortest path",
+            generation_run_id="run-unsupported",
+            output=non_success,
+        )
+
+
 @pytest.mark.asyncio
 async def test_service_can_submit_non_success_generation_output_to_testing_agent() -> None:
     class CaptureTestingClient:
@@ -317,5 +346,43 @@ def _trace_base(*, trace_id: str, qa_id: str, run_id: str, question: str, status
         "finished_at": "2026-05-27T00:00:01+00:00",
         "final_status": status,
         "semantic_model": {},
-        "stages": [],
+        "stages": _generated_stages() if status == "generated" else _non_success_stages(),
+    }
+
+
+def _generated_stages() -> list[dict[str, object]]:
+    return [
+        _stage("graph_model_loader"),
+        _stage("question_decomposer"),
+        _stage("candidate_retrieval"),
+        _stage("literal_resolver"),
+        _stage("grounded_understanding"),
+        _stage("semantic_binder"),
+        _stage("semantic_validator"),
+        _stage("dsl_builder"),
+        _stage("dsl_parser"),
+        _stage("cypher_compiler"),
+        _stage("cypher_self_validation"),
+        _stage("output"),
+    ]
+
+
+def _non_success_stages() -> list[dict[str, object]]:
+    return [
+        _stage("graph_model_loader"),
+        _stage("semantic_validator"),
+        _stage("repair_controller"),
+        _stage("output"),
+    ]
+
+
+def _stage(name: str) -> dict[str, object]:
+    return {
+        "stage": name,
+        "status": "success",
+        "started_at": "2026-05-27T00:00:00+00:00",
+        "duration_ms": 0,
+        "metrics": {},
+        "errors": [],
+        "warnings": [],
     }

@@ -19,7 +19,9 @@ from services.cypher_generator_agent.app.observability.trace import GraphTraceBu
 
 
 def test_generated_submission_snapshot_is_full_cga_graph_trace_v1() -> None:
-    output = _trace_builder("qa-generated", "run-generated", "Gold 服务使用了哪些隧道").finalize_generated(
+    builder = _trace_builder("qa-generated", "run-generated", "Gold 服务使用了哪些隧道")
+    _add_generated_trace_stages(builder)
+    output = builder.finalize_generated(
         dsl={"schema_version": "restricted_query_dsl_v1", "query_shape": "single_hop_traversal"},
         cypher="MATCH (svc:Service)-[:SERVICE_USES_TUNNEL]->(tun:Tunnel) RETURN tun.id AS tunnel_id",
     )
@@ -40,7 +42,9 @@ def test_generated_submission_snapshot_is_full_cga_graph_trace_v1() -> None:
 
 
 def test_clarification_submission_uses_non_success_report_without_parsed_cypher() -> None:
-    output = _trace_builder("qa-clarify", "run-clarify", "那个服务用了哪些隧道").finalize_clarification(
+    builder = _trace_builder("qa-clarify", "run-clarify", "那个服务用了哪些隧道")
+    _add_non_success_output_stage(builder)
+    output = builder.finalize_clarification(
         clarification={"question": "你说的“那个服务”具体指哪个服务？"},
         user_visible_notices=["我需要先确认服务名称。"],
     )
@@ -77,6 +81,7 @@ def test_generation_failed_submission_carries_validation_trace_without_clarifica
             }
         ],
     )
+    _add_non_success_output_stage(builder)
     output = builder.finalize_failure(
         status="generation_failed",
         failure={"reason": "coverage_failure", "message": "增长 is not covered by the semantic model"},
@@ -116,6 +121,7 @@ def test_service_failed_provider_exception_submission_uses_engineering_failure_s
             }
         ],
     )
+    _add_non_success_output_stage(builder)
     output = builder.finalize_failure(
         status="service_failed",
         failure={"reason": "model_invocation_failed", "message": "provider timeout"},
@@ -142,11 +148,15 @@ async def test_service_submits_generated_and_non_success_trace_contracts_to_test
     testing_client = _CaptureTestingClient()
     service = CypherGeneratorAgentService(testing_client=testing_client)
 
-    generated = _trace_builder("qa-generated", "run-generated", "Gold 服务使用了哪些隧道").finalize_generated(
+    generated_builder = _trace_builder("qa-generated", "run-generated", "Gold 服务使用了哪些隧道")
+    _add_generated_trace_stages(generated_builder)
+    generated = generated_builder.finalize_generated(
         dsl={"schema_version": "restricted_query_dsl_v1", "query_shape": "single_hop_traversal"},
         cypher="MATCH (svc:Service)-[:SERVICE_USES_TUNNEL]->(tun:Tunnel) RETURN tun.id AS tunnel_id",
     )
-    failed = _trace_builder("qa-failed", "run-failed", "2024 年收入增长情况").finalize_failure(
+    failed_builder = _trace_builder("qa-failed", "run-failed", "2024 年收入增长情况")
+    _add_non_success_output_stage(failed_builder)
+    failed = failed_builder.finalize_failure(
         status="generation_failed",
         failure={"reason": "coverage_failure", "message": "增长 is not covered by the semantic model"},
     )
@@ -221,6 +231,28 @@ def _trace_builder(qa_id: str, run_id: str, question: str) -> GraphTraceBuilder:
         semantic_model={"name": "network_topology", "schema_version": "graph_semantic_model_v1"},
         started_at=datetime(2026, 5, 27, tzinfo=timezone.utc),
     )
+
+
+def _add_generated_trace_stages(builder: GraphTraceBuilder) -> None:
+    for stage in [
+        "graph_model_loader",
+        "question_decomposer",
+        "candidate_retrieval",
+        "literal_resolver",
+        "grounded_understanding",
+        "semantic_binder",
+        "semantic_validator",
+        "dsl_builder",
+        "dsl_parser",
+        "cypher_compiler",
+        "cypher_self_validation",
+        "output",
+    ]:
+        builder.add_stage(stage=stage, status="success", duration_ms=1)
+
+
+def _add_non_success_output_stage(builder: GraphTraceBuilder) -> None:
+    builder.add_stage(stage="output", status="failed", duration_ms=0)
 
 
 class _CaptureTestingClient:
