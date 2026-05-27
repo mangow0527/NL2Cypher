@@ -123,6 +123,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "observability",
         "retrieval",
         "semantic_model",
+        "understanding",
         "validation",
     }
     assert _source_names(SERVICE_ROOT / "app") <= allowed_app_children
@@ -188,6 +189,15 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
     allowed_binding_files = {"__init__.py", "binder.py", "models.py"}
     assert _source_names(SERVICE_ROOT / "app" / "binding") <= allowed_binding_files
 
+    allowed_understanding_files = {
+        "__init__.py",
+        "grounded_understanding.py",
+        "llm_client.py",
+        "models.py",
+        "prompt.py",
+    }
+    assert _source_names(SERVICE_ROOT / "app" / "understanding") <= allowed_understanding_files
+
     allowed_validation_files = {"__init__.py", "coverage.py", "models.py", "semantic_validator.py"}
     assert _source_names(SERVICE_ROOT / "app" / "validation") <= allowed_validation_files
 
@@ -204,6 +214,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "observability",
         "retrieval",
         "semantic_model",
+        "understanding",
         "validation",
         "test_input_output_stub_contract.py",
     }
@@ -275,6 +286,13 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
 
     allowed_binding_tests = {"__init__.py", "test_binder.py"}
     assert _source_names(SERVICE_ROOT / "tests" / "binding") <= allowed_binding_tests
+
+    allowed_understanding_tests = {
+        "__init__.py",
+        "test_candidate_boundaries.py",
+        "test_grounded_schema.py",
+    }
+    assert _source_names(SERVICE_ROOT / "tests" / "understanding") <= allowed_understanding_tests
 
     allowed_validation_tests = {
         "__init__.py",

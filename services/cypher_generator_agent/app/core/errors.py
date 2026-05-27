@@ -30,6 +30,7 @@ GenerationFailureReason = Literal[
     "literal_unresolved",
     "repair_binding_oscillation",
     "question_decomposer_schema_invalid",
+    "grounded_understanding_schema_invalid",
 ]
 
 ServiceFailureReason = Literal[
