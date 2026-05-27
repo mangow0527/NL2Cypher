@@ -11,8 +11,6 @@ from services.cypher_generator_agent.app.binding.models import (
 )
 from services.cypher_generator_agent.app.semantic_model import GraphSemanticRegistry
 
-from .parser import parse_restricted_query_dsl
-
 
 class RestrictedDslBuilder:
     def __init__(self, registry: GraphSemanticRegistry) -> None:
@@ -43,7 +41,6 @@ class RestrictedDslBuilder:
         else:
             raise ValueError(f"unsupported query_shape for restricted DSL builder: {plan.query_shape}")
 
-        parse_restricted_query_dsl(dsl, self.registry)
         return dsl
 
     def _reject_uncompiled_sort_limit(self, plan: BindingPlan) -> None:

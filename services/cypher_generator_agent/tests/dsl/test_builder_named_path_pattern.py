@@ -109,7 +109,7 @@ def test_tunnel_full_path_plan_builds_named_path_pattern_dsl(
     assert ast.projection.items[0].source.raw == "path.device"
 
 
-def test_named_path_pattern_validates_generated_dsl_before_return(
+def test_named_path_pattern_parser_owns_generated_dsl_validation(
     registry: GraphSemanticRegistry,
 ) -> None:
     plan = BindingPlan(
@@ -124,12 +124,14 @@ def test_named_path_pattern_validates_generated_dsl_before_return(
         projection=[{"alias": "device", "source": "path.device"}],
     )
 
+    dsl = RestrictedDslBuilder(registry).build(
+        plan,
+        source_question="隧道经过哪些设备",
+        query_id="q-invalid-path",
+    )
+
     with pytest.raises(RestrictedDslValidationError) as error:
-        RestrictedDslBuilder(registry).build(
-            plan,
-            source_question="隧道经过哪些设备",
-            query_id="q-invalid-path",
-        )
+        parse_restricted_query_dsl(dsl, registry)
 
     assert {issue.code for issue in error.value.errors} == {"missing_path_pattern_parameter"}
 

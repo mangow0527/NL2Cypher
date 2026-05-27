@@ -161,6 +161,36 @@ def test_self_validation_failure_records_self_validation_stage_without_final_cyp
     assert self_validation_stage["output_ref"]["value"]["valid"] is False
 
 
+def test_dsl_parser_failure_is_recorded_in_dsl_parser_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def invalid_dsl(*args: object, **kwargs: object) -> dict[str, object]:
+        return {
+            "schema_version": "restricted_query_dsl_v1",
+            "query_id": "invalid-dsl",
+            "query_shape": "single_hop_traversal",
+            "bindings": {},
+            "operations": [],
+            "projection": {"items": []},
+        }
+
+    monkeypatch.setattr(pipeline_module.RestrictedDslBuilder, "build", invalid_dsl)
+
+    output = run_pipeline(
+        question="Gold 服务使用了哪些隧道",
+        qa_id="invalid-dsl",
+        generation_run_id="run-invalid-dsl",
+    )
+
+    assert output.status == "generation_failed"
+    assert output.failure is not None
+    assert output.failure.reason == "compiler_shape_mismatch"
+    assert _stage_names(output.trace)[-2:] == ["dsl_parser", "output"]
+    parser_stage = output.trace["stages"][-2]
+    assert parser_stage["status"] == "failed"
+    assert parser_stage["errors"][0]["type"] == "RestrictedDslValidationError"
+
+
 def test_model_loader_failure_returns_service_failure_envelope(tmp_path) -> None:
     output = run_pipeline(
         question="Gold 服务使用了哪些隧道",
