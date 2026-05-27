@@ -1,4 +1,4 @@
-# OSI 驱动的 Cypher 生成总体架构设计
+# Graph Semantic Model 驱动的 Cypher 生成总体架构设计
 
 > 日期：2026-05-27
 > 状态：设计 v1
@@ -6,13 +6,13 @@
 
 ## 1. 目标
 
-本设计定义 cypher-generator-agent 后续如何基于 OSI Open Semantic Interchange 语义层，从自然语言问题生成可校验、可追踪、可编译的 Cypher。
+本设计定义 cypher-generator-agent 后续如何基于 `Graph Semantic Model Specification v1`，从自然语言问题生成可校验、可追踪、可编译的 Cypher。
 
 核心目标：
 
 - 不让 LLM 直接自由生成 Cypher。
 - 让 LLM 只承担语言拆解、候选判断、结构化补全等非确定性工作。
-- 让 OSI 语义层承担对象、字段、关系、指标、枚举值、路径模板的事实来源。
+- 让 graph semantic model 承担 vertex、edge、property、metric、path_pattern、valid_values、value_synonyms、direction_semantics 和 anti_patterns 的事实来源。
 - 让受限 DSL 和编译器承担 Cypher 生成，从而把语法正确性、schema 合法性和产品边界前置。
 - 对每次生成保留完整 trace，能定位失败发生在哪一层。
 
@@ -20,27 +20,32 @@
 
 - v1 不追求表达任意 Cypher。
 - v1 不允许在 DSL 无法表达时回退到 LLM 直接生成 Cypher。
-- v1 不承担数据建模工具职责；OSI 模型由外部或上游流程维护。
+- v1 不承担数据建模工具职责；graph semantic model 由外部或上游流程维护。
+- v1 不连接 TuGraph，不执行生成的 Cypher。
 
-## 2. OSI 在本系统中的角色
+## 2. Graph Semantic Model 在本系统中的角色
 
-OSI Core Metadata Specification 提供数据语义层的交换格式。当前草案版本为 `0.2.0.dev0`，核心对象包括：
+`Graph Semantic Model Specification v1` 是本系统的单一权威语义定义。全链路使用图原生术语，不维护旧版双层模型字段映射。
+
+核心对象：
 
 - `semantic_model`：语义模型容器。
-- `datasets`：逻辑实体或事实表，对应图场景中的 vertex 类、edge 类、事实节点或逻辑视图。
-- `fields`：可过滤、分组、投影或参与指标计算的字段。
-- `relationships`：数据集之间的关系，对应可遍历的图边或可编译的 join/edge 约束。
-- `metrics`：聚合指标，编译到 Cypher 聚合表达式。
+- `vertices`：图顶点定义，`name` 必须等于 Cypher label。
+- `edges`：图边定义，`name` 必须等于 Cypher edge type。
+- `properties`：vertex 或 edge 上的属性，`name` 必须等于 Cypher property name。
+- `path_patterns`：命名路径模板，可包含完整 Cypher 模板和参数。
+- `metrics`：指标定义，支持 `pattern + expression` 或 `full_cypher`。
 - `ai_context`：面向 LLM 和检索的 instructions、synonyms、examples。
-- `custom_extensions`：承载图模型、TuGraph 方言、path pattern registry、value synonym registry 等 OSI 核心未覆盖的信息。
 
-OSI schema 只能保证结构格式。以下语义约束必须由本系统补充校验：
+语义模型 validator 必须补充校验：
 
-- relationship 的 `from_columns` 和 `to_columns` 数量必须相等。
-- field expression 必须存在目标方言或可降级方言。
-- metric 引用的字段必须存在且类型适合聚合。
-- 图路径、边方向、vertex/edge 类型组合必须合法。
-- `ai_context` 中的 synonym 只作为召回信号，不能直接当成绑定事实。
+- `vertices[].name`、`edges[].name`、`path_patterns[].name`、`metrics[].name` 在模型内唯一。
+- edge 的 `from` 和 `to` 必须引用已定义 vertex。
+- vertex 的 `id_property` 必须存在于该 vertex 的 `properties`。
+- property 的 `value_synonyms` key 必须全部出现在 `valid_values`。
+- edge 的 `cardinality` 必须是允许枚举值。
+- metric 的 `pattern + expression` 与 `full_cypher` 互斥。
+- path pattern 和 metric `full_cypher` 通过 openCypher 弱解析。
 
 ## 3. 端到端流水线
 
@@ -72,22 +77,22 @@ flowchart TD
 | --- | --- | --- | --- |
 | Input Clarification Gate | 原始问题 + Decomposer 失败信号 | 继续/澄清 | 在问题本身明显缺少指代对象或 Decomposer 无法产出有效结构时，前置反问用户 |
 | Question Decomposer | 原始问题 | 领域无关问题结构 | 拆出实质词、概念候选、关系动词、字面值、时间词、语气词、输出形态 |
-| Candidate Retriever | 问题结构 + OSI 索引 | 候选集合 | 按 concept、field、metric、relationship、path pattern 召回候选，并携带证据和置信度 |
-| LiteralResolver | 字面值 + 期望字段/实体 | 解析值或 alternatives | 精确匹配、同义词、模糊匹配、预构建 distinct value index lookup |
+| Candidate Retriever | 问题结构 + graph semantic index | 候选集合 | 按 vertex、edge、property、metric、path_pattern 召回候选，并携带证据和置信度 |
+| LiteralResolver | 字面值 + 期望 vertex/property | 解析值或 alternatives | 精确匹配、同义词、模糊匹配、预构建 value index lookup |
 | Grounded LLM Understanding | 问题结构 + 候选 | 结构化理解 JSON | 在受限候选范围内选择绑定，不允许发明语义对象 |
-| Semantic Binder | 结构化理解 | 绑定计划 | 把 LLM 输出转换成稳定 semantic_id、role、field、operator、value |
-| Semantic Validator | 绑定计划 | 通过/错误列表 | 校验类型、方向、覆盖、歧义、路径、DSL 支持度 |
+| Semantic Binder | 结构化理解 | 绑定计划 | 把 LLM 输出转换成稳定 vertex、edge、property、metric、operator、value |
+| Semantic Validator | 绑定计划 | 通过/错误列表 | 校验类型、方向、覆盖、歧义、path_pattern、DSL 支持度 |
 | Repair/Clarification Controller | 错误列表 + 历史状态 | repair 输入或用户澄清 | 决定静默修复、反问、拒绝或终止震荡循环 |
 | Restricted DSL Builder | 通过校验的绑定计划 | DSL 文档 | 生成受限、可解析、可编译的查询描述 |
 | DSL Parser / AST | DSL 文档 | AST | schema 校验、结构规范化、稳定编译输入 |
-| Cypher Compiler | AST + OSI graph binding | Cypher | 模板化生成 TuGraph 目标 Cypher |
-| Cypher Self-Validation | Cypher + AST + semantic registry | 生成输出或非成功输出 | 做语法、只读、schema-aware、DSL/AST 一致性和目标方言静态校验；不连接数据库、不执行 Cypher |
+| Cypher Compiler | AST + graph semantic model | Cypher | 模板化生成目标 TuGraph Cypher |
+| Cypher Self-Validation | Cypher + AST + graph semantic model | 生成输出或非成功输出 | 做语法、只读、schema-aware、DSL/AST 一致性和目标方言静态校验；不连接数据库、不执行 Cypher |
 
 cypher-generator-agent 的边界到 `Generation Output` 为止。它不连接 TuGraph，不执行 `EXPLAIN`、dry-run、probe query 或正式查询；真实执行、结果对比、空结果和超大结果分析属于 testing-agent、runtime service 或其他下游服务。
 
 ## 4. Question Decomposer 结构化输出
 
-第一步不直接引用 OSI 语义对象。它只做语言学拆解，避免把“问题有没有读懂”和“语义有没有映射对”揉在一起。
+第一步不直接引用 graph semantic model 对象。它只做语言学拆解，避免把“问题有没有读懂”和“语义有没有映射对”揉在一起。
 
 输出 JSON Schema 形态：
 
@@ -114,17 +119,7 @@ cypher-generator-agent 的边界到 `Generation Output` 为止。它不连接 Tu
 }
 ```
 
-词类规则：
-
-| 字段 | 定义 | 示例 | 覆盖硬约束 |
-| --- | --- | --- | --- |
-| `substantive_terms` | 会改变查询语义的实体、关系、字段、指标、过滤、排序、数量词 | `Gold`、`最近 down 的端口`、`端口最多的 5 台设备` | 必须覆盖 |
-| `stopword_terms` | 礼貌、请求、口语引导，不改变查询语义 | `麻烦`、`请`、`我想知道`、`帮我查一下` | 不参与覆盖 |
-| `modality_terms` | 期望、推测、可能性或规范性语气 | `应该`、`可能`、`大概` | 生成 warning 或 clarification，不强制进入 Cypher |
-| `time_terms` | 时间范围、时间排序、相对时间 | `最近`、`过去 7 天`、`2024 年` | 必须覆盖或澄清 |
-| `unparsed_terms` | 不属于以上类别但可能有语义影响的残留词 | `增长` 在模型无增长指标时 | 必须告知用户 |
-
-`unparsed_terms` 不能作为垃圾桶。介词、连词、礼貌词不能进入该字段；只有无法分类且可能影响语义的词才进入。
+覆盖硬约束只作用于会改变查询语义的词，包括 vertex/edge/property/metric/path_pattern、过滤值、时间范围、排序、数量词和聚合意图。礼貌用语和口语引导不触发覆盖失败。
 
 ## 5. 结构化 LLM 输出要求
 
@@ -143,28 +138,11 @@ schema 演进策略：
 - 新增字段必须可选；删除或改名字段需要新增 schema version。
 - trace 中必须保留原始输出和 schema 校验错误。
 
-Input Clarification Gate 输出示例：
-
-```json
-{
-  "generation_status": "clarification_required",
-  "source_stage": "input_clarification_gate",
-  "reason_code": "underspecified_reference",
-  "question_zh": "你说的“那个东西”具体指设备、服务、隧道还是端口？",
-  "expected_answer_type": "single_choice",
-  "options": [
-    {"id": "device", "label": "设备"},
-    {"id": "service", "label": "服务"},
-    {"id": "tunnel", "label": "隧道"}
-  ]
-}
-```
-
 ## 6. 校验与反馈决策矩阵
 
 | 情况 | 处理 |
 | --- | --- |
-| 类型错误、边方向错误、metric/dimension 误用 | 进入 repair loop，不打扰用户 |
+| edge 端点类型错误、方向错误、metric/property 误用 | 进入 repair loop，不打扰用户 |
 | fuzzy match 且首选高置信 | 可继续，但必须返回用户可见的 `assumption_notice` |
 | 多个候选分数接近 | 反问用户，最多列 3 个选项 |
 | substantive_terms 未覆盖 | 必须反问或告知缺失，不允许静默生成 |
@@ -177,7 +155,8 @@ Input Clarification Gate 输出示例：
 
 本总体设计依赖以下必须先落地的设计：
 
-- [Sprint 0 Glossary](./2026-05-27-glossary-design.md)
+- [Graph Semantic Model Specification v1](./2026-05-27-graph-semantic-model-spec-v1.md)
+- [Graph-native Terminology](./2026-05-27-graph-terminology-design.md)
 - [Restricted Query DSL v1](./2026-05-27-restricted-query-dsl-v1-design.md)
 - [LiteralResolver v1](./2026-05-27-literal-resolver-v1-design.md)
 - [Repair and Clarification Controller v1](./2026-05-27-repair-clarification-controller-v1-design.md)
@@ -191,7 +170,7 @@ v1 明确不支持以下能力：
 - DSL 无法表达时让 LLM 绕过 DSL 直接生成 Cypher。
 - 写操作、schema mutation、procedure call。
 - 未注册图算法，例如 shortest path、connected components、PageRank。
-- 未在 OSI 或扩展 registry 中声明的 path pattern。
+- 未在 graph semantic model 中声明的 path_pattern。
 
 这些问题进入 `unsupported_query_shape`。如果能拆成 v1 支持的多个查询，Clarification Controller 可以给出改写建议；如果不能，则明确拒绝。
 
@@ -199,10 +178,10 @@ v1 明确不支持以下能力：
 
 设计进入实现前应满足：
 
-- OSI 模型可被加载为 semantic registry。
-- Sprint 0 术语表已固化到代码命名约定。
+- Graph Semantic Model v1 可被加载为 graph semantic registry。
+- 术语表已固化到代码命名约定，不存在旧版双层模型字段。
 - Question Decomposer 能稳定区分 substantive、stopword、modality、time、unparsed。
 - LiteralResolver 对枚举值、ID、名称的解析路径独立可测。
-- Restricted DSL 能覆盖单跳、变长路径、命名 path pattern、聚合、Top-N、两步聚合的 v1 子集。
+- Restricted DSL 能覆盖单跳、变长路径、命名 path_pattern、聚合、Top-N、两步聚合的 v1 子集。
 - repair loop 有最大轮次、状态指纹、震荡检测和降级策略。
 - 每次查询都有完整 trace，能复盘候选、绑定、语义校验、编译和自校验。

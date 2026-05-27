@@ -2,7 +2,7 @@
 
 > 日期：2026-05-27
 > 状态：设计 v1
-> 覆盖范围：cypher-generator-agent 的 OSI 语义生成链路
+> 覆盖范围：cypher-generator-agent 的 graph-native 语义生成链路
 
 ## 1. 设计目标
 
@@ -25,17 +25,17 @@
 ## 2. Trace 顶层结构
 
 ```yaml
-trace_schema_version: cga_osi_trace_v1
+trace_schema_version: cga_graph_trace_v1
 trace_id: q-20260527-001
 question_id: qa-001
 generation_run_id: cypher-run-001
-source_question: "Gold 级别的服务都用了哪些 MPLS-TE 隧道？"
+source_question: "全网有多少台防火墙？"
 started_at: "2026-05-27T10:00:00+08:00"
 finished_at: "2026-05-27T10:00:02+08:00"
 final_status: generated
 semantic_model:
-  model_id: osi-network-model
-  version: "0.2.0.dev0"
+  model_name: network_topology
+  spec_version: graph_semantic_model_v1
   checksum: sha256:abc123
 stages: []
 final_outputs:
@@ -87,12 +87,13 @@ warnings: []
 
 | stage | 关键内容 |
 | --- | --- |
+| `graph_model_loader` | model name、checksum、vertex/edge/property/metric/path_pattern 数量、validator 结果 |
 | `input_clarification_gate` | 原始问题是否缺少指代对象、Decomposer schema 失败后的澄清决策 |
 | `question_decomposer` | 结构化拆解、substantive/stopword/modality/time/unparsed 分类、LLM 调用次数 |
-| `candidate_retrieval` | 每类候选数量、match_type、score、evidence |
+| `candidate_retrieval` | 每类 vertex/edge/property/metric/path_pattern 候选数量、match_type、score、evidence |
 | `literal_resolver` | 每个 literal 的解析结果、alternatives、value index/cache 信号 |
 | `grounded_understanding` | LLM 结构化输出、schema 校验结果、候选选择 |
-| `semantic_binder` | selected_bindings、normalized filters、relationship paths |
+| `semantic_binder` | vertex_bindings、edge_bindings、property_bindings、normalized filters、path bindings |
 | `semantic_validator` | errors、warnings、coverage report |
 | `repair_controller` | decision、attempt_no、fingerprint、oscillation、clarification |
 | `dsl_builder` | query_shape、DSL 输出、unsupported reason |
@@ -114,16 +115,18 @@ warnings: []
     type: inline
     value:
       results:
-        - raw_literal: Gold
-          expected_field: service.quality_of_service
-          resolved_value: GOLD
-          match_type: synonym
+        - raw_literal: 防火墙
+          expected_vertex: NetworkElement
+          expected_property: elem_type
+          resolved_value: firewall
+          match_type: value_synonym
           confidence: 0.98
           alternatives: []
-        - raw_literal: MPLS-TE
-          expected_field: tunnel.type
-          resolved_value: MPLS_TE
-          match_type: exact
+        - raw_literal: tun-mpls-001
+          expected_vertex: Tunnel
+          expected_property: id
+          resolved_value: tun-mpls-001
+          match_type: value_index_exact
           confidence: 1.0
           alternatives: []
   errors: []
@@ -144,7 +147,7 @@ Repair stage 示例：
     type: inline
     value:
       decision: ask_user
-      reason_code: ambiguous_semantic_binding
+      reason_code: ambiguous_vertex_binding
       fingerprint: sha256:def456
       oscillation_detected: false
       clarification:
@@ -189,26 +192,27 @@ coverage:
 
 核心指标：
 
-- `cga_osi_generation_success_count`
-- `cga_osi_clarification_required_count`
-- `cga_osi_unsupported_query_shape_count`
-- `cga_osi_generation_failed_count`
-- `cga_osi_stage_duration_ms`
-- `cga_osi_llm_call_count`
-- `cga_osi_repair_attempt_count`
-- `cga_osi_repair_oscillation_count`
-- `cga_osi_literal_cache_hit_rate`
-- `cga_osi_coverage_failure_count`
-- `cga_osi_input_clarification_required_count`
-- `cga_osi_assumption_notice_count`
-- `cga_osi_compiler_shape_mismatch_count`
-- `cga_osi_cypher_self_validation_failure_count`
+- `cga_graph_generation_success_count`
+- `cga_graph_clarification_required_count`
+- `cga_graph_unsupported_query_shape_count`
+- `cga_graph_generation_failed_count`
+- `cga_graph_stage_duration_ms`
+- `cga_graph_llm_call_count`
+- `cga_graph_repair_attempt_count`
+- `cga_graph_repair_oscillation_count`
+- `cga_graph_literal_cache_hit_rate`
+- `cga_graph_coverage_failure_count`
+- `cga_graph_input_clarification_required_count`
+- `cga_graph_assumption_notice_count`
+- `cga_graph_compiler_shape_mismatch_count`
+- `cga_graph_cypher_self_validation_failure_count`
 
 严重告警：
 
 - compiler shape mismatch。
 - DSL Parser 通过但 compiler 输出无法通过 read-only/syntax 校验。
-- schema registry 引用不存在。
+- graph semantic registry 引用不存在。
+- graph model validator 失败。
 - repair oscillation 频繁发生。
 - literal cache stale suspected 突增。
 - coverage failure 在某类问题上持续上升。
@@ -225,7 +229,7 @@ trace 可进入 testing-agent 和 runtime console，因此需要截断策略：
 
 ## 9. 与 testing-agent 的契约
 
-生成成功时，`input_prompt_snapshot` 使用 `cga_osi_trace_v1` 的 JSON string。
+生成成功时，`input_prompt_snapshot` 使用 `cga_graph_trace_v1` 的 JSON string。
 
 非成功输出也必须提交 trace：
 
