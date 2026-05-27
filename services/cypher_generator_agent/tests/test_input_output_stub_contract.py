@@ -33,30 +33,30 @@ class _CaptureTestingClient:
 
 
 @pytest.mark.asyncio
-async def test_ingest_question_preserves_io_contract_with_empty_generation_body() -> None:
+async def test_ingest_question_submits_pipeline_generation_trace_contract() -> None:
     testing_client = _CaptureTestingClient()
     service = CypherGeneratorAgentService(testing_client=testing_client)
 
-    result = await service.ingest_question(QAQuestionRequest(id="qa-osi-1", question="查询服务名称"))
+    result = await service.ingest_question(QAQuestionRequest(id="qa-osi-1", question="Gold 服务使用了哪些隧道"))
 
     assert result.submission_status == "submitted_to_testing"
-    assert result.generation_status is None
+    assert result.generation_status == "generated"
     assert result.generation_run_id
     assert testing_client.failure is None
     assert testing_client.submission is not None
     assert testing_client.submission.id == "qa-osi-1"
-    assert testing_client.submission.question == "查询服务名称"
+    assert testing_client.submission.question == "Gold 服务使用了哪些隧道"
     assert testing_client.submission.generation_run_id == result.generation_run_id
-    assert testing_client.submission.generated_cypher == ""
+    assert "SERVICE_USES_TUNNEL" in testing_client.submission.generated_cypher
 
     snapshot = json.loads(testing_client.submission.input_prompt_snapshot)
-    assert snapshot == {
-        "schema_version": "cga_io_stub_v1",
-        "trace_id": result.generation_run_id,
-        "input": {"id": "qa-osi-1", "question": "查询服务名称"},
-        "output": {"generated_cypher": ""},
-        "internal_flow": {},
-    }
+    assert snapshot["trace_schema_version"] == "cga_graph_trace_v1"
+    assert snapshot["trace_id"] == result.generation_run_id
+    assert snapshot["question_id"] == "qa-osi-1"
+    assert snapshot["source_question"] == "Gold 服务使用了哪些隧道"
+    assert snapshot["final_status"] == "generated"
+    assert snapshot["final_outputs"]["cypher"] == testing_client.submission.generated_cypher
+    assert snapshot["final_outputs"]["dsl"]["query_shape"] == "single_hop_traversal"
 
 
 @pytest.mark.asyncio
@@ -225,7 +225,12 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
     }
     assert _source_names(SERVICE_ROOT / "tests") <= allowed_tests
 
-    allowed_integration_files = {"__init__.py", "test_api_contract.py", "test_pipeline_mvp.py"}
+    allowed_integration_files = {
+        "__init__.py",
+        "test_api_contract.py",
+        "test_pipeline_mvp.py",
+        "test_testing_agent_submission.py",
+    }
     assert _source_names(SERVICE_ROOT / "tests" / "integration") <= allowed_integration_files
 
     allowed_semantic_model_tests = {"__init__.py", "test_loader.py", "test_registry.py"}

@@ -99,8 +99,8 @@ curl -X POST http://localhost:8003/api/v1/evaluations/submissions \
 	    "question": "查询网络设备及其端口信息",
 	    "generation_run_id": "run-001",
 	    "generation_status": "generated",
-	    "generated_cypher": "",
-	    "input_prompt_snapshot": "{\"schema_version\":\"cga_io_stub_v1\",\"trace_id\":\"run-001\",\"input\":{\"id\":\"qa-001\",\"question\":\"查询网络设备及其端口信息\"},\"output\":{\"generated_cypher\":\"\"},\"internal_flow\":{}}"
+	    "generated_cypher": "MATCH (ne:NetworkElement)-[:HAS_PORT]->(p:Port) RETURN ne.name AS device_name, p.name AS port_name LIMIT 10",
+	    "input_prompt_snapshot": "{\"trace_schema_version\":\"cga_graph_trace_v1\",\"trace_id\":\"run-001\",\"question_id\":\"qa-001\",\"generation_run_id\":\"run-001\",\"source_question\":\"查询网络设备及其端口信息\",\"final_status\":\"generated\",\"stages\":[],\"final_outputs\":{\"dsl\":{\"schema_version\":\"restricted_query_dsl_v1\"},\"cypher\":\"MATCH (ne:NetworkElement)-[:HAS_PORT]->(p:Port) RETURN ne.name AS device_name, p.name AS port_name LIMIT 10\"}}"
 	  }'
 ```
 
@@ -158,7 +158,7 @@ curl http://localhost:8003/api/v1/issues/{ticket_id}
 ## 维护说明
 
 - `cypher-generator-agent` 不执行 TuGraph；执行职责由 `testing-agent` 承担。
-- `cypher-generator-agent` 当前只保留输入/输出骨架，不包含自然语言理解、语义解析、Cypher 编译或 LLM 调用。
+- `cypher-generator-agent` 只生成 Cypher 并执行自身语义/语法/只读校验，不连接数据库。
 - 跨服务成功 submission 契约依赖 `id + question + generation_run_id + generation_status + generated_cypher + input_prompt_snapshot`。
-- 非成功输出统一使用 `CgaGenerationNonSuccessReport`，覆盖 `clarification_required`、`generation_failed` 和 `service_failed`。
-- `input_prompt_snapshot` 保存 `cga_io_stub_v1` 最小 I/O trace。
+- 非成功输出统一使用 `CgaGenerationNonSuccessReport`，覆盖 `clarification_required`、`unsupported_query_shape`、`generation_failed` 和 `service_failed`。
+- `input_prompt_snapshot` 保存完整 `cga_graph_trace_v1` trace JSON。
