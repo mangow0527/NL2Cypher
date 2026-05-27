@@ -133,6 +133,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "observability",
         "retrieval",
         "semantic_model",
+        "validation",
     }
     assert _source_names(SERVICE_ROOT / "app") <= allowed_app_children
 
@@ -188,6 +189,9 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
     allowed_binding_files = {"__init__.py", "binder.py", "models.py"}
     assert _source_names(SERVICE_ROOT / "app" / "binding") <= allowed_binding_files
 
+    allowed_validation_files = {"__init__.py", "coverage.py", "models.py", "semantic_validator.py"}
+    assert _source_names(SERVICE_ROOT / "app" / "validation") <= allowed_validation_files
+
     allowed_tests = {
         "__init__.py",
         "binding",
@@ -200,6 +204,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "observability",
         "retrieval",
         "semantic_model",
+        "validation",
         "test_input_output_stub_contract.py",
     }
     assert _source_names(SERVICE_ROOT / "tests") <= allowed_tests
@@ -257,6 +262,14 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
 
     allowed_binding_tests = {"__init__.py", "test_binder.py"}
     assert _source_names(SERVICE_ROOT / "tests" / "binding") <= allowed_binding_tests
+
+    allowed_validation_tests = {
+        "__init__.py",
+        "test_coverage.py",
+        "test_dsl_support.py",
+        "test_edge_endpoint.py",
+    }
+    assert _source_names(SERVICE_ROOT / "tests" / "validation") <= allowed_validation_tests
 
 
 def _source_names(path: Path) -> set[str]:

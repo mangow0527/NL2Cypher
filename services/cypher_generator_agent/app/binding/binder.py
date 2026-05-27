@@ -98,6 +98,7 @@ class SemanticBinder:
         assumptions.extend(self._fuzzy_literal_assumptions(literal_bindings))
         projection = self._bind_projection(grounded_understanding, candidate_index)
         sort = self._bind_sort(grounded_understanding, candidate_index)
+        group_by = self._bind_group_by(grounded_understanding, candidate_index)
 
         return BindingPlan(
             query_shape=_normalize_query_shape(grounded_understanding.get("query_shape")),
@@ -108,6 +109,7 @@ class SemanticBinder:
             metric_bindings=self._bind_metrics(grounded_understanding, candidate_index),
             path_pattern_bindings=self._bind_path_patterns(grounded_understanding, candidate_index),
             filters=filter_bindings,
+            group_by=group_by,
             projection=projection,
             sort=sort,
             limit=grounded_understanding.get("limit"),
@@ -137,7 +139,12 @@ class SemanticBinder:
             name = _extract_name(item, "edge")
             self._require_registry("edge", name, self.registry.get_edge)
             candidate = candidate_index.require("edge", name)
-            bindings = _append_unique_named(bindings, EdgeBinding(name=name, candidate=candidate))
+            binding = EdgeBinding(
+                name=name,
+                candidate=candidate,
+                direction=_extract_edge_direction(item),
+            )
+            bindings = _append_unique_edge(bindings, binding)
         return bindings
 
     def _bind_properties(
@@ -283,6 +290,21 @@ class SemanticBinder:
             self._validate_semantic_reference(item, candidate_index, field_name="sort")
         return sort
 
+    def _bind_group_by(
+        self,
+        grounded: Mapping[str, Any],
+        candidate_index: "_CandidateIndex",
+    ) -> list[dict[str, Any]]:
+        group_by = _coerce_dict_list(grounded.get("group_by", []), "group_by")
+        for item in group_by:
+            _validate_dimension_reference(item, field_name="group_by")
+            self._validate_semantic_reference(
+                {"semantic_type": "property", "property": item["property"]},
+                candidate_index,
+                field_name="group_by",
+            )
+        return group_by
+
     def _validate_semantic_reference(
         self,
         item: Mapping[str, Any],
@@ -424,6 +446,18 @@ def _extract_name(item: Any, object_type: str) -> str:
     raise BindingValidationError(f"cannot extract {object_type} name from {item!r}")
 
 
+def _extract_edge_direction(item: Any) -> str:
+    if not isinstance(item, Mapping):
+        return "forward"
+    value = item.get("direction") or item.get("edge_direction") or item.get("traversal_direction") or "forward"
+    direction = str(value)
+    if direction == "reverse":
+        direction = "backward"
+    if direction not in {"forward", "backward"}:
+        raise BindingValidationError(f"edge direction must be forward or backward, got {value!r}")
+    return direction
+
+
 def _extract_owner_name(item: Any) -> tuple[str, str]:
     if isinstance(item, str):
         if "." not in item:
@@ -539,6 +573,22 @@ def _validate_source_reference(item: Mapping[str, Any], *, field_name: str) -> N
         raise BindingValidationError(f"{field_name} source reference must not include {extras}")
 
 
+def _validate_dimension_reference(item: Mapping[str, Any], *, field_name: str) -> None:
+    alias = item.get("alias")
+    target = item.get("target")
+    property_ref = item.get("property")
+    if not isinstance(alias, str) or not alias:
+        raise BindingValidationError(f"{field_name} dimension must include alias")
+    if not isinstance(target, str) or not target:
+        raise BindingValidationError(f"{field_name} dimension must include target")
+    if not isinstance(property_ref, Mapping):
+        raise BindingValidationError(f"{field_name} dimension must include property owner/name")
+    owner = property_ref.get("owner")
+    name = property_ref.get("name") or property_ref.get("property_name")
+    if not owner or not name:
+        raise BindingValidationError(f"{field_name} dimension must include property owner/name")
+
+
 def _coerce_dict_list(value: Any, field_name: str) -> list[dict[str, Any]]:
     if value is None:
         return []
@@ -568,10 +618,7 @@ def _coerce_assumptions(value: Any) -> list[dict[str, Any]]:
 
 def _normalize_query_shape(value: Any) -> str:
     raw = "vertex_lookup" if value is None else str(value)
-    normalized = _QUERY_SHAPE_ALIASES.get(raw)
-    if normalized is None:
-        raise BindingValidationError(f"unsupported query_shape {raw}")
-    return normalized
+    return _QUERY_SHAPE_ALIASES.get(raw, raw)
 
 
 def _normalize_operator(value: Any) -> str:
@@ -584,6 +631,15 @@ def _normalize_operator(value: Any) -> str:
 
 def _append_unique_named(bindings: list[Any], binding: Any) -> list[Any]:
     if any(existing.name == binding.name for existing in bindings):
+        return bindings
+    return [*bindings, binding]
+
+
+def _append_unique_edge(
+    bindings: list[EdgeBinding],
+    binding: EdgeBinding,
+) -> list[EdgeBinding]:
+    if any(existing.name == binding.name and existing.direction == binding.direction for existing in bindings):
         return bindings
     return [*bindings, binding]
 

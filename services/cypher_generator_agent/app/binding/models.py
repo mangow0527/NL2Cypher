@@ -36,6 +36,7 @@ class VertexBinding(BindingBase):
 class EdgeBinding(BindingBase):
     name: str
     candidate: CandidateBinding
+    direction: Literal["forward", "backward"] = "forward"
 
 
 class PropertyBinding(BindingBase):
@@ -93,6 +94,7 @@ class BindingPlan(BindingBase):
     metric_bindings: list[MetricBinding] = Field(default_factory=list)
     path_pattern_bindings: list[PathPatternBinding] = Field(default_factory=list)
     filters: list[FilterBinding] = Field(default_factory=list)
+    group_by: list[dict[str, Any]] = Field(default_factory=list)
     projection: list[dict[str, Any]] = Field(default_factory=list)
     sort: list[dict[str, Any]] = Field(default_factory=list)
     limit: int | None = None

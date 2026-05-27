@@ -91,6 +91,61 @@ def test_gold_service_tunnel_question_binds_stable_plan(binder: SemanticBinder) 
     assert plan.limit == 50
 
 
+def test_edge_direction_mapping_is_preserved_for_validator_and_dsl_builder(
+    binder: SemanticBinder,
+) -> None:
+    plan = binder.bind(
+        {
+            "query_shape": "single_hop",
+            "selected_vertices": ["Tunnel", "Service"],
+            "selected_edges": [{"name": "SERVICE_USES_TUNNEL", "direction": "backward"}],
+        },
+        candidates=[
+            _candidate("vertex", "Tunnel"),
+            _candidate("vertex", "Service"),
+            _candidate("edge", "SERVICE_USES_TUNNEL"),
+        ],
+    )
+
+    assert plan.edge_bindings[0].name == "SERVICE_USES_TUNNEL"
+    assert plan.edge_bindings[0].direction == "backward"
+
+
+def test_metric_group_by_dimensions_are_preserved_for_validation(
+    binder: SemanticBinder,
+) -> None:
+    plan = binder.bind(
+        {
+            "query_shape": "metric_aggregate",
+            "selected_metrics": ["device_count"],
+            "group_by": [
+                {
+                    "alias": "elem_type",
+                    "target": "ne",
+                    "property": {"owner": "NetworkElement", "name": "elem_type"},
+                }
+            ],
+        },
+        candidates=[
+            _candidate("metric", "device_count"),
+            _candidate(
+                "property",
+                "NetworkElement.elem_type",
+                owner="NetworkElement",
+                semantic_name="elem_type",
+            ),
+        ],
+    )
+
+    assert plan.group_by == [
+        {
+            "alias": "elem_type",
+            "target": "ne",
+            "property": {"owner": "NetworkElement", "name": "elem_type"},
+        }
+    ]
+
+
 def test_rejects_llm_vertex_name_without_candidate_or_registry_match(binder: SemanticBinder) -> None:
     with pytest.raises(BindingValidationError, match="NetworkDevice"):
         binder.bind(
@@ -342,17 +397,18 @@ def test_rejects_filter_literal_result_for_wrong_property(binder: SemanticBinder
         )
 
 
-def test_rejects_unsupported_query_shape_alias(binder: SemanticBinder) -> None:
-    with pytest.raises(BindingValidationError, match="query_shape"):
-        binder.bind(
-            {
-                "query_shape": "shortest_path",
-                "selected_vertices": ["Service"],
-            },
-            candidates=[
-                _candidate("vertex", "Service"),
-            ],
-        )
+def test_preserves_unknown_query_shape_for_semantic_validator(binder: SemanticBinder) -> None:
+    plan = binder.bind(
+        {
+            "query_shape": "shortest_path",
+            "selected_vertices": ["Service"],
+        },
+        candidates=[
+            _candidate("vertex", "Service"),
+        ],
+    )
+
+    assert plan.query_shape == "shortest_path"
 
 
 def test_rejects_unsupported_filter_operator(binder: SemanticBinder) -> None:
