@@ -2,12 +2,12 @@
 
 > 日期：2026-05-27
 > 状态：设计 v1
-> 上游：Semantic Validator、Execution Feedback Analyzer
+> 上游：Semantic Validator、Cypher Self-Validation
 > 下游：Grounded LLM Understanding、用户澄清、失败输出
 
 ## 1. 设计目标
 
-Repair and Clarification Controller 决定当语义理解、绑定、校验或执行反馈出现问题时，系统是静默回灌 LLM 修复、反问用户、返回不支持，还是终止生成。
+Repair and Clarification Controller 决定当语义理解、绑定、语义校验或 Cypher 自校验出现问题时，系统是静默回灌 LLM 修复、反问用户、返回不支持，还是终止生成。
 
 Question Decomposer 之前或之内的输入不清晰问题不由本 Controller 处理。该类问题由总体架构中的 Input Clarification Gate 负责：
 
@@ -75,7 +75,7 @@ Question Decomposer 之前或之内的输入不清晰问题不由本 Controller 
 | 字面值 unresolved | `ask_user` | 使用 LiteralResolver alternatives |
 | DSL 不支持 | `unsupported` | 给可改写建议；不走 raw Cypher |
 | 编译后 shape mismatch | `generation_failed` | 视为 compiler bug，严重告警 |
-| TuGraph runtime schema error | `generation_failed` | 表示 semantic registry 或 compiler 有缺陷 |
+| 目标方言静态校验失败 | `generation_failed` | 表示 compiler 输出不符合允许的 TuGraph Cypher 子集 |
 
 ## 4. Repair Loop
 
@@ -99,7 +99,7 @@ repair_controller:
    - 可选合法候选。
    - 明确禁止发明候选。
 4. LLM 重新输出结构化理解。
-5. Semantic Binder 和 Validator 重新执行。
+5. Semantic Binder 和 Validator 重新运行。
 6. 若通过，继续 DSL。
 7. 若失败，记录历史状态和错误原因。
 8. 达到上限、重复错误或状态震荡时停止，转为 ask_user、unsupported 或 generation_failed。
@@ -111,7 +111,7 @@ repair_controller:
 状态指纹有两个来源：
 
 - repair loop 中优先使用 Semantic Binding 指纹，因为此时 DSL 可能尚未生成。
-- DSL Builder 之后使用 Normalized DSL 指纹，作为 compiler 和 execution feedback 的状态依据。
+- DSL Builder 之后使用 Normalized DSL 指纹，作为 compiler 和 Cypher self-validation 的状态依据。
 
 两种来源必须归一到同一个 canonical state schema：
 
@@ -350,25 +350,27 @@ canonicalization：
 }
 ```
 
-## 9. 执行反馈接入
+## 9. Cypher 自校验接入
 
-Execution Feedback Analyzer 可把运行异常回灌给 Controller。
+cypher-generator-agent 不连接数据库，因此 Controller 只接收生成链路内部的自校验错误。
 
-| 执行反馈 | 决策 |
+| 自校验反馈 | 决策 |
 | --- | --- |
-| 空结果 + low-confidence literal | 反问用户，使用 LiteralResolver alternatives |
-| 空结果 + high-confidence exact | 正常返回空结果，并说明没有匹配数据 |
-| 结果过大 | 按动态阈值判断，反问用户是否增加过滤或 limit |
-| 返回列与 plan 不一致 | `generation_failed`，reason 为 `compiler_shape_mismatch` |
-| TuGraph runtime syntax error | `generation_failed`，reason 为 `target_dialect_compile_error` |
-| timeout | 反问是否缩小路径范围、增加过滤或 limit |
+| Cypher 语法解析失败 | `generation_failed`，reason 为 `cypher_syntax_invalid` |
+| 出现写操作或非只读子句 | `generation_failed`，reason 为 `cypher_readonly_violation` |
+| Cypher 引用未绑定 label、relationship 或 property | `generation_failed`，reason 为 `cypher_schema_reference_invalid` |
+| 返回列与 DSL projection 不一致 | `generation_failed`，reason 为 `compiler_shape_mismatch` |
+| 目标 TuGraph 方言静态规则不支持 | `generation_failed`，reason 为 `target_dialect_static_error` |
 
-“自动重试”只能回到明确的上游层：
+不属于 CGA v1 的反馈：
 
-- 字面值低置信：回 LiteralResolver/Clarification。
-- 类型绑定错误：回 Grounded LLM Understanding。
-- 编译器 shape mismatch：不重试，工程告警。
-- timeout 或结果过大：不让 LLM 猜，反问用户收窄范围。
+- 空结果。
+- 结果过大。
+- 查询超时。
+- TuGraph runtime error。
+- golden answer 对比。
+
+这些反馈属于 testing-agent、runtime service 或其他下游执行服务。下游可以把失败报告提交给 repair-agent，但不应要求 cypher-generator-agent 在生成阶段连接数据库。
 
 ## 10. 配置
 
@@ -377,22 +379,9 @@ repair_controller:
   max_repair_attempts: 3
   ambiguous_top2_gap_threshold: 0.10
   max_clarification_options: 3
-  default_result_row_limit: 1000
-  large_result_threshold_policy:
-    fallback_rows: 50000
-    aggregate_group_by_rows: 5000
-    explicit_limit_multiplier: 5
-    max_threshold_rows: 100000
-  timeout_seconds: 30
 ```
 
-结果过大阈值不能是单一常量。v1 采用动态策略：
-
-- `top_n` 且有显式 limit 时，不触发结果过大反问，除非实际行数超过 `limit * explicit_limit_multiplier`。
-- `aggregate_group_by` 默认阈值较低，因为聚合结果通常应可浏览。
-- `entity_lookup`、`single_hop_traversal`、`variable_path_traversal`、`named_path_pattern` 使用 `fallback_rows`，并可按 target dataset 规模或 query profile 调整。
-- 核心网络节点、端口、链路等高基数字段必须通过真实查询样本 benchmark 后确定生产阈值。
-- 超过 `max_threshold_rows` 一律要求用户收窄范围，避免误触发超大结果导出。
+CGA v1 不配置结果行数阈值和执行 timeout，因为它不执行 Cypher。
 
 ## 11. 测试要求
 

@@ -62,10 +62,8 @@ flowchart TD
   H -->|"unsupported / 不支持"| L["Unsupported Query Shape<br/>不支持的查询形态"]
   I --> M["DSL Parser / AST<br/>DSL 解析器 / AST"]
   M --> N["Cypher Compiler<br/>Cypher 编译器"]
-  N --> O["Cypher Validation<br/>Cypher 校验"]
-  O --> P["Execution<br/>执行"]
-  P --> Q["Execution Feedback Analyzer<br/>执行反馈分析器"]
-  Q --> R["Result / Failure / Clarification<br/>结果 / 失败 / 澄清"]
+  N --> O["Cypher Self-Validation<br/>Cypher 自校验"]
+  O --> R["Generation Output<br/>生成输出"]
 ```
 
 各层职责：
@@ -75,7 +73,7 @@ flowchart TD
 | Input Clarification Gate | 原始问题 + Decomposer 失败信号 | 继续/澄清 | 在问题本身明显缺少指代对象或 Decomposer 无法产出有效结构时，前置反问用户 |
 | Question Decomposer | 原始问题 | 领域无关问题结构 | 拆出实质词、概念候选、关系动词、字面值、时间词、语气词、输出形态 |
 | Candidate Retriever | 问题结构 + OSI 索引 | 候选集合 | 按 concept、field、metric、relationship、path pattern 召回候选，并携带证据和置信度 |
-| LiteralResolver | 字面值 + 期望字段/实体 | 解析值或 alternatives | 精确匹配、同义词、模糊匹配、distinct value lookup、必要时 live lookup |
+| LiteralResolver | 字面值 + 期望字段/实体 | 解析值或 alternatives | 精确匹配、同义词、模糊匹配、预构建 distinct value index lookup |
 | Grounded LLM Understanding | 问题结构 + 候选 | 结构化理解 JSON | 在受限候选范围内选择绑定，不允许发明语义对象 |
 | Semantic Binder | 结构化理解 | 绑定计划 | 把 LLM 输出转换成稳定 semantic_id、role、field、operator、value |
 | Semantic Validator | 绑定计划 | 通过/错误列表 | 校验类型、方向、覆盖、歧义、路径、DSL 支持度 |
@@ -83,7 +81,9 @@ flowchart TD
 | Restricted DSL Builder | 通过校验的绑定计划 | DSL 文档 | 生成受限、可解析、可编译的查询描述 |
 | DSL Parser / AST | DSL 文档 | AST | schema 校验、结构规范化、稳定编译输入 |
 | Cypher Compiler | AST + OSI graph binding | Cypher | 模板化生成 TuGraph 目标 Cypher |
-| Feedback Analyzer | 执行结果 | 成功/异常分类 | 空结果、过大结果、shape mismatch、runtime error、timeout 的后处理 |
+| Cypher Self-Validation | Cypher + AST + semantic registry | 生成输出或非成功输出 | 做语法、只读、schema-aware、DSL/AST 一致性和目标方言静态校验；不连接数据库、不执行 Cypher |
+
+cypher-generator-agent 的边界到 `Generation Output` 为止。它不连接 TuGraph，不执行 `EXPLAIN`、dry-run、probe query 或正式查询；真实执行、结果对比、空结果和超大结果分析属于 testing-agent、runtime service 或其他下游服务。
 
 ## 4. Question Decomposer 结构化输出
 
@@ -205,4 +205,4 @@ v1 明确不支持以下能力：
 - LiteralResolver 对枚举值、ID、名称的解析路径独立可测。
 - Restricted DSL 能覆盖单跳、变长路径、命名 path pattern、聚合、Top-N、两步聚合的 v1 子集。
 - repair loop 有最大轮次、状态指纹、震荡检测和降级策略。
-- 每次查询都有完整 trace，能复盘候选、绑定、校验、编译和执行反馈。
+- 每次查询都有完整 trace，能复盘候选、绑定、语义校验、编译和自校验。
