@@ -162,7 +162,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
     }
     assert _source_names(SERVICE_ROOT / "app" / "cypher_validation") <= allowed_cypher_validation_files
 
-    allowed_dsl_files = {"__init__.py", "ast.py", "models.py", "parser.py"}
+    allowed_dsl_files = {"__init__.py", "ast.py", "builder.py", "models.py", "parser.py"}
     assert _source_names(SERVICE_ROOT / "app" / "dsl") <= allowed_dsl_files
 
     allowed_compiler_files = {"__init__.py", "compiler.py", "projection.py", "templates.py"}
@@ -223,7 +223,13 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
     }
     assert _source_names(SERVICE_ROOT / "tests" / "cypher_validation") <= allowed_cypher_validation_tests
 
-    allowed_dsl_tests = {"__init__.py", "test_operation_sequences.py", "test_parser.py"}
+    allowed_dsl_tests = {
+        "__init__.py",
+        "test_builder_named_path_pattern.py",
+        "test_builder_single_hop.py",
+        "test_operation_sequences.py",
+        "test_parser.py",
+    }
     assert _source_names(SERVICE_ROOT / "tests" / "dsl") <= allowed_dsl_tests
 
     allowed_compiler_tests = {
