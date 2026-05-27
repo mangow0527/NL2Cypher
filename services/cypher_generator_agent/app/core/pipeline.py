@@ -208,11 +208,13 @@ def _run_pipeline_steps(
                 "schema_version": result.schema_version,
                 "cypher": result.cypher,
                 "parameters": result.parameters,
+                "expected_return_aliases": result.expected_return_aliases,
             },
         )
         validation_result = _run_cypher_self_validation_stage(
             trace,
             cypher=compilation.cypher,
+            expected_return_aliases=compilation.expected_return_aliases,
             validator=CypherSelfValidator(registry),
         )
         if not validation_result.valid:
@@ -271,15 +273,19 @@ def _run_cypher_self_validation_stage(
     trace: GraphTraceBuilder,
     *,
     cypher: str,
+    expected_return_aliases: list[str],
     validator: CypherSelfValidator,
 ) -> CypherSelfValidationResult:
     started = perf_counter()
-    result = validator.validate_generated_query(cypher)
+    result = validator.validate_generated_query(
+        cypher,
+        expected_return_aliases=expected_return_aliases,
+    )
     trace.add_stage(
         stage=StageName.CYPHER_SELF_VALIDATION,
         status="success" if result.valid else "failed",
         duration_ms=_duration_ms(started),
-        input_ref=inline_ref({"cypher": cypher}),
+        input_ref=inline_ref({"cypher": cypher, "expected_return_aliases": expected_return_aliases}),
         output_ref=inline_ref(result.model_dump(mode="json")),
         errors=[error.model_dump(mode="json") for error in result.errors],
         warnings=[warning.model_dump(mode="json") for warning in result.warnings],

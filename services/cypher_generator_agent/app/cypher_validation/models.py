@@ -16,6 +16,7 @@ FailureCode = Literal[
     "cypher_readonly_violation",
     "cypher_schema_reference_invalid",
     "target_dialect_static_error",
+    "compiler_shape_mismatch",
 ]
 
 
@@ -31,6 +32,7 @@ class CypherSelfValidationRequest(CypherValidationBase):
     cypher: str
     graph_model_checksum: Optional[str] = None
     target_dialect: Optional[str] = None
+    expected_return_aliases: list[str] | None = None
 
 
 class CypherValidationCheck(CypherValidationBase):

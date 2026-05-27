@@ -22,7 +22,7 @@ def test_gold_service_uses_tunnel_compiles_parameterized_cypher(
     assert result.parameters == {"quality_of_service": "GOLD"}
     assert "GOLD" not in result.cypher
     assert result.validation_result.valid is True
-    assert {check.name: check.status for check in result.validation_result.checks}["shape"] == "skipped"
+    assert {check.name: check.status for check in result.validation_result.checks}["shape"] == "passed"
 
 
 def test_single_hop_duplicate_filter_property_names_get_unique_parameters(

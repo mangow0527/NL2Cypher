@@ -151,6 +151,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "parser.py",
         "readonly.py",
         "schema_reference.py",
+        "shape.py",
         "validator.py",
     }
     assert _source_names(SERVICE_ROOT / "app" / "cypher_validation") <= allowed_cypher_validation_files
@@ -249,6 +250,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "test_readonly.py",
         "test_model_artifact_validation.py",
         "test_schema_reference_mvp.py",
+        "test_shape.py",
         "test_variable_path_bounds.py",
         "test_validator_entrypoints.py",
     }

@@ -77,6 +77,7 @@ class CypherCompilationDraft:
     schema_version: str
     cypher: str
     parameters: dict[str, object]
+    expected_return_aliases: list[str]
 
 
 @dataclass(frozen=True)
@@ -125,11 +126,15 @@ class CypherCompiler:
             schema_version=CYPHER_COMPILATION_RESULT_SCHEMA_VERSION,
             cypher=cypher,
             parameters=parameters,
+            expected_return_aliases=projection_aliases(ast.projection),
         )
 
     def compile(self, ast: RestrictedQueryAst) -> CypherCompilationResult:
         draft = self.compile_draft(ast)
-        validation_result = self.validator.validate_generated_query(draft.cypher)
+        validation_result = self.validator.validate_generated_query(
+            draft.cypher,
+            expected_return_aliases=draft.expected_return_aliases,
+        )
         if not validation_result.valid:
             raise CypherCompilerError("compiled Cypher self-validation failed", validation_result=validation_result)
         return CypherCompilationResult(

@@ -13,6 +13,7 @@ from .dialect import validate_target_dialect
 from .parser import parse_cypher
 from .readonly import validate_readonly
 from .schema_reference import validate_schema_references
+from .shape import validate_compiler_shape
 
 
 class CypherSelfValidator:
@@ -22,12 +23,18 @@ class CypherSelfValidator:
     def validate(self, request: CypherSelfValidationRequest) -> CypherSelfValidationResult:
         return self._validate(request)
 
-    def validate_generated_query(self, cypher: str) -> CypherSelfValidationResult:
+    def validate_generated_query(
+        self,
+        cypher: str,
+        *,
+        expected_return_aliases: list[str] | None = None,
+    ) -> CypherSelfValidationResult:
         return self._validate(
             CypherSelfValidationRequest(
                 mode="generated_query",
                 source_kind="compiled_query",
                 cypher=cypher,
+                expected_return_aliases=expected_return_aliases,
             )
         )
 
@@ -88,7 +95,19 @@ class CypherSelfValidator:
             checks.extend(_ir03b_check_slots(request, model_artifact_status="failed"))
             return _result(request, checks, errors, warnings)
         checks.append(CypherValidationCheck(name="schema_reference", status="passed"))
-        checks.extend(_ir03b_check_slots(request, model_artifact_status="passed"))
+
+        if request.expected_return_aliases is None:
+            checks.append(CypherValidationCheck(name="shape", status="skipped"))
+        else:
+            shape_errors = validate_compiler_shape(parsed, request.expected_return_aliases)
+            if shape_errors:
+                errors.extend(shape_errors)
+                checks.append(CypherValidationCheck(name="shape", status="failed"))
+                checks.append(_model_artifact_check(request, status="failed"))
+                return _result(request, checks, errors, warnings)
+            checks.append(CypherValidationCheck(name="shape", status="passed"))
+
+        checks.append(_model_artifact_check(request, status="passed"))
 
         return _result(request, checks, errors, warnings)
 
@@ -138,8 +157,18 @@ def _ir03b_check_slots(
     *,
     model_artifact_status: str,
 ) -> list[CypherValidationCheck]:
-    status = model_artifact_status if request.mode == "model_artifact" else "skipped"
     return [
         CypherValidationCheck(name="shape", status="skipped"),
-        CypherValidationCheck(name="model_artifact", status=status),
+        _model_artifact_check(request, status=model_artifact_status),
     ]
+
+
+def _model_artifact_check(
+    request: CypherSelfValidationRequest,
+    *,
+    status: str,
+) -> CypherValidationCheck:
+    return CypherValidationCheck(
+        name="model_artifact",
+        status=status if request.mode == "model_artifact" else "skipped",
+    )
