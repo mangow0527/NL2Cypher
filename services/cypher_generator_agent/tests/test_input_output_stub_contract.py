@@ -113,6 +113,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
     allowed_app_children = {
         "__init__.py",
         "api",
+        "compiler",
         "core",
         "cypher_validation",
         "dsl",
@@ -149,8 +150,12 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
     allowed_dsl_files = {"__init__.py", "ast.py", "models.py", "parser.py"}
     assert _source_names(SERVICE_ROOT / "app" / "dsl") <= allowed_dsl_files
 
+    allowed_compiler_files = {"__init__.py", "compiler.py", "projection.py", "templates.py"}
+    assert _source_names(SERVICE_ROOT / "app" / "compiler") <= allowed_compiler_files
+
     allowed_tests = {
         "__init__.py",
+        "compiler",
         "cypher_validation",
         "dsl",
         "fixtures",
@@ -176,6 +181,16 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
 
     allowed_dsl_tests = {"__init__.py", "test_operation_sequences.py", "test_parser.py"}
     assert _source_names(SERVICE_ROOT / "tests" / "dsl") <= allowed_dsl_tests
+
+    allowed_compiler_tests = {
+        "__init__.py",
+        "conftest.py",
+        "test_named_path_pattern.py",
+        "test_readonly_output.py",
+        "test_single_hop.py",
+        "test_vertex_lookup.py",
+    }
+    assert _source_names(SERVICE_ROOT / "tests" / "compiler") <= allowed_compiler_tests
 
     allowed_fixture_files = {
         "__init__.py",
