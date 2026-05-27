@@ -29,10 +29,21 @@ VAR_PROPERTY_RE = re.compile(rf"(?<!\$)\b(?P<var>{IDENTIFIER_RE})\.(?P<property>
 NUMERIC_AGG_START_RE = re.compile(rf"\b(?P<function>sum|avg)\s*\(", re.IGNORECASE)
 WITH_ALIAS_RE = re.compile(rf"(?P<expression>.+?)\s+AS\s+(?P<alias>{IDENTIFIER_RE})\s*$", re.IGNORECASE)
 IDENTIFIER_TOKEN_RE = re.compile(rf"\b(?P<identifier>{IDENTIFIER_RE})\b")
+PROPERTY_OPERATOR_RE = re.compile(
+    rf"\b(?P<var>{IDENTIFIER_RE})\.(?P<property>{IDENTIFIER_RE})\s*"
+    rf"(?P<operator>>=|<=|<>|=|>|<|\bIN\b|\bCONTAINS\b)",
+    re.IGNORECASE,
+)
+OPERATOR_PROPERTY_RE = re.compile(
+    rf"(?P<operator>>=|<=|<>|=|>|<|\bIN\b|\bCONTAINS\b)\s*"
+    rf"(?P<var>{IDENTIFIER_RE})\.(?P<property>{IDENTIFIER_RE})\b",
+    re.IGNORECASE,
+)
 MAP_KEY_RE = re.compile(rf"(?P<key>{IDENTIFIER_RE})\s*:")
 NODE_LABEL_RE = re.compile(rf":\s*(?P<label>{IDENTIFIER_RE})")
 REL_TYPE_RE = re.compile(rf"[:|]\s*(?P<type>{IDENTIFIER_RE})")
 NUMERIC_PROPERTY_TYPES = frozenset({"int", "integer", "float", "double", "number", "decimal"})
+RANGE_PROPERTY_TYPES = NUMERIC_PROPERTY_TYPES | frozenset({"date", "datetime", "time", "timestamp"})
 
 
 @dataclass(frozen=True)
@@ -73,6 +84,7 @@ def validate_schema_references(
 
     _validate_var_properties(parsed.cypher, registry, bindings, errors)
     _validate_numeric_aggregate_properties(parsed, registry, bindings, errors)
+    _validate_operator_property_types(parsed.cypher, registry, bindings, errors)
     return errors
 
 
@@ -247,6 +259,65 @@ def _validate_numeric_aggregate_properties(
             )
 
 
+def _validate_operator_property_types(
+    cypher: str,
+    registry: GraphSemanticRegistry,
+    bindings: dict[str, Binding],
+    errors: list[CypherValidationIssue],
+) -> None:
+    for operator_match in _iter_property_operator_matches(cypher):
+        variable = operator_match.group("var")
+        property_name = operator_match.group("property")
+        operator = operator_match.group("operator").upper()
+        binding = bindings.get(variable)
+        if binding is None:
+            continue
+
+        try:
+            property_type = registry.property_type(binding.owner, property_name)
+        except RegistryLookupError:
+            continue
+
+        if operator in {">", ">=", "<", "<="}:
+            if property_type.lower() in RANGE_PROPERTY_TYPES:
+                continue
+            errors.append(
+                validation_error(
+                    SCHEMA_FAILURE_CODE,
+                    (
+                        f"range operator {operator} requires a numeric or temporal property, "
+                        f"but {binding.owner}.{property_name} has type {property_type}"
+                    ),
+                    "schema_reference",
+                    operator_match.group(0),
+                )
+            )
+            continue
+
+        if operator == "CONTAINS":
+            if property_type.lower() == "string":
+                continue
+            errors.append(
+                validation_error(
+                    SCHEMA_FAILURE_CODE,
+                    (
+                        f"CONTAINS requires a string property, "
+                        f"but {binding.owner}.{property_name} has type {property_type}"
+                    ),
+                    "schema_reference",
+                    operator_match.group(0),
+                )
+            )
+
+
+def _iter_property_operator_matches(cypher: str):
+    for regex in (PROPERTY_OPERATOR_RE, OPERATOR_PROPERTY_RE):
+        for match in regex.finditer(cypher):
+            if _inside_string(cypher, match.start()):
+                continue
+            yield match
+
+
 def _iter_numeric_aggregate_calls(cypher: str) -> list[tuple[str, str, str]]:
     calls: list[tuple[str, str, str]] = []
     for match in NUMERIC_AGG_START_RE.finditer(cypher):
@@ -352,6 +423,25 @@ def _matching_parenthesis(text: str, open_index: int) -> int | None:
             if depth == 0:
                 return index
     return None
+
+
+def _inside_string(text: str, index: int) -> bool:
+    quote: str | None = None
+    escaped = False
+    for char in text[:index]:
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if quote:
+            if char == quote:
+                quote = None
+            continue
+        if char in {'"', "'"}:
+            quote = char
+    return quote is not None
 
 
 def _parse_node_pattern(raw: str) -> NodePattern:

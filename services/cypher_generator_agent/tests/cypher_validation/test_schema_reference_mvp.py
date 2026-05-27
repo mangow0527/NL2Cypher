@@ -126,6 +126,49 @@ def test_numeric_aggregates_accept_compatible_properties(
     assert result.errors == []
 
 
+@pytest.mark.parametrize(
+    ("cypher", "message_fragment"),
+    [
+        ("MATCH (ne:NetworkElement) WHERE ne.name > $name RETURN ne.id AS id", "range"),
+        ("MATCH (ne:NetworkElement) WHERE ne.elem_type <= $elem_type RETURN ne.id AS id", "range"),
+        ("MATCH (ne:NetworkElement) WHERE $name < ne.name RETURN ne.id AS id", "range"),
+        ("MATCH (t:Tunnel) WHERE t.bandwidth CONTAINS $needle RETURN t.id AS id", "CONTAINS"),
+        ("MATCH (t:Tunnel) WHERE $needle CONTAINS t.bandwidth RETURN t.id AS id", "CONTAINS"),
+    ],
+)
+def test_operators_reject_incompatible_property_types(
+    validator: CypherSelfValidator,
+    cypher: str,
+    message_fragment: str,
+) -> None:
+    result = validate(validator, cypher)
+
+    assert result.valid is False
+    assert [error.code for error in result.errors] == ["cypher_schema_reference_invalid"]
+    assert result.errors[0].check == "schema_reference"
+    assert message_fragment in result.errors[0].message
+
+
+@pytest.mark.parametrize(
+    "cypher",
+    [
+        "MATCH (t:Tunnel) WHERE t.bandwidth >= $min_bandwidth RETURN t.id AS id",
+        "MATCH (t:Tunnel)-[:PATH_THROUGH]->(ne:NetworkElement) WHERE t.bandwidth < $max_bandwidth RETURN t.id AS id",
+        "MATCH (ne:NetworkElement) WHERE ne.name CONTAINS $fragment RETURN ne.id AS id",
+        "MATCH (ne:NetworkElement) WHERE ne.elem_type IN $elem_types RETURN ne.id AS id",
+        "MATCH (ne:NetworkElement) RETURN 'ne.name > $name' AS text",
+    ],
+)
+def test_operators_accept_compatible_property_types(
+    validator: CypherSelfValidator,
+    cypher: str,
+) -> None:
+    result = validate(validator, cypher)
+
+    assert result.valid is True
+    assert result.errors == []
+
+
 def test_reverse_edge_direction_uses_reversed_endpoint_validation(
     validator: CypherSelfValidator,
 ) -> None:
