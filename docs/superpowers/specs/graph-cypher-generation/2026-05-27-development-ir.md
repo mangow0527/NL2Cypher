@@ -12,6 +12,9 @@
 目标：
 
 - 从当前 I/O stub 演进到完整的 graph-native Cypher generation pipeline。
+- 当前默认目标数据库为 TuGraph，schema 事实来源是 `services/testing_agent/docs/reference/schema.json`。
+- CGA 默认消费的 Graph Semantic Model 语料是 `services/cypher_generator_agent/tests/fixtures/tugraph_network_graph_model.yaml`。
+- CGA 默认消费的静态 literal 语料是 `services/cypher_generator_agent/tests/fixtures/tugraph_value_index.json`，它不是在线 value-index 服务。
 - 保持 cypher-generator-agent 不连接 TuGraph、不执行 Cypher 的边界。
 - 让每个 IR 都能独立开发、独立测试、独立提交。
 - 在引入 LLM 前，优先建立确定性底座、schema 契约、fixture 和自校验防线。
