@@ -1032,17 +1032,27 @@ class RuntimeResultsService:
 
     def _dedupe_graph_unresolved_items(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
-        seen: set[tuple[str, str]] = set()
+        seen: dict[tuple[str, str], int] = {}
         for item in items:
             clean_item = {key: value for key, value in item.items() if value not in (None, "", {})}
             term = str(clean_item.get("term") or "")
             expected = str(clean_item.get("expected") or "")
             if not term and not expected:
                 continue
-            key = (term, expected)
+            key = (term, expected.rsplit(".", 1)[-1] if expected else "")
             if key in seen:
+                existing = result[seen[key]]
+                existing_expected = str(existing.get("expected") or "")
+                if expected and len(expected) > len(existing_expected):
+                    existing["expected"] = expected
+                if clean_item.get("value_index_miss"):
+                    existing["value_index_miss"] = True
+                if not existing.get("code") and clean_item.get("code"):
+                    existing["code"] = clean_item["code"]
+                if not existing.get("alternatives") and clean_item.get("alternatives"):
+                    existing["alternatives"] = clean_item["alternatives"]
                 continue
-            seen.add(key)
+            seen[key] = len(result)
             result.append(clean_item)
         return result
 
