@@ -85,7 +85,12 @@ class SemanticBinder:
         candidate_index = _CandidateIndex(_coerce_candidates(candidates))
         literal_bindings = self._bind_literals(grounded_understanding)
         property_bindings = self._bind_properties(grounded_understanding, candidate_index)
-        filter_bindings = self._bind_filters(grounded_understanding, candidate_index, literal_bindings)
+        filter_bindings = self._bind_filters(
+            grounded_understanding,
+            candidate_index,
+            literal_bindings,
+            property_bindings,
+        )
         if not filter_bindings:
             filter_bindings = _filters_from_selected_literals(literal_bindings, property_bindings)
 
@@ -254,17 +259,20 @@ class SemanticBinder:
         grounded: Mapping[str, Any],
         candidate_index: "_CandidateIndex",
         literal_bindings: list[LiteralBinding],
+        property_bindings: list[PropertyBinding],
     ) -> list[FilterBinding]:
         filters: list[FilterBinding] = []
         for item in _selected_items(grounded, "filters", "selected_filters"):
             if not isinstance(item, Mapping):
                 raise BindingValidationError(f"filter binding must be a mapping, got {item!r}")
-            owner, property_name = _extract_owner_name(item)
-            self._bind_property({"owner": owner, "name": property_name}, candidate_index)
 
             inline_literal = _literal_from_filter(item)
+            filter_literals = literal_bindings if inline_literal is None else [*literal_bindings, inline_literal]
+            owner, property_name = _extract_filter_owner_name(item, filter_literals, property_bindings)
+            self._bind_property({"owner": owner, "name": property_name}, candidate_index)
+
             if inline_literal is not None:
-                _validate_filter_literal_match(item, inline_literal)
+                _validate_filter_literal_match(item, inline_literal, owner=owner, property_name=property_name)
                 literal_bindings.append(inline_literal)
             raw_literal = _extract_raw_literal(item, inline_literal)
             literal = inline_literal or _find_literal_binding(literal_bindings, owner, property_name, raw_literal)
@@ -614,6 +622,41 @@ def _extract_owner_name(item: Any) -> tuple[str, str]:
     raise BindingValidationError(f"cannot extract property owner/name from {item!r}")
 
 
+def _extract_filter_owner_name(
+    item: Mapping[str, Any],
+    literal_bindings: list[LiteralBinding],
+    property_bindings: list[PropertyBinding],
+) -> tuple[str, str]:
+    try:
+        return _extract_owner_name(item)
+    except BindingValidationError as exc:
+        property_name = _extract_property_name_shorthand(item)
+        if property_name is None:
+            raise
+        raw_literal = _extract_raw_literal(item, None)
+        literal_owners = {
+            literal.owner
+            for literal in literal_bindings
+            if literal.owner is not None
+            and literal.property == property_name
+            and _literal_matches_raw_value(literal, raw_literal)
+        }
+        if len(literal_owners) == 1:
+            return next(iter(literal_owners)), property_name
+
+        property_owners = {binding.owner for binding in property_bindings if binding.name == property_name}
+        if len(property_owners) == 1:
+            return next(iter(property_owners)), property_name
+        raise exc
+
+
+def _extract_property_name_shorthand(item: Mapping[str, Any]) -> str | None:
+    property_value = item.get("property") or item.get("property_name") or item.get("name")
+    if isinstance(property_value, str) and "." not in property_value:
+        return property_value
+    return None
+
+
 def _coerce_literal_result(item: Any) -> LiteralResolverResult:
     if isinstance(item, LiteralResolverResult):
         return item
@@ -653,8 +696,13 @@ def _literal_from_filter(item: Mapping[str, Any]) -> LiteralBinding | None:
     )
 
 
-def _validate_filter_literal_match(item: Mapping[str, Any], literal: LiteralBinding) -> None:
-    owner, property_name = _extract_owner_name(item)
+def _validate_filter_literal_match(
+    item: Mapping[str, Any],
+    literal: LiteralBinding,
+    *,
+    owner: str,
+    property_name: str,
+) -> None:
     raw_literal = _extract_raw_literal(item, literal)
     if literal.owner != owner or literal.property != property_name:
         raise BindingValidationError(
@@ -678,9 +726,27 @@ def _extract_raw_literal(item: Mapping[str, Any], inline_literal: LiteralBinding
     shorthand = _single_semantic_reference(item)
     if shorthand is not None:
         value = item[next(iter(item))]
-        if isinstance(value, str | int | float | bool):
+        if _is_scalar_literal(value):
             return str(value)
+    value = item.get("value") or item.get("resolved_value") or item.get("normalized_value")
+    if _is_scalar_literal(value):
+        return str(value)
     return None
+
+
+def _is_scalar_literal(value: Any) -> bool:
+    return isinstance(value, str | int | float | bool)
+
+
+def _literal_matches_raw_value(literal: LiteralBinding, raw_literal: str | None) -> bool:
+    if raw_literal is None:
+        return True
+    literal_values = {
+        literal.raw_literal,
+        None if literal.value is None else str(literal.value),
+        None if literal.normalized_value is None else str(literal.normalized_value),
+    }
+    return raw_literal in literal_values
 
 
 def _find_literal_binding(
@@ -691,12 +757,7 @@ def _find_literal_binding(
 ) -> LiteralBinding | None:
     for literal in literal_bindings:
         if literal.owner == owner and literal.property == property_name:
-            literal_values = {
-                literal.raw_literal,
-                None if literal.value is None else str(literal.value),
-                None if literal.normalized_value is None else str(literal.normalized_value),
-            }
-            if raw_literal is None or raw_literal in literal_values:
+            if _literal_matches_raw_value(literal, raw_literal):
                 return literal
     return None
 

@@ -91,6 +91,52 @@ def test_gold_service_tunnel_question_binds_stable_plan(binder: SemanticBinder) 
     assert plan.limit == 50
 
 
+def test_filter_property_shorthand_is_grounded_by_selected_literal_and_property(
+    binder: SemanticBinder,
+) -> None:
+    literal_result = LiteralResolverResult(
+        raw_literal="Gold",
+        resolved=True,
+        resolved_value="GOLD",
+        normalized_value="GOLD",
+        match_type="value_synonym",
+        confidence=0.98,
+        expected_vertex="Service",
+        expected_property="quality_of_service",
+        evidence=[
+            LiteralEvidence(
+                source="property.value_synonyms",
+                matched="Gold",
+                target="GOLD",
+            )
+        ],
+    )
+
+    plan = binder.bind(
+        {
+            "query_shape": "single_hop",
+            "selected_vertices": ["Service", "Tunnel"],
+            "selected_edges": ["SERVICE_USES_TUNNEL"],
+            "selected_properties": ["Service.quality_of_service"],
+            "selected_literals": [literal_result.model_dump()],
+            "filters": [
+                {
+                    "property": "quality_of_service",
+                    "operator": "=",
+                    "value": "Gold",
+                }
+            ],
+            "projection": [{"semantic_type": "vertex", "name": "Tunnel"}],
+        },
+        candidates=_gold_candidates(),
+    )
+
+    assert plan.filters[0].owner == "Service"
+    assert plan.filters[0].property == "quality_of_service"
+    assert plan.filters[0].raw_literal == "Gold"
+    assert plan.filters[0].value == "GOLD"
+
+
 def test_edge_direction_mapping_is_preserved_for_validator_and_dsl_builder(
     binder: SemanticBinder,
 ) -> None:
