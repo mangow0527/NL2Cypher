@@ -353,6 +353,7 @@ def _trace_base(*, trace_id: str, qa_id: str, run_id: str, question: str, status
 def _generated_stages() -> list[dict[str, object]]:
     return [
         _stage("graph_model_loader"),
+        _stage("input_clarification_gate"),
         _stage("question_decomposer"),
         _stage("candidate_retrieval"),
         _stage("literal_resolver"),

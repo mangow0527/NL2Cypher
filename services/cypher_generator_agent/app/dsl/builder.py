@@ -24,7 +24,9 @@ class RestrictedDslBuilder:
         query_id: str,
     ) -> dict[str, Any]:
         self._reject_uncompiled_sort_limit(plan)
-        if plan.query_shape == "single_hop_traversal":
+        if plan.query_shape == "vertex_lookup":
+            dsl = self._build_vertex_lookup(plan, source_question=source_question, query_id=query_id)
+        elif plan.query_shape == "single_hop_traversal":
             dsl = self._build_single_hop(plan, source_question=source_question, query_id=query_id)
         elif plan.query_shape == "named_path_pattern":
             dsl = self._build_named_path_pattern(plan, source_question=source_question, query_id=query_id)
@@ -41,6 +43,24 @@ class RestrictedDslBuilder:
         else:
             raise ValueError(f"unsupported query_shape for restricted DSL builder: {plan.query_shape}")
 
+        return dsl
+
+    def _build_vertex_lookup(
+        self,
+        plan: BindingPlan,
+        *,
+        source_question: str,
+        query_id: str,
+    ) -> dict[str, Any]:
+        if len(plan.vertex_bindings) != 1:
+            raise ValueError("vertex_lookup requires exactly one target vertex")
+
+        target = plan.vertex_bindings[0]
+        role_by_owner = {target.name: "target"}
+
+        dsl = self._base_payload(plan, source_question=source_question, query_id=query_id)
+        dsl["bindings"] = {"target": {"vertex_name": target.name}}
+        self._add_filters_projection_sort_limit(dsl, plan, role_by_owner=role_by_owner, include_filters=True)
         return dsl
 
     def _reject_uncompiled_sort_limit(self, plan: BindingPlan) -> None:

@@ -236,6 +236,7 @@ def _trace_builder(qa_id: str, run_id: str, question: str) -> GraphTraceBuilder:
 def _add_generated_trace_stages(builder: GraphTraceBuilder) -> None:
     for stage in [
         "graph_model_loader",
+        "input_clarification_gate",
         "question_decomposer",
         "candidate_retrieval",
         "literal_resolver",

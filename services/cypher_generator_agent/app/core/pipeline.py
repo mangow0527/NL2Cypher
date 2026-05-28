@@ -29,6 +29,7 @@ from services.cypher_generator_agent.app.observability.trace import GraphTraceBu
 from services.cypher_generator_agent.app.repair.controller import RepairController
 from services.cypher_generator_agent.app.repair.fingerprint import from_binding_plan
 from services.cypher_generator_agent.app.repair.models import RepairDecision, RepairIssue
+from services.cypher_generator_agent.app.repair.notices import render_user_visible_notices
 from services.cypher_generator_agent.app.retrieval.models import CandidateRetrievalResult, SemanticCandidate
 from services.cypher_generator_agent.app.retrieval.retriever import CandidateRetriever
 from services.cypher_generator_agent.app.semantic_model.loader import load_graph_semantic_model
@@ -107,6 +108,18 @@ def _run_pipeline_steps(
         "name": registry.model.name,
         "checksum": load_result.model_checksum,
     }
+
+    input_gate = _run_stage(
+        trace,
+        stage=StageName.INPUT_CLARIFICATION_GATE,
+        input_payload={"question": question},
+        action=lambda: _input_clarification_gate(question),
+    )
+    if input_gate.get("status") == "clarification_required":
+        return _clarification(
+            trace,
+            question=str(input_gate.get("question") or "请补充澄清信息。"),
+        )
 
     decomposition = _run_stage(
         trace,
@@ -235,6 +248,7 @@ def _run_pipeline_steps(
                 decision=decision,
                 fallback_details={"validation": validation_result.model_dump(mode="json")},
             )
+        user_visible_notices = render_user_visible_notices(validation_result.assumptions)
 
         try:
             dsl = _run_stage(
@@ -298,7 +312,7 @@ def _run_pipeline_steps(
         except (CypherCompilerError, RestrictedDslValidationError, ValueError) as exc:
             return _failure(trace, reason="compiler_shape_mismatch", message=str(exc))
 
-        return _generated(trace, dsl=dsl, cypher=compilation.cypher)
+        return _generated(trace, dsl=dsl, cypher=compilation.cypher, user_visible_notices=user_visible_notices)
 
 
 def _run_stage(
@@ -349,6 +363,27 @@ def _structured_llm_client_from_settings(settings: Settings) -> Any:
         temperature=settings.llm_temperature,
         timeout_seconds=settings.llm_timeout_seconds,
     )
+
+
+def _input_clarification_gate(question: str) -> dict[str, Any]:
+    normalized = question.strip()
+    if not normalized:
+        return {
+            "status": "clarification_required",
+            "reason": "empty_question",
+            "question": "请补充您想查询的对象和条件。",
+        }
+
+    for term in ("它", "这个", "那个", "这些", "那些"):
+        if term in normalized:
+            return {
+                "status": "clarification_required",
+                "reason": "missing_referent",
+                "term": term,
+                "question": f"请说明“{term}”指的是哪个设备、服务、隧道或端口。",
+            }
+
+    return {"status": "pass"}
 
 
 def _decompose_question(
@@ -844,6 +879,27 @@ def _mock_decompose(question: str) -> dict[str, Any]:
             "mock_intent": "device_ports",
         }
 
+    if "down" in question and "端口" in question:
+        return {
+            "schema_version": "question_decomposition_v1",
+            "original_question": question,
+            "target_concepts": ["Port", "端口"],
+            "relation_phrases": [],
+            "literal_candidates": ["down"],
+            "semantic_terms": ["Port.status"],
+            "substantive_terms": ["当前", "down", "端口"],
+            "literal_requests": [
+                {
+                    "raw_literal": "down",
+                    "expected_vertex": "Port",
+                    "expected_property": "status",
+                    "literal_kind_hint": "enum",
+                }
+            ],
+            "coverage": _coverage(covered=["当前", "down", "端口"]),
+            "mock_intent": "down_ports",
+        }
+
     if "防火墙" in question and ("多少" in question or "数量" in question):
         return {
             "schema_version": "question_decomposition_v1",
@@ -1069,6 +1125,23 @@ def _mock_understand(
             "projection": [{"semantic_type": "vertex", "name": "Port"}],
         }
 
+    if intent == "down_ports":
+        return {
+            "query_shape": "vertex_lookup",
+            "selected_vertices": ["Port"],
+            "selected_properties": [{"owner": "Port", "name": "status"}],
+            "selected_literals": literal_payloads,
+            "filters": [
+                {
+                    "owner": "Port",
+                    "property": "status",
+                    "operator": "=",
+                    "raw_literal": "down",
+                }
+            ],
+            "projection": [{"semantic_type": "vertex", "name": "Port"}],
+        }
+
     if intent == "firewall_device_count":
         return {
             "query_shape": "metric_aggregate",
@@ -1278,13 +1351,18 @@ def _generated(
     *,
     dsl: dict[str, Any],
     cypher: str,
+    user_visible_notices: list[str] | None = None,
 ) -> GenerationOutput:
     _add_output_stage(
         trace,
         status="generated",
         payload={"status": "generated", "has_dsl": True, "has_cypher": True},
     )
-    return trace.finalize_generated(dsl=dsl, cypher=cypher)
+    return trace.finalize_generated(
+        dsl=dsl,
+        cypher=cypher,
+        user_visible_notices=user_visible_notices or [],
+    )
 
 
 def _unexpected_failure(trace: GraphTraceBuilder, exc: Exception) -> GenerationOutput:

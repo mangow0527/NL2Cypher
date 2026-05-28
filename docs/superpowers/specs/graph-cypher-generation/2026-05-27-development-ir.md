@@ -122,7 +122,7 @@ services/cypher_generator_agent/app/
 
   cypher_validation/
     models.py                       # cypher_self_validation_request_v1/result_v1
-    parser.py                       # openCypher parser adapter
+    parser.py                       # v1 parser adapter; conservative parser or openCypher adapter
     readonly.py                     # read-only whitelist and forbidden clause checks
     schema_reference.py             # label/edge/property/type checks
     shape.py                        # DSL projection and final RETURN consistency

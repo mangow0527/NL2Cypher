@@ -18,7 +18,7 @@ The remaining non-code operational item is a live LLM smoke test against the con
 | IR-01 Graph Model Fixture | Done | `tests/fixtures/golden_questions.yaml`; packaged TuGraph semantic artifact | Golden set has 30 questions. |
 | IR-02 Graph Model Loader / Registry | Done | `app/semantic_model/loader.py`, `registry.py`, validation tests | Supports OSI-style `semantic_model` wrapper. |
 | IR-03a Cypher Self-Validation MVP | Done | syntax / readonly / schema reference tests | No database connection. |
-| IR-03b Cypher Self-Validation Full | Done | shape, dialect, model artifact, variable-path bounds tests | Path pattern and metric Cypher are load-time validated. |
+| IR-03b Cypher Self-Validation Full | Done | shape, dialect, model artifact, variable-path bounds tests | Uses a conservative v1 parser adapter, not an ANTLR runtime dependency; path pattern and metric Cypher are load-time validated. |
 | IR-04 Restricted DSL Models / Parser | Done | DSL parser and operation sequence tests | Raw Cypher escape hatch remains forbidden. |
 | IR-05 Cypher Compiler MVP | Done | compiler tests for lookup, single hop, named path | Compiler emits read-only Cypher templates. |
 | IR-06 Observability Skeleton | Done | trace/stage/metric tests | `cga_graph_trace_v1` used for final outputs. |
@@ -28,7 +28,7 @@ The remaining non-code operational item is a live LLM smoke test against the con
 | IR-10 Semantic Validator MVP | Done | coverage, endpoint, DSL support, aggregate tests | Coverage failures cannot silently generate Cypher. |
 | IR-11 DSL Builder MVP | Done | builder tests across supported query shapes | Builds restricted DSL from validated binding plans. |
 | IR-12 Pipeline Orchestrator MVP | Done | pipeline integration tests | End-to-end deterministic path works. |
-| SP-01 LLM Feasibility Spike | Done | spike report and structured LLM client tests | Live provider smoke remains operational follow-up. |
+| SP-01 LLM Feasibility Spike | Done (offline) | spike report and structured LLM client tests | Live provider smoke remains operational follow-up after deployment secrets are injected. |
 | IR-13 Question Decomposer | Done | schema retry and term classification tests | Real LLM path uses structured output. |
 | IR-14 Grounded LLM Understanding | Done | grounded schema and candidate boundary tests | LLM must choose only from candidates. |
 | IR-15 Repair / Clarification Controller | Done | decision matrix, fingerprint, assumption notice, pipeline repair-loop test | Multi-round LLM re-grounding is now connected for repairable semantic validator failures. |
@@ -37,7 +37,7 @@ The remaining non-code operational item is a live LLM smoke test against the con
 | IR-17 Variable Path Traversal | Done | DSL/compiler/integration tests | Covers tunnels through devices. |
 | IR-18 Metric / Ad Hoc Aggregate | Done | aggregate builder/compiler/integration tests | Covers metric and ad hoc group-by patterns. |
 | IR-19 Top-N and Two-Step Aggregate | Done | top-n/two-step builder/compiler/integration tests | Covers nested aggregate path. |
-| IR-20 Golden Test Regression Matrix | Done | `test_golden_questions.py`; `.github/workflows/cypher-generator-agent.yml` | CI has smoke/full workflow-dispatch path plus full CGA suite. |
+| IR-20 Golden Test Regression Matrix | Done | `test_golden_questions.py`; `.github/workflows/cypher-generator-agent.yml` | All 30 questions are tracked; runtime fixtures cover every generated query shape, and non-runtime failure cases are backed by RepairController contracts. |
 
 ## Acceptance Evidence
 
@@ -59,6 +59,12 @@ Golden regression entrypoints:
 PYTHONPATH=. pytest services/cypher_generator_agent/tests/integration/test_golden_questions.py::test_smoke_golden_regression_case_matches_expected_contract -q
 PYTHONPATH=. pytest services/cypher_generator_agent/tests/integration/test_golden_questions.py -q
 ```
+
+Current golden matrix details:
+
+- 30 declared questions (`gq-001` through `gq-030`).
+- Runtime fixture coverage now includes `vertex_lookup`, `single_hop_traversal`, `named_path_pattern`, `variable_path_traversal`, `metric_aggregate`, `ad_hoc_aggregate`, `top_n`, and `two_step_aggregate`.
+- Non-runtime negative cases are checked through RepairController contract tests for ambiguity, unsupported shape, readonly, oscillation, compiler shape mismatch, missing path parameters, and duplicate literal ambiguity.
 
 ## Operational Follow-Ups
 

@@ -91,6 +91,9 @@ golden_questions:
     query_shape: vertex_lookup
     expected_dsl_ir: IR-05
     cypher_filled_by_ir: IR-10
+    expected_dsl_fixture: expected_dsl/gq-007.json
+    expected_cypher_fixture: expected_cypher/gq-007.cypher
+    regression_scope: full
     ci_smoke: false
 
   - id: gq-008

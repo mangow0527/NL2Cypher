@@ -14,6 +14,7 @@
 | --- | --- | --- | --- | --- |
 | Graph Semantic Model | `graph_semantic_model_v1` | model authoring / loader | registry、retriever、validator、compiler | 是，但 breaking change 需要新 major |
 | Question Decomposition | `question_decomposition_v1` | Question Decomposer | Candidate Retriever、Coverage Validator | 是 |
+| Grounded Understanding | `grounded_understanding_v1` | Grounded Understanding Selector | Semantic Binder、Repair Loop | 是 |
 | Literal Resolver Request | `literal_resolver_request_v1` | Semantic Binder / Resolver caller | LiteralResolver | 是 |
 | Literal Resolver Result | `literal_resolver_result_v1` | LiteralResolver | Semantic Validator、Repair Controller | 是 |
 | Restricted Query DSL | `restricted_query_dsl_v1` | DSL Builder | DSL Parser、Compiler、Self-Validation | 否，compiler 必须同步支持 |

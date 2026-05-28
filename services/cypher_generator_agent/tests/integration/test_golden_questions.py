@@ -9,6 +9,7 @@ import yaml
 
 from services.cypher_generator_agent.app.core.pipeline import run_pipeline
 from services.cypher_generator_agent.app.dsl.parser import parse_restricted_query_dsl
+from services.cypher_generator_agent.app.repair.controller import RepairController
 from services.cypher_generator_agent.app.semantic_model.loader import load_graph_semantic_model
 
 
@@ -17,6 +18,7 @@ GOLDEN_QUESTIONS_PATH = FIXTURE_DIR / "golden_questions.yaml"
 MODEL_PATH = FIXTURE_DIR / "network_topology_graph_model.yaml"
 
 FULL_REGRESSION_QUERY_SHAPES = {
+    "vertex_lookup",
     "single_hop_traversal",
     "named_path_pattern",
     "variable_path_traversal",
@@ -28,10 +30,14 @@ FULL_REGRESSION_QUERY_SHAPES = {
 REGRESSION_SCOPES = {"smoke", "full"}
 
 
+def _all_cases() -> list[dict[str, Any]]:
+    return list(_load_yaml(GOLDEN_QUESTIONS_PATH)["golden_questions"])
+
+
 def _regression_cases() -> list[dict[str, Any]]:
     return [
         case
-        for case in _load_yaml(GOLDEN_QUESTIONS_PATH)["golden_questions"]
+        for case in _all_cases()
         if case.get("regression_scope") in REGRESSION_SCOPES
     ]
 
@@ -39,7 +45,7 @@ def _regression_cases() -> list[dict[str, Any]]:
 def _smoke_regression_cases() -> list[dict[str, Any]]:
     return [
         case
-        for case in _load_yaml(GOLDEN_QUESTIONS_PATH)["golden_questions"]
+        for case in _all_cases()
         if case.get("regression_scope") == "smoke"
     ]
 
@@ -74,6 +80,28 @@ def test_full_golden_regression_matrix_covers_generated_query_shapes() -> None:
         assert (FIXTURE_DIR / case["expected_cypher_fixture"]).is_file()
 
 
+def test_golden_matrix_tracks_every_declared_question() -> None:
+    cases = _all_cases()
+
+    assert len(cases) == 30
+    assert [case["id"] for case in cases] == [f"gq-{index:03d}" for index in range(1, 31)]
+    assert {case["id"] for case in _regression_cases()} >= {
+        "gq-001",
+        "gq-002",
+        "gq-003",
+        "gq-006",
+        "gq-007",
+        "gq-008",
+        "gq-009",
+        "gq-010",
+        "gq-012",
+        "gq-017",
+        "gq-019",
+        "gq-029",
+        "gq-030",
+    }
+
+
 def test_golden_regression_has_ci_workflow_entrypoint() -> None:
     workflow_path = Path(__file__).resolve().parents[4] / ".github" / "workflows" / "cypher-generator-agent.yml"
 
@@ -98,6 +126,49 @@ def test_smoke_golden_regression_case_matches_expected_contract(
 ) -> None:
     assert case["ci_smoke"] is True
     _assert_golden_case(case)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        case
+        for case in _all_cases()
+        if case["expected_status"] != "generated" and not case.get("regression_scope")
+    ],
+    ids=lambda case: case["id"],
+)
+def test_non_runtime_golden_failure_case_is_backed_by_repair_contract(
+    case: dict[str, Any],
+) -> None:
+    issue = _synthetic_repair_issue(case)
+    decision = RepairController().decide(
+        {
+            "schema_version": "repair_controller_input_v1",
+            "trace_id": f"golden-contract-{case['id']}",
+            "question": case["question"],
+            "attempt_no": 1,
+            "selected_bindings": _selected_bindings_for_contract(case),
+            "validator_errors": [issue] if issue["source"] == "validator" else [],
+            "cypher_validation_errors": [issue] if issue["source"] == "cypher_self_validation" else [],
+            "history": _history_for_contract(case),
+        }
+    )
+
+    expected_status = case["expected_status"]
+    expected_reason = case["expected_reason_code"]
+    if expected_status == "clarification_required":
+        assert decision.decision == "ask_user"
+        assert decision.reason_code == expected_reason
+        assert decision.clarification is not None
+        return
+    if expected_status == "unsupported_query_shape":
+        assert decision.decision == "unsupported"
+        assert decision.reason_code == "unsupported_query_shape"
+        assert issue["details"]["reason_code"] == expected_reason
+        return
+    assert expected_status == "generation_failed"
+    assert decision.decision == "generation_failed"
+    assert decision.reason_code == expected_reason
 
 
 def _assert_golden_case(case: dict[str, Any]) -> None:
@@ -147,3 +218,100 @@ def _last_repair_reason(trace: dict[str, object]) -> str:
             continue
         return stage["output_ref"]["value"]["reason_code"]
     raise AssertionError("missing repair_controller stage")
+
+
+def _synthetic_repair_issue(case: dict[str, Any]) -> dict[str, Any]:
+    reason = case["expected_reason_code"]
+    issue_by_reason = {
+        "ambiguous_port_intent": {
+            "source": "validator",
+            "code": "ambiguous_port_intent",
+            "action": "ask_user",
+            "message": "Port intent is ambiguous.",
+            "details": {
+                "term": "端口情况",
+                "candidates": [
+                    {"id": "port_list", "label": "列出端口", "confidence": 0.51},
+                    {"id": "port_count", "label": "统计端口数量", "confidence": 0.49},
+                ],
+            },
+        },
+        "unsupported_shortest_path": _unsupported_issue(reason),
+        "unsupported_optional_match": _unsupported_issue(reason),
+        "unsupported_graph_algorithm": _unsupported_issue(reason),
+        "cypher_readonly_violation": {
+            "source": "cypher_self_validation",
+            "code": "cypher_readonly_violation",
+            "message": "Write clause is not allowed.",
+            "details": {},
+        },
+        "repair_binding_oscillation": {
+            "source": "validator",
+            "code": "edge_endpoint_mismatch",
+            "message": "Binding keeps returning to the same illegal edge endpoints.",
+            "repairable": True,
+            "details": {},
+        },
+        "compiler_shape_mismatch": {
+            "source": "cypher_self_validation",
+            "code": "compiler_shape_mismatch",
+            "message": "Expected projection aliases do not match RETURN aliases.",
+            "details": {},
+        },
+        "missing_required_path_pattern_parameter": {
+            "source": "validator",
+            "code": "missing_required_path_pattern_parameter",
+            "action": "ask_user",
+            "message": "Path pattern requires a tunnel id.",
+            "details": {"term": "这条隧道"},
+        },
+        "duplicate_synonym_literal_ambiguity": {
+            "source": "validator",
+            "code": "duplicate_synonym_literal_ambiguity",
+            "action": "ask_user",
+            "message": "Literal synonyms resolve to the same enum value.",
+            "details": {
+                "term": "Gold 和金牌",
+                "candidates": [
+                    {"id": "gold", "label": "Gold", "value": "Gold", "confidence": 1.0},
+                    {"id": "gold_synonym", "label": "金牌", "value": "Gold", "confidence": 1.0},
+                ],
+            },
+        },
+    }
+    return issue_by_reason[reason]
+
+
+def _unsupported_issue(reason: str) -> dict[str, Any]:
+    return {
+        "source": "validator",
+        "code": "unsupported_query_shape",
+        "action": "unsupported_query_shape",
+        "message": reason,
+        "details": {"reason_code": reason},
+    }
+
+
+def _selected_bindings_for_contract(case: dict[str, Any]) -> dict[str, Any]:
+    if case["expected_reason_code"] != "repair_binding_oscillation":
+        return {}
+    return {
+        "query_shape": "single_hop_traversal",
+        "vertices": ["Service", "Port"],
+        "edges": ["SERVICE_USES_TUNNEL"],
+    }
+
+
+def _history_for_contract(case: dict[str, Any]) -> list[dict[str, Any]]:
+    if case["expected_reason_code"] != "repair_binding_oscillation":
+        return []
+    from services.cypher_generator_agent.app.repair.fingerprint import from_binding_plan
+
+    selected_bindings = _selected_bindings_for_contract(case)
+    return [
+        {
+            "attempt_no": 1,
+            "fingerprint": from_binding_plan(selected_bindings),
+            "error_code": "edge_endpoint_mismatch",
+        }
+    ]

@@ -192,6 +192,81 @@ def test_single_hop_rejects_sort_or_limit_until_compiler_supports_them(
         )
 
 
+def test_vertex_lookup_plan_builds_vertex_lookup_dsl(registry: GraphSemanticRegistry) -> None:
+    literal = LiteralBinding(
+        raw_literal="ne-0001",
+        resolved=True,
+        value="ne-0001",
+        normalized_value="ne-0001",
+        match_type="value_index_exact",
+        confidence=1.0,
+        owner="NetworkElement",
+        property="id",
+    )
+    plan = BindingPlan(
+        query_shape="vertex_lookup",
+        vertex_bindings=[
+            VertexBinding(name="NetworkElement", candidate=_candidate("vertex", "NetworkElement")),
+        ],
+        literal_bindings=[literal],
+        filters=[
+            FilterBinding(
+                owner="NetworkElement",
+                property="id",
+                operator="eq",
+                raw_literal="ne-0001",
+                value="ne-0001",
+                literal=literal,
+            )
+        ],
+        projection=[
+            {
+                "alias": "name",
+                "target": "target",
+                "property": {"owner": "NetworkElement", "name": "name"},
+            }
+        ],
+    )
+
+    dsl = RestrictedDslBuilder(registry).build(
+        plan,
+        source_question="查询设备 ne-0001 的名称",
+        query_id="q-vertex",
+    )
+
+    assert dsl == {
+        "schema_version": "restricted_query_dsl_v1",
+        "query_id": "q-vertex",
+        "query_shape": "vertex_lookup",
+        "source_question": "查询设备 ne-0001 的名称",
+        "bindings": {"target": {"vertex_name": "NetworkElement"}},
+        "operations": [],
+        "filters": [
+            {
+                "target": "target",
+                "property": {"owner": "NetworkElement", "name": "id"},
+                "operator": "eq",
+                "value": {
+                    "raw": "ne-0001",
+                    "normalized": "ne-0001",
+                    "resolver_match_type": "value_index_exact",
+                },
+            }
+        ],
+        "projection": {
+            "items": [
+                {
+                    "alias": "name",
+                    "target": "target",
+                    "property": {"owner": "NetworkElement", "name": "name"},
+                }
+            ]
+        },
+    }
+    ast = parse_restricted_query_dsl(dsl, registry)
+    assert ast.query_shape.value == "vertex_lookup"
+
+
 def _candidate(semantic_type: str, semantic_id: str) -> CandidateBinding:
     return CandidateBinding(
         semantic_type=semantic_type,

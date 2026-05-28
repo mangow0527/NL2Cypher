@@ -20,6 +20,7 @@ from services.cypher_generator_agent.app.observability.trace import GraphTraceRe
 
 GENERATED_STAGE_ORDER = [
     "graph_model_loader",
+    "input_clarification_gate",
     "question_decomposer",
     "candidate_retrieval",
     "literal_resolver",
@@ -192,6 +193,7 @@ def get_generator_status() -> Dict[str, object]:
         "internal_flow": {
             "semantic_parse": [
                 "graph_model_loader",
+                "input_clarification_gate",
                 "question_decomposer",
                 "candidate_retrieval",
                 "literal_resolver",

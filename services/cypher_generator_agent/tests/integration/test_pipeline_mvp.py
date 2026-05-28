@@ -22,6 +22,7 @@ FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures"
 
 EXPECTED_STAGES = [
     "graph_model_loader",
+    "input_clarification_gate",
     "question_decomposer",
     "candidate_retrieval",
     "literal_resolver",
@@ -53,6 +54,28 @@ def test_gold_service_question_generates_single_hop_cypher() -> None:
     assert _stage_names(output.trace) == EXPECTED_STAGES
     assert "db_connection" not in _all_keys(output.trace)
     assert "execution_result" not in _all_keys(output.trace)
+
+
+def test_input_clarification_gate_short_circuits_deictic_question(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_if_called(question: str) -> dict[str, object]:
+        raise AssertionError(f"decomposer should not receive ambiguous input: {question}")
+
+    monkeypatch.setattr(pipeline_module, "_mock_decompose", fail_if_called)
+
+    output = run_pipeline(
+        question="它最近 down 了吗",
+        qa_id="input-gate",
+        generation_run_id="run-input-gate",
+    )
+
+    assert output.status == "clarification_required"
+    assert output.clarification is not None
+    assert "它" in output.clarification.question
+    assert output.cypher is None
+    assert output.dsl is None
+    assert _stage_names(output.trace) == ["graph_model_loader", "input_clarification_gate", "output"]
 
 
 def test_pipeline_semantic_artifacts_can_be_overridden_from_settings(
@@ -342,6 +365,37 @@ def test_coverage_failure_does_not_emit_cypher_or_dsl() -> None:
     assert _stage_names(output.trace)[-3:] == ["semantic_validator", "repair_controller", "output"]
 
 
+def test_generated_output_includes_user_visible_assumption_notices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_decompose = pipeline_module._mock_decompose
+
+    def modality_decompose(question: str) -> dict[str, object]:
+        payload = original_decompose("全网有多少台防火墙")
+        payload["original_question"] = question
+        payload["substantive_terms"] = ["多少", "防火墙"]
+        payload["coverage"] = {
+            "substantive_terms": {"total": 2, "covered": 2, "uncovered": []},
+            "stopword_terms": {"ignored": []},
+            "modality_terms": {"warning_only": ["大概"]},
+            "time_terms": {"covered": [], "unresolved": []},
+            "unparsed_terms": {"unresolved": []},
+        }
+        return payload
+
+    monkeypatch.setattr(pipeline_module, "_mock_decompose", modality_decompose)
+
+    output = run_pipeline(
+        question="大概有多少防火墙",
+        qa_id="assumption-notice",
+        generation_run_id="run-assumption-notice",
+    )
+
+    assert output.status == "generated"
+    assert output.user_visible_notices == ["问题中的“大概”没有被解释为查询约束。"]
+    assert output.trace["final_outputs"]["user_visible_notices"] == output.user_visible_notices
+
+
 def test_unsupported_query_shape_from_validator_returns_unsupported_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -386,6 +440,7 @@ def test_unresolved_literal_stops_before_dsl_or_cypher_generation() -> None:
     assert "Platinum" in output.clarification.question
     assert _stage_names(output.trace) == [
         "graph_model_loader",
+        "input_clarification_gate",
         "question_decomposer",
         "candidate_retrieval",
         "literal_resolver",
@@ -503,7 +558,7 @@ def test_decomposer_clarification_outcome_short_circuits_pipeline(
     monkeypatch.setattr(pipeline_module, "_mock_decompose", clarification_decompose)
 
     output = run_pipeline(
-        question="它最近 down 了吗",
+        question="请进一步说明查询对象",
         qa_id="decomposer-clarification",
         generation_run_id="run-decomposer-clarification",
     )
@@ -513,7 +568,7 @@ def test_decomposer_clarification_outcome_short_circuits_pipeline(
     assert output.dsl is None
     assert output.clarification is not None
     assert output.clarification.question == "请说明“它”指的是哪个设备或服务。"
-    assert _stage_names(output.trace) == ["graph_model_loader", "question_decomposer", "output"]
+    assert _stage_names(output.trace) == ["graph_model_loader", "input_clarification_gate", "question_decomposer", "output"]
 
 
 def test_decomposer_failure_outcome_short_circuits_pipeline(
@@ -541,7 +596,7 @@ def test_decomposer_failure_outcome_short_circuits_pipeline(
     assert output.status == "service_failed"
     assert output.failure is not None
     assert output.failure.reason == "model_invocation_failed"
-    assert _stage_names(output.trace) == ["graph_model_loader", "question_decomposer", "output"]
+    assert _stage_names(output.trace) == ["graph_model_loader", "input_clarification_gate", "question_decomposer", "output"]
 
 
 def test_grounded_understanding_schema_output_is_converted_before_binding(
