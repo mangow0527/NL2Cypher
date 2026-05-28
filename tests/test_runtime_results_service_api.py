@@ -81,6 +81,11 @@ def test_runtime_results_detail_script_puts_cypher_comparison_in_overview():
     assert "renderCgaArtifacts" in script
     assert "renderTraceTable" in script
     assert "trace-table" in script
+    assert "阶段指标" in script
+    assert "formatStageMetrics" in script
+    assert "无阶段指标" in script
+    assert "关键指标" not in script
+    assert "metrics_summary: inlineValue(stage.metrics)" not in script
     assert "renderOntologyLayerPrompts" not in script
     assert "renderLegacyCgaChainSummary" not in script
     assert "isOntologyCgaSection" not in script

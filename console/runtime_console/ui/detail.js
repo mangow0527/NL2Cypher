@@ -126,6 +126,53 @@ function inlineValue(value) {
   return String(value);
 }
 
+const stageMetricLabels = {
+  llm_call_count: ['LLM 调用', '次'],
+  candidate_count: ['候选召回', '个'],
+  literal_count: ['字面值', '个'],
+  operation_count: ['DSL 操作', '个'],
+  checked_rule_count: ['校验规则', '条'],
+  retry_count: ['重试', '次'],
+  repair_attempt_count: ['修复轮次', '轮'],
+};
+
+function formatStageMetricKey(key) {
+  const mapped = stageMetricLabels[key];
+  if (mapped) {
+    return mapped;
+  }
+  return [String(key).replace(/_/g, ' '), ''];
+}
+
+function formatStageMetricValue(value) {
+  if (value === true) {
+    return '是';
+  }
+  if (value === false) {
+    return '否';
+  }
+  if (Array.isArray(value)) {
+    return `${value.length}`;
+  }
+  if (value && typeof value === 'object') {
+    return JSON.stringify(value);
+  }
+  return String(value);
+}
+
+function formatStageMetrics(metrics) {
+  if (!metrics || typeof metrics !== 'object' || Array.isArray(metrics)) {
+    return '无阶段指标';
+  }
+  const parts = Object.entries(metrics)
+    .filter(([, value]) => value !== null && value !== undefined && value !== '')
+    .map(([key, value]) => {
+      const [label, unit] = formatStageMetricKey(key);
+      return `${label}: ${formatStageMetricValue(value)}${unit}`;
+    });
+  return parts.length ? parts.join(' · ') : '无阶段指标';
+}
+
 function humanAnswerType(value) {
   const labels = {
     free_text: '自由文本回答',
@@ -375,13 +422,13 @@ function renderCgaFlowStages(flow = {}) {
       { key: 'key', label_zh: 'stage key', width: 220 },
       { key: 'status', label_zh: '状态', width: 120 },
       { key: 'duration_ms', label_zh: '耗时 ms', width: 100 },
-      { key: 'metrics_summary', label_zh: '关键指标', width: 420 },
+      { key: 'metrics_summary', label_zh: '阶段指标', width: 420 },
       { key: 'error_summary', label_zh: '错误 / 警告', width: 520 },
     ],
     rows: stages.map((stage) => ({
       ...stage,
       title_zh: stage.title_zh || cgaStageTitles[stage.key] || stage.key,
-      metrics_summary: inlineValue(stage.metrics),
+      metrics_summary: formatStageMetrics(stage.metrics),
       error_summary: [stage.errors?.length ? `errors=${stage.errors.length}` : '', stage.warnings?.length ? `warnings=${stage.warnings.length}` : '']
         .filter(Boolean)
         .join(' · ') || '无',
@@ -401,7 +448,7 @@ function renderCgaFlowStages(flow = {}) {
             ${codeBlock(stage.input)}
             <h3>阶段输出</h3>
             ${codeBlock(stage.output)}
-            <h3>metrics / errors / warnings</h3>
+            <h3>阶段指标 / 错误 / 警告</h3>
             ${codeBlock({ metrics: stage.metrics, errors: stage.errors, warnings: stage.warnings })}
           </details>
         `,
