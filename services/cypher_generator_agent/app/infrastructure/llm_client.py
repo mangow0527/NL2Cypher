@@ -165,9 +165,9 @@ def _schema_bound_prompt(
         [
             prompt,
             "",
-            "Return exactly one JSON object. Do not return markdown or prose.",
-            f"Schema name: {schema_name}",
-            f"Attempt: {attempt}",
+            "只返回一个 JSON 对象。不要返回 Markdown，不要返回解释性文字。",
+            f"Schema 名称：{schema_name}",
+            f"第 {attempt} 次尝试。",
             "JSON Schema:",
             json.dumps(schema, ensure_ascii=False, sort_keys=True),
         ]

@@ -58,6 +58,9 @@ def test_polite_words_are_classified_as_stopwords() -> None:
     assert result.literal_candidates[0].attached_to == "服务"
     assert client.calls[0]["schema_name"] == "question_decomposition_v1"
     assert question in client.calls[0]["prompt"]
+    assert "你是图原生 Cypher 生成流水线中的问题结构化拆解器" in client.calls[0]["prompt"]
+    assert "只使用用户问题中的表层语言词语" in client.calls[0]["prompt"]
+    assert "You are the Question Decomposer" not in client.calls[0]["prompt"]
 
 
 def test_modality_word_is_classified_as_modality() -> None:

@@ -93,60 +93,60 @@ _EDGE_CONTEXT = {
     "HAS_PORT": {
         "cardinality": "one_to_many",
         "synonyms": ["拥有端口", "包含接口", "has port"],
-        "direction": "Storage direction: NetworkElement -> Port. Semantic direction: the device owns the port.",
+        "direction": "存储方向：NetworkElement -> Port。语义方向：设备拥有该端口。",
     },
     "FIBER_SRC": {
         "cardinality": "many_to_one",
         "synonyms": ["光纤源端", "光纤起点", "fiber source"],
-        "direction": "Storage direction: Fiber -> Port. Semantic direction: the Port is the source termination.",
+        "direction": "存储方向：Fiber -> Port。语义方向：该 Port 是光纤源端。",
     },
     "FIBER_DST": {
         "cardinality": "many_to_one",
         "synonyms": ["光纤宿端", "光纤终点", "fiber destination"],
-        "direction": "Storage direction: Fiber -> Port. Semantic direction: the Port is the destination termination.",
+        "direction": "存储方向：Fiber -> Port。语义方向：该 Port 是光纤宿端。",
     },
     "LINK_SRC": {
         "cardinality": "many_to_one",
         "synonyms": ["链路源端", "链路起点", "link source"],
-        "direction": "Storage direction: Link -> Port. Semantic direction: the Port is the source endpoint.",
+        "direction": "存储方向：Link -> Port。语义方向：该 Port 是链路源端。",
     },
     "LINK_DST": {
         "cardinality": "many_to_one",
         "synonyms": ["链路宿端", "链路终点", "link destination"],
-        "direction": "Storage direction: Link -> Port. Semantic direction: the Port is the destination endpoint.",
+        "direction": "存储方向：Link -> Port。语义方向：该 Port 是链路宿端。",
     },
     "TUNNEL_SRC": {
         "cardinality": "many_to_one",
         "synonyms": ["隧道源端", "入口设备", "source device"],
-        "direction": "Storage direction: Tunnel -> NetworkElement. Semantic direction: the NetworkElement is the tunnel source device.",
+        "direction": "存储方向：Tunnel -> NetworkElement。语义方向：该 NetworkElement 是隧道源端设备。",
         "anti_patterns": [
-            "Do not infer the full tunnel path from TUNNEL_SRC and TUNNEL_DST.",
-            "Use PATH_THROUGH ordered by hop_order for complete path queries.",
+            "不要只根据 TUNNEL_SRC 和 TUNNEL_DST 推断完整隧道路由路径。",
+            "完整路径查询必须使用 PATH_THROUGH，并按 hop_order 排序。",
         ],
     },
     "TUNNEL_DST": {
         "cardinality": "many_to_one",
         "synonyms": ["隧道宿端", "出口设备", "destination device"],
-        "direction": "Storage direction: Tunnel -> NetworkElement. Semantic direction: the NetworkElement is the tunnel destination device.",
+        "direction": "存储方向：Tunnel -> NetworkElement。语义方向：该 NetworkElement 是隧道宿端设备。",
         "anti_patterns": [
-            "Do not infer the full tunnel path from TUNNEL_SRC and TUNNEL_DST.",
-            "Use PATH_THROUGH ordered by hop_order for complete path queries.",
+            "不要只根据 TUNNEL_SRC 和 TUNNEL_DST 推断完整隧道路由路径。",
+            "完整路径查询必须使用 PATH_THROUGH，并按 hop_order 排序。",
         ],
     },
     "TUNNEL_PROTO": {
         "cardinality": "many_to_one",
         "synonyms": ["隧道协议", "使用协议", "tunnel protocol"],
-        "direction": "Storage direction: Tunnel -> Protocol. Semantic direction: the tunnel uses the protocol.",
+        "direction": "存储方向：Tunnel -> Protocol。语义方向：该隧道使用该协议。",
     },
     "PATH_THROUGH": {
         "cardinality": "many_to_many",
         "synonyms": ["经过", "路径", "走过", "traverses"],
-        "direction": "Storage direction: Tunnel -> NetworkElement. Semantic direction: the tunnel path traverses the device.",
+        "direction": "存储方向：Tunnel -> NetworkElement。语义方向：隧道路由路径经过该设备。",
     },
     "SERVICE_USES_TUNNEL": {
         "cardinality": "many_to_many",
         "synonyms": ["使用隧道", "承载于", "uses tunnel"],
-        "direction": "Storage direction: Service -> Tunnel. Semantic direction: a service uses one or more tunnels.",
+        "direction": "存储方向：Service -> Tunnel。语义方向：业务承载于一个或多个 Tunnel。",
     },
 }
 
@@ -161,11 +161,11 @@ def build_graph_semantic_model_from_tugraph_schema(
 
     return {
         "name": model_name,
-        "description": "Graph semantic model generated from the TuGraph network schema.",
+        "description": "由 TuGraph 网络 schema 生成的图语义模型。",
         "ai_context": {
             "instructions": (
-                "Use this TuGraph schema as the source of truth. Generate read-only "
-                "Cypher only; tunnel path queries must use PATH_THROUGH ordered by hop_order."
+                "以这份 TuGraph schema 作为唯一事实来源。只生成只读 Cypher；"
+                "隧道完整路径查询必须使用 PATH_THROUGH，并按 hop_order 排序。"
             ),
             "synonyms": ["TuGraph network schema", "网络拓扑", "图数据库 schema"],
             "examples": [
@@ -204,7 +204,7 @@ def _edge(entry: Mapping[str, Any]) -> dict[str, Any]:
         "description": entry.get("description"),
         "direction_semantics": context.get(
             "direction",
-            f"Storage direction: {endpoint[0]} -> {endpoint[1]}.",
+            f"存储方向：{endpoint[0]} -> {endpoint[1]}。",
         ),
         "ai_context": {"synonyms": _synonyms(context.get("synonyms", []))},
         "properties": [_property(prop) for prop in entry.get("properties", [])],

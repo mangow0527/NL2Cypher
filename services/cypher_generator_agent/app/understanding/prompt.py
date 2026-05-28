@@ -29,16 +29,16 @@ def build_grounded_understanding_prompt(
         payload["repair_context"] = dict(repair_context)
     return "\n".join(
         [
-            "You are the Grounded Understanding selector for a graph-native Cypher generation pipeline.",
-            f"Return only structured output for schema {GROUNDED_UNDERSTANDING_SCHEMA_VERSION}.",
-            "You must choose only from top_candidates by candidate_id.",
-            "Every selected binding must copy semantic_type, semantic_id, semantic_name, and owner exactly from its candidate payload.",
-            "Resolved literal_resolver_results are authoritative for filters: copy selected_literals from them exactly, and choose the matching property candidate for expected_vertex/expected_edge + expected_property when it exists.",
-            "Do not select a different property for a resolved literal just because another candidate has the same enum value.",
-            "If two or more candidates are close and you cannot safely choose, put their candidate_ids in ambiguities and do not invent a selected binding for that role.",
-            "If repair_context is present, fix the previous semantic error without inventing semantics outside top_candidates.",
-            "Do not generate Cypher, do not connect to a database, do not explain, and do not return markdown.",
-            "Input JSON:",
+            "你是图原生 Cypher 生成流水线中的语义落地理解选择器。",
+            f"只返回符合 {GROUNDED_UNDERSTANDING_SCHEMA_VERSION} schema 的结构化结果。",
+            "只能从 top_candidates 中按 candidate_id 选择候选项。",
+            "每个 selected binding 必须从候选 payload 中原样复制 semantic_type、semantic_id、semantic_name 和 owner。",
+            "literal_resolver_results 中已解析成功的字面值是过滤条件的权威来源：必须原样复制到 selected_literals；如果存在匹配 expected_vertex/expected_edge + expected_property 的属性候选，必须选择该属性候选。",
+            "不要因为另一个候选也包含相同枚举值，就为已解析字面值选择不同属性。",
+            "如果两个或多个候选很接近且无法安全选择，把它们的 candidate_id 放入 ambiguities，不要为该角色编造 selected binding。",
+            "如果存在 repair_context，请修复上一轮语义错误，但不要发明 top_candidates 之外的语义对象。",
+            "不要生成 Cypher，不要连接数据库，不要解释过程，不要返回 Markdown。",
+            "输入 JSON：",
             json.dumps(payload, ensure_ascii=False, sort_keys=True),
         ]
     )

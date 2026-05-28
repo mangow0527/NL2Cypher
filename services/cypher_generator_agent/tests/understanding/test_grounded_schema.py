@@ -120,6 +120,9 @@ def test_selecting_service_uses_tunnel_yields_binder_compatible_payload() -> Non
     assert [call["schema_name"] for call in client.calls] == [GROUNDED_UNDERSTANDING_SCHEMA_VERSION]
     assert "vertex:Service" in client.calls[0]["prompt"]
     assert "literal_resolver_result_v1" in client.calls[0]["prompt"]
+    assert "你是图原生 Cypher 生成流水线中的语义落地理解选择器" in client.calls[0]["prompt"]
+    assert "只能从 top_candidates 中按 candidate_id 选择" in client.calls[0]["prompt"]
+    assert "You are the Grounded Understanding selector" not in client.calls[0]["prompt"]
 
     binder = SemanticBinder(load_graph_semantic_model(FIXTURE_PATH).registry)
     plan = binder.bind(result.to_binder_payload(), candidates=candidates)

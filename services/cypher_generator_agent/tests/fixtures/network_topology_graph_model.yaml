@@ -206,9 +206,9 @@ semantic_model:
         to: Tunnel
         cardinality: many_to_many
         direction_semantics: |
-          Storage direction: Service -> Tunnel.
-          Semantic direction: a service uses one or more tunnels.
-        description: Service-to-tunnel dependency.
+          存储方向：Service -> Tunnel。
+          语义方向：业务承载于一个或多个 Tunnel。
+        description: 服务与隧道的依赖关系。
         ai_context:
           synonyms:
             - 使用隧道
@@ -222,10 +222,10 @@ semantic_model:
         to: NetworkElement
         cardinality: many_to_many
         direction_semantics: |
-          Storage direction: Tunnel -> NetworkElement.
-          Semantic direction: a tunnel path traverses the device.
-          This is the only authoritative edge for ordered tunnel path queries.
-        description: Ordered tunnel path hop.
+          存储方向：Tunnel -> NetworkElement。
+          语义方向：隧道路由路径经过该设备。
+          这是有序隧道路由路径查询的唯一权威边。
+        description: 有序隧道路由跳点。
         ai_context:
           synonyms:
             - 经过
@@ -238,7 +238,7 @@ semantic_model:
           - name: hop_order
             type: int
             required: true
-            description: Ordered path hop number. Zero is ingress, higher values move toward egress.
+            description: 有序路径跳号。0 表示入口，数值越大越靠近出口。
             ai_context:
               synonyms:
                 - 跳序
@@ -250,12 +250,12 @@ semantic_model:
         to: NetworkElement
         cardinality: one_to_one
         direction_semantics: |
-          Storage direction: Tunnel -> NetworkElement.
-          Semantic direction: the NetworkElement is the tunnel source device.
+          存储方向：Tunnel -> NetworkElement。
+          语义方向：该 NetworkElement 是隧道源端设备。
         anti_patterns:
-          - Do not infer the full tunnel path from TUNNEL_SRC and TUNNEL_DST.
-          - Use PATH_THROUGH ordered by hop_order for complete path queries.
-        description: Tunnel source endpoint.
+          - 不要只根据 TUNNEL_SRC 和 TUNNEL_DST 推断完整隧道路由路径。
+          - 完整路径查询必须使用 PATH_THROUGH，并按 hop_order 排序。
+        description: 隧道源端。
         ai_context:
           synonyms:
             - 源端
@@ -267,12 +267,12 @@ semantic_model:
         to: NetworkElement
         cardinality: one_to_one
         direction_semantics: |
-          Storage direction: Tunnel -> NetworkElement.
-          Semantic direction: the NetworkElement is the tunnel destination device.
+          存储方向：Tunnel -> NetworkElement。
+          语义方向：该 NetworkElement 是隧道宿端设备。
         anti_patterns:
-          - Do not infer the full tunnel path from TUNNEL_SRC and TUNNEL_DST.
-          - Use PATH_THROUGH ordered by hop_order for complete path queries.
-        description: Tunnel destination endpoint.
+          - 不要只根据 TUNNEL_SRC 和 TUNNEL_DST 推断完整隧道路由路径。
+          - 完整路径查询必须使用 PATH_THROUGH，并按 hop_order 排序。
+        description: 隧道宿端。
         ai_context:
           synonyms:
             - 宿端
@@ -284,9 +284,9 @@ semantic_model:
         to: Port
         cardinality: one_to_many
         direction_semantics: |
-          Storage direction: NetworkElement -> Port.
-          Semantic direction: the device owns or exposes the port.
-        description: Device-to-port ownership.
+          存储方向：NetworkElement -> Port。
+          语义方向：设备拥有或暴露该端口。
+        description: 设备与端口的归属关系。
         ai_context:
           synonyms:
             - 拥有端口

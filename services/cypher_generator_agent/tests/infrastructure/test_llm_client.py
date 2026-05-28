@@ -77,6 +77,11 @@ def test_openai_compatible_client_posts_schema_bound_json_request(
     assert request["json"]["messages"][0]["role"] == "user"
     assert "Decompose this question." in request["json"]["messages"][0]["content"]
     assert "question_decomposition_v1" in request["json"]["messages"][0]["content"]
+    assert "只返回一个 JSON 对象" in request["json"]["messages"][0]["content"]
+    assert "不要返回 Markdown" in request["json"]["messages"][0]["content"]
+    assert "Schema 名称" in request["json"]["messages"][0]["content"]
+    assert "第 2 次尝试" in request["json"]["messages"][0]["content"]
+    assert "Return exactly one JSON object" not in request["json"]["messages"][0]["content"]
     assert '"required": ["schema_version"]' in request["json"]["messages"][0]["content"]
     assert request["timeout"] == 12.0
 
