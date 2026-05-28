@@ -21,7 +21,7 @@
 
 | MIR | 名称 | 状态 | 触发样本 | 优先级 |
 | --- | --- | --- | --- | --- |
-| MIR-001 | Projection Slot Coverage and No Silent ID Downgrade | 待审核 | `qa_9cfa692813d5` | P0 |
+| MIR-001 | Projection Slot Coverage and No Silent ID Downgrade | 已补充审核意见，待实施确认 | `qa_9cfa692813d5` | P0 |
 
 后续新增问题按 `MIR-002`、`MIR-003` 继续追加。
 
@@ -33,6 +33,7 @@
 4. **builder/compiler 不猜业务意图**：下游只编译明确 DSL，不把模糊结构自动窄化成看似可运行的 Cypher。
 5. **错误要在靠前阶段暴露**：如果 binding plan 已经丢失用户要求，semantic validator 应拦住，不应等到 testing-agent 比对 golden 才发现。
 6. **每个修改项都要沉淀 regression**：修复必须配套可复跑的 fixture、单元测试或 golden matrix slice。
+7. **优先加防线，谨慎加词表/闸门**：每个 MIR 都要审查是否引入手工维护的词表或特例闸门。能从 semantic model、registry、schema 或 trace 派生的规则，不允许在代码中再写一份平行词表。
 
 ## 3. MIR-001 Projection Slot Coverage and No Silent ID Downgrade
 
@@ -105,21 +106,32 @@ trace 现象：
 | 子 IR | 名称 | 优先级 | 估算 | 角色 | 依赖 |
 | --- | --- | --- | --- | --- | --- |
 | MIR-001.0 | Regression Fixture and Baseline | P0 | S | QA/backend | 无 |
-| MIR-001.1 | Projection Slot Resolver | P0 | M | backend | MIR-001.0 |
-| MIR-001.2 | Projection Coverage Validator | P0 | M | backend | MIR-001.1 |
-| MIR-001.3 | DSL Builder No Silent ID Downgrade | P0 | S | backend | MIR-001.2 |
-| MIR-001.4 | Grounded Understanding Projection Contract | P1 | M | backend/LLM | MIR-001.1 |
-| MIR-001.5 | Trace and Repair Contract for Projection Coverage | P1 | S | backend/infra | MIR-001.2 |
-| MIR-001.6 | Self-Validation Shape Guard Extension | P2 | S | backend | MIR-001.3 |
-| MIR-001.7 | Regression Matrix Integration | P0 | S | QA/infra | MIR-001.0 到 MIR-001.6 |
+| MIR-001.1 | Question Decomposer Slot Role Annotation | P0 | M | LLM/backend | MIR-001.0 |
+| MIR-001.2 | Projection Slot Resolver | P0 | M | backend | MIR-001.1 |
+| MIR-001.3 | Projection Coverage Validator | P0 | M | backend | MIR-001.2 |
+| MIR-001.4 | DSL Builder No Silent ID Downgrade | P0 | S | backend | MIR-001.3 |
+| MIR-001.5 | Grounded Understanding Projection Contract | P1 | M | backend/LLM | MIR-001.2 |
+| MIR-001.6 | Trace and Repair Contract for Projection Coverage | P1 | S | backend/infra | MIR-001.3 |
+| MIR-001.7 | Self-Validation Shape Guard Extension | P2 | S | backend | MIR-001.4 |
+| MIR-001.8 | Regression Matrix Integration | P0 | S | QA/infra | MIR-001.0 到 MIR-001.7 |
 
 推荐顺序：
 
 ```text
-MIR-001.0 -> MIR-001.1 -> MIR-001.2 -> MIR-001.3 -> MIR-001.4 -> MIR-001.5 -> MIR-001.6 -> MIR-001.7
+MIR-001.0 -> MIR-001.1 -> MIR-001.2 -> MIR-001.3 -> MIR-001.4 -> MIR-001.5 -> MIR-001.6 -> MIR-001.7 -> MIR-001.8
 ```
 
-如果只能先做一项，优先做 `MIR-001.2 Projection Coverage Validator`，因为它是通用防线，可以拦住整类“看起来合法但漏返回字段”的问题。
+如果只能先做一项，优先做 `MIR-001.3 Projection Coverage Validator`，因为它是通用防线，可以拦住整类“看起来合法但漏返回字段”的问题。`MIR-001.1` 是它的前置输入契约，不应省略。
+
+### 3.5 已采纳的实施决策
+
+1. `vertex_full` 作为 DSL v1 的一等 projection item 类型，而不是 builder 内部私有 normalized form。目标是消灭 `understanding -> builder` 之间的裸 `vertex` 歧义。
+2. 默认 list 查询无显式字段时，倾向返回完整节点 `vertex_full`，不是 ID；但实施前必须审查 qa-agent golden 口径。如果现有 golden 将“查询所有服务”标成 `RETURN s.id`，需要先判断 golden 是否应调整，而不是让 CGA 迁就错误口径。
+3. `projection_coverage_missing` 默认进入 repair loop，不直接 ask_user；repair 有上限和震荡检测，超过上限转 `generation_failed`。这是系统遗漏，不应让用户补救。
+4. 多 owner 字段按两档处理：只有一个连通对象拥有该属性时自动绑定；多个连通对象拥有同名/同义属性时，如果题干含“各自/双方/两端”等词则展开为多个 projection，否则先进入 repair，repair 仍无法确定再 ask_user。禁止用“路径最近对象”静默猜测。
+5. 当前 schema 仍保持 `grounded_understanding_v1` 和 `restricted_query_dsl_v1`。这些 schema 尚处于开发定稿阶段；除 CGA 当前开发链路外，暂未发现已上线消费方直接依赖旧 projection 形态。若实施前确认存在外部稳定消费方，再升 v2。
+6. 字段词映射不得在 resolver 中硬编码平行词表，必须从 Graph Semantic Model registry 的 property name、`ai_context.synonyms`、description 和候选 evidence 派生。
+7. projection/filter/group/sort 等槽位角色应由 question decomposer 在有完整句法上下文时标注，validator 只消费角色并校验最终 DSL，不在末端重新猜句法角色。
 
 ### MIR-001.0 Regression Fixture and Baseline
 
@@ -142,6 +154,7 @@ services/cypher_generator_agent/tests/dsl/test_builder_projection.py
   - 单跳终点多字段：`Tunnel.id/name/bandwidth`
   - 带过滤的多字段：`quality_of_service=Gold` 且返回 `Service.id/name/bandwidth`
 - golden 断言必须检查 DSL projection，不只检查最终 Cypher 字符串。
+- `qa_526d49332ed1`、`qa_c3e83dd7ad32`、`qa_6494b2085699` 暂不进入 projection coverage active assertion，避免 control term、Top-N、IP owner binding 等相邻问题污染 projection slice 的通过率。
 
 验收：
 
@@ -149,7 +162,54 @@ services/cypher_generator_agent/tests/dsl/test_builder_projection.py
 - golden fixture 中每个多字段样本都明确列出 expected projection properties。
 - 测试描述中区分“字段投影缺失”和“路径/过滤/执行失败”。
 
-### MIR-001.1 Projection Slot Resolver
+### MIR-001.1 Question Decomposer Slot Role Annotation
+
+目标：在 question decomposition 阶段标注语义槽位角色，避免 validator 末端重新猜测“名称”到底是 projection 还是 filter。
+
+建议文件：
+
+```text
+services/cypher_generator_agent/app/decomposition/models.py
+services/cypher_generator_agent/app/decomposition/prompt.py
+services/cypher_generator_agent/tests/decomposition/test_slot_role_annotation.py
+services/cypher_generator_agent/tests/decomposition/test_term_classification.py
+```
+
+开发内容：
+
+- 在 `question_decomposition_v1` 中增加槽位角色结构，建议形态：
+
+```json
+{
+  "slot_terms": [
+    {"text": "ID", "slot": "projection", "attached_to": "服务"},
+    {"text": "名称", "slot": "projection", "attached_to": "服务"},
+    {"text": "金牌", "slot": "filter", "attached_to": "服务质量等级"}
+  ]
+}
+```
+
+- `slot` 初始枚举：
+
+```text
+projection | filter | group_by | order_by | limit | path | unknown
+```
+
+- prompt 必须明确同词不同槽位的判定：
+  - `查询服务的名称`：`名称` 是 projection。
+  - `名称为 Service_002 的服务`：`名称` 是 filter property，`Service_002` 是 filter literal。
+  - `按状态统计端口数量`：`状态` 是 group_by。
+  - `按数量降序返回前3名`：`数量` 是 order_by，`前3` 是 limit。
+- 保持覆盖轴和检索角色轴不变；`slot_terms` 是第三条“语义槽位轴”，不是替代 `target_concepts`。
+
+验收：
+
+- `qa_9cfa692813d5` 中 `ID/名称/元素类型/服务质量等级/带宽/时延` 均标为 `projection`。
+- `名称为 Service_002 的服务` 中 `名称` 标为 `filter`，不是 projection。
+- `按数量降序排列，返回前3名` 中 `数量` 标为 `order_by`，`前3` 标为 `limit`。
+- `slot_terms` 缺失或冲突时不能让 validator 自行猜测；应进入 repair/schema retry。
+
+### MIR-001.2 Projection Slot Resolver
 
 目标：新增确定性的 projection slot 解析能力，把用户要求的字段词绑定成 property-level projection。
 
@@ -179,10 +239,11 @@ services/cypher_generator_agent/tests/binding/test_projection_resolver.py
 ```
 
 - 解析规则：
-  - 字段词只能从 semantic model registry 的 property 和候选 evidence 中选择。
+  - 字段词只能从 semantic model registry 的 property name、`ai_context.synonyms`、description 和 candidate evidence 中选择。
+  - resolver 禁止维护独立硬编码字段词表；如果需要补别名，应补到语义模型 YAML，而不是补到 resolver 代码。
   - 单 vertex 查询中，字段词默认绑定到唯一 vertex。
   - single-hop/path 查询中，字段词必须根据局部修饰词绑定到 source/end/path role，例如“隧道的名称”绑定到 `Tunnel.name`。
-  - `ID/编号/名称/类型/元素类型/服务质量等级/带宽/时延/状态/厂商` 等字段词走 deterministic alias/synonym 规则。
+  - `ID/编号/名称/类型/元素类型/服务质量等级/带宽/时延/状态/厂商` 等字段词必须通过 registry synonym/evidence 命中，不能靠代码枚举。
   - 如果字段词可绑定到多个 owner 且上下文无法消歧，返回 ambiguity，不静默选择。
 - `_deterministic_grounding_from_slots` 不再只从 filter 中提取 selected properties，应合并：
 
@@ -196,8 +257,9 @@ filter_properties + projection_properties
 - `qa_c80a82efe561` 的 resolver 输出 3 个 `Tunnel` property projection。
 - `qa_c2508f2c0bac` 的 resolver 同时保留 filter property `Service.quality_of_service` 和 projection properties `Service.id/name/bandwidth`。
 - ambiguous owner 场景返回 structured ambiguity，不产生猜测 projection。
+- 修改语义同义词时必须改 semantic model fixture，并有 registry/retriever 测试证明 resolver 从模型派生映射。
 
-### MIR-001.2 Projection Coverage Validator
+### MIR-001.3 Projection Coverage Validator
 
 目标：在 semantic validator 中补 projection coverage 硬约束，作为通用防线。
 
@@ -213,7 +275,7 @@ services/cypher_generator_agent/tests/validation/test_projection_coverage.py
 开发内容：
 
 - 定义 projection coverage input：
-  - decomposition 中被判定为“返回字段”的 substantive/target concept。
+  - decomposition `slot_terms` 中 `slot=projection` 的字段词。
   - final binding plan / DSL projection。
 - coverage 判定从“词被候选引用”升级为“词进入正确槽位”：
 
@@ -224,7 +286,7 @@ services/cypher_generator_agent/tests/validation/test_projection_coverage.py
 字段词作为排序依据出现 -> 必须进入 sort/order_by
 ```
 
-- 本 MIR v1 先实现 projection slot；其他 slot 只预留结构。
+- 本 MIR v1 先实现 projection slot；filter/group_by/order_by/limit/path 先预留结构并明确不在 validator 末端猜测槽位。
 - 新增错误码：
 
 ```text
@@ -239,8 +301,9 @@ projection_owner_ambiguous
 - 如果 projection 中包含全部字段，validator pass。
 - 如果字段词只在 selected_properties 中出现但没有进入 DSL projection，validator fail。
 - coverage error 会进入 repair / generation_failed，不会继续编译 Cypher。
+- `projection_coverage_missing` 不产生 ask_user clarification，除非 repair loop 达到上限后仍存在多 owner 真歧义。
 
-### MIR-001.3 DSL Builder No Silent ID Downgrade
+### MIR-001.4 DSL Builder No Silent ID Downgrade
 
 目标：取消 DSL builder 对模糊 vertex projection 的静默 ID 降级。
 
@@ -268,10 +331,11 @@ services/cypher_generator_agent/tests/dsl/test_builder_projection.py
 
 - 喂入 `{semantic_type: "vertex", name: "Service"}` 的 projection，builder 不再生成 `Service.id`。
 - 空 projection + 无显式字段需求的简单 list 可以按产品约定返回默认 ID。
+- 默认 list 查询的产品口径先按 `vertex_full` 设计；如果 golden audit 证明现有标准要求 ID，需要在 fixture 审核项中单独记录原因。
 - 空 projection + 有显式字段需求必须失败。
 - `vertex_full` 能稳定编译成 `RETURN svc AS service` 或 DSL 中约定的整节点表达。
 
-### MIR-001.4 Grounded Understanding Projection Contract
+### MIR-001.5 Grounded Understanding Projection Contract
 
 目标：收紧 grounded understanding 的 projection contract，避免“裸 vertex”表达混淆。
 
@@ -304,7 +368,7 @@ services/cypher_generator_agent/tests/understanding/test_grounded_understanding_
 - LLM fallback path 对多字段 projection 输出 property items。
 - 现有 detail query 样本不被错误改成 property-only projection。
 
-### MIR-001.5 Trace and Repair Contract for Projection Coverage
+### MIR-001.6 Trace and Repair Contract for Projection Coverage
 
 目标：让 projection coverage 失败在 trace、运行中心和 repair 输入中可诊断。
 
@@ -340,6 +404,8 @@ services/cypher_generator_agent/tests/observability/test_projection_coverage_tra
   - candidate properties
   - final projection items
 - user-visible clarification 不应把 projection coverage 缺失表达成“某个值未解析”。这是系统绑定缺失，优先进入 repair/generation_failed。
+- repair prompt 应明确列出缺失 projection term 和候选 property，例如“漏了 名称/带宽/时延，请补为 property projection”。
+- repair loop 使用既有上限和 oscillation 检测；超过上限转 `generation_failed`。
 
 验收：
 
@@ -347,7 +413,7 @@ services/cypher_generator_agent/tests/observability/test_projection_coverage_tra
 - Runtime Center 可显示该错误的阶段、原因码、缺失字段。
 - repair-agent 能拿到足够上下文判断“缺 projection”，而不是误判为 literal 问题。
 
-### MIR-001.6 Self-Validation Shape Guard Extension
+### MIR-001.7 Self-Validation Shape Guard Extension
 
 目标：补充末端 shape guard，验证 Cypher RETURN aliases 与 DSL projection 一致；不承担自然语言 coverage 判断。
 
@@ -372,7 +438,7 @@ services/cypher_generator_agent/tests/cypher_validation/test_shape_projection.py
 - DSL 1 projection -> Cypher 1 RETURN pass。
 - self-validation 不误报 detail node return。
 
-### MIR-001.7 Regression Matrix Integration
+### MIR-001.8 Regression Matrix Integration
 
 目标：把本 MIR 的测试纳入 regression matrix，防止后续 prompt / binder / builder 改动回归。
 
@@ -395,6 +461,7 @@ docs/experiments/2026-05-28-runtime-center-cga-job-analysis.md
   - `qa_526d49332ed1`：`所有` 属于 literal cleanup / control term。
   - `qa_c3e83dd7ad32`：`前3` 属于 top_n / limit slot。
   - `qa_6494b2085699`：`IP地址` 属于 property owner binding。
+- 上述 3 条不能进入 projection coverage active assertion；若它们因相邻问题失败，不应影响 MIR-001 projection slice 通过率。
 - CI 或本地 regression 命令必须能单独跑 projection coverage slice。
 
 验收：
@@ -442,13 +509,21 @@ docs/experiments/2026-05-28-runtime-center-cga-job-analysis.md
 验收：
 ```
 
-## 5. 审核问题
+## 5. 审核结论与后续 MIR 检查
 
-MIR-001 实施前需要确认：
+MIR-001 审核后的当前默认决策：
 
-1. `vertex_full` 是否作为新的 projection item 类型进入 DSL v1，还是只作为 builder 内部 normalized form？
-2. 默认 list 查询在没有显式字段时，是否仍返回 ID？例如“查询所有服务”应返回 `Service.id` 还是完整 `Service` 节点？
-3. projection coverage 的 failure 应进入 repair loop，还是直接 generation_failed？
-4. 多 owner 字段歧义时，是否允许系统按路径最近对象自动选择，还是必须反问/repair？
-5. `schema_version` 是否保持 `grounded_understanding_v1` / `restricted_query_dsl_v1`，还是因为 projection item 类型收紧而升版？
+1. `vertex_full` 进入 DSL v1，作为一等 projection item。
+2. 默认 list 查询倾向返回完整节点；实施前需要 audit golden 口径。
+3. projection coverage failure 进入 repair loop；超过上限转 generation_failed，不直接 ask_user。
+4. 多 owner 字段歧义不按最近对象静默选择；`各自/双方/两端` 展开为多个 projection，真歧义先 repair，仍不确定再 ask_user。
+5. schema 暂不升版，保持 v1；实施前若发现外部稳定消费方依赖旧 projection 形态，再升 v2。
+6. 字段词映射从 semantic model registry 派生，不在 resolver 中硬编码平行词表。
+7. 槽位角色由 question decomposer 标注，validator 消费角色并校验最终 DSL。
 
+每个后续 MIR 审核时必须额外回答：
+
+1. 本 MIR 是加通用防线，还是加特例词表/闸门？
+2. 如果引入词表或规则，是否能改为从 semantic model / registry / schema 派生？
+3. 是否新增了对应的 slot coverage 或 trace evidence？
+4. 是否有独立 regression slice，且不会被相邻问题污染通过率？
