@@ -137,6 +137,22 @@ def test_filter_property_shorthand_is_grounded_by_selected_literal_and_property(
     assert plan.filters[0].value == "GOLD"
 
 
+def test_projection_vertex_shorthand_is_normalized_to_semantic_reference(
+    binder: SemanticBinder,
+) -> None:
+    plan = binder.bind(
+        {
+            "query_shape": "single_hop",
+            "selected_vertices": ["Service", "Tunnel"],
+            "selected_edges": ["SERVICE_USES_TUNNEL"],
+            "projection": [{"vertex": "Tunnel"}],
+        },
+        candidates=_gold_candidates(),
+    )
+
+    assert plan.projection == [{"semantic_type": "vertex", "name": "Tunnel"}]
+
+
 def test_edge_direction_mapping_is_preserved_for_validator_and_dsl_builder(
     binder: SemanticBinder,
 ) -> None:

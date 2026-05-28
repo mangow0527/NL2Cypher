@@ -486,6 +486,15 @@ def _normalize_reference_item(item: Mapping[str, Any], *, field_name: str) -> di
     semantic_type = normalized.get("semantic_type")
     if semantic_type == "vertex":
         return {"semantic_type": "vertex", "name": _extract_name(normalized, "vertex")}
+    for shorthand_type in ("vertex", "edge", "metric", "path_pattern"):
+        if shorthand_type in normalized:
+            reference = {
+                "semantic_type": shorthand_type,
+                "name": _extract_name(normalized, shorthand_type),
+            }
+            if normalized.get("alias") is not None:
+                reference["alias"] = normalized["alias"]
+            return reference
     if semantic_type == "property":
         owner, name = _extract_owner_name(normalized)
         return {"semantic_type": "property", "owner": owner, "name": name}
