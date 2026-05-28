@@ -1,0 +1,59 @@
+name: Cypher Generator Agent
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/cypher-generator-agent.yml"
+      - "docs/superpowers/specs/graph-cypher-generation/**"
+      - "services/cypher_generator_agent/**"
+  push:
+    branches:
+      - cypher-generation-osi
+    paths:
+      - ".github/workflows/cypher-generator-agent.yml"
+      - "docs/superpowers/specs/graph-cypher-generation/**"
+      - "services/cypher_generator_agent/**"
+  workflow_dispatch:
+    inputs:
+      regression_scope:
+        description: "Golden regression scope to run before the full suite."
+        required: true
+        default: "smoke"
+        type: choice
+        options:
+          - smoke
+          - full
+
+jobs:
+  cypher-generator-agent:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: .
+      CYPHER_GENERATOR_AGENT_DISABLE_ENV_FILE: "true"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pytest
+
+      - name: Golden regression smoke
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.regression_scope == 'smoke' }}
+        run: |
+          pytest services/cypher_generator_agent/tests/integration/test_golden_questions.py::test_smoke_golden_regression_case_matches_expected_contract -q
+
+      - name: Golden regression full
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.regression_scope == 'full' }}
+        run: |
+          pytest services/cypher_generator_agent/tests/integration/test_golden_questions.py -q
+
+      - name: Full cypher-generator-agent suite
+        run: |
+          pytest services/cypher_generator_agent/tests -q

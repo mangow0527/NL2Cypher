@@ -10,12 +10,13 @@
 3. [Network Topology Vocabulary](./2026-05-27-network-topology-vocabulary.md)：本文档集中的标准网络拓扑示例词汇。
 4. [Overall Architecture](./2026-05-27-overall-architecture-design.md)：端到端生成链路和组件边界。
 5. [Development IR](./2026-05-27-development-ir.md)：整体架构到开发实施单元的拆解。
-6. [Restricted Query DSL v1](./2026-05-27-restricted-query-dsl-v1-design.md)：NL 理解到 Cypher 编译之间的受限中间表示。
-7. [LiteralResolver v1](./2026-05-27-literal-resolver-v1-design.md)：字面值、枚举、ID、名称和时间解析。
-8. [Repair and Clarification Controller v1](./2026-05-27-repair-clarification-controller-v1-design.md)：校验失败后的 repair、clarification、unsupported 决策。
-9. [Cypher Self-Validation v1](./2026-05-27-cypher-self-validation-v1-design.md)：不连接数据库的 Cypher 静态校验边界。
-10. [Observability v1](./2026-05-27-observability-v1-design.md)：trace、stage、指标和排障视图。
-11. [Schema Versioning Policy](./2026-05-27-schema-versioning-policy.md)：各类 schema 的演进和兼容策略。
+6. [IR Closeout Status](./2026-05-28-ir-closeout-status.md)：IR 实现完成度、验收证据和剩余运营项。
+7. [Restricted Query DSL v1](./2026-05-27-restricted-query-dsl-v1-design.md)：NL 理解到 Cypher 编译之间的受限中间表示。
+8. [LiteralResolver v1](./2026-05-27-literal-resolver-v1-design.md)：字面值、枚举、ID、名称和时间解析。
+9. [Repair and Clarification Controller v1](./2026-05-27-repair-clarification-controller-v1-design.md)：校验失败后的 repair、clarification、unsupported 决策。
+10. [Cypher Self-Validation v1](./2026-05-27-cypher-self-validation-v1-design.md)：不连接数据库的 Cypher 静态校验边界。
+11. [Observability v1](./2026-05-27-observability-v1-design.md)：trace、stage、指标和排障视图。
+12. [Schema Versioning Policy](./2026-05-27-schema-versioning-policy.md)：各类 schema 的演进和兼容策略。
 
 ## 依赖关系
 
@@ -27,6 +28,7 @@ flowchart TD
   B --> D
   C --> D
   D --> K["Development IR<br/>开发实施拆解"]
+  K --> L["IR Closeout Status<br/>IR 收口状态"]
   D --> E["Restricted Query DSL<br/>受限查询 DSL"]
   D --> F["LiteralResolver<br/>字面值解析器"]
   D --> G["Repair Controller<br/>修复与澄清控制器"]

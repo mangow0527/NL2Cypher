@@ -74,6 +74,17 @@ def test_full_golden_regression_matrix_covers_generated_query_shapes() -> None:
         assert (FIXTURE_DIR / case["expected_cypher_fixture"]).is_file()
 
 
+def test_golden_regression_has_ci_workflow_entrypoint() -> None:
+    workflow_path = Path(__file__).resolve().parents[4] / ".github" / "workflows" / "cypher-generator-agent.yml"
+
+    assert workflow_path.is_file()
+    workflow_text = workflow_path.read_text(encoding="utf-8")
+    assert "workflow_dispatch" in workflow_text
+    assert "test_golden_questions.py" in workflow_text
+    assert "services/cypher_generator_agent/tests" in workflow_text
+    assert "PYTHONPATH: ." in workflow_text
+
+
 @pytest.mark.parametrize("case", _regression_cases(), ids=lambda case: case["id"])
 def test_full_golden_regression_case_matches_expected_dsl_and_cypher(
     case: dict[str, Any],

@@ -18,12 +18,15 @@ def build_grounded_understanding_prompt(
     question_decomposition: Mapping[str, Any] | object,
     candidates: CandidateRetrievalResult | Sequence[SemanticCandidate] | Mapping[str, Any],
     literal_results: Sequence[LiteralResolverResult | Mapping[str, Any]],
+    repair_context: Mapping[str, Any] | None = None,
 ) -> str:
     payload = {
         "question_decomposition": _dump_model(question_decomposition),
         "top_candidates": [_candidate_payload(candidate) for candidate in _coerce_candidates(candidates)],
         "literal_resolver_results": [_dump_model(result) for result in literal_results],
     }
+    if repair_context:
+        payload["repair_context"] = dict(repair_context)
     return "\n".join(
         [
             "You are the Grounded Understanding selector for a graph-native Cypher generation pipeline.",
@@ -31,6 +34,7 @@ def build_grounded_understanding_prompt(
             "You must choose only from top_candidates by candidate_id.",
             "Every selected binding must copy semantic_type, semantic_id, semantic_name, and owner exactly from its candidate payload.",
             "If two or more candidates are close and you cannot safely choose, put their candidate_ids in ambiguities and do not invent a selected binding for that role.",
+            "If repair_context is present, fix the previous semantic error without inventing semantics outside top_candidates.",
             "Do not generate Cypher, do not connect to a database, do not explain, and do not return markdown.",
             "Input JSON:",
             json.dumps(payload, ensure_ascii=False, sort_keys=True),

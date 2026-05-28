@@ -46,11 +46,13 @@ class GroundedUnderstandingSelector:
         question_decomposition: Mapping[str, Any] | object,
         candidates: CandidateRetrievalResult | Sequence[SemanticCandidate] | Mapping[str, Any],
         literal_results: Sequence[object],
+        repair_context: Mapping[str, Any] | None = None,
     ) -> GroundedUnderstandingOutcome:
         prompt = build_grounded_understanding_prompt(
             question_decomposition=question_decomposition,
             candidates=candidates,
             literal_results=literal_results,
+            repair_context=repair_context,
         )
         schema = build_grounded_understanding_schema()
         provider = _provider_name(self._llm_client)
