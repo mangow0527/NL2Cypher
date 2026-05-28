@@ -221,7 +221,9 @@ const stageFieldHints = {
     },
     output: {
       _summary: '这里展示 LLM 对问题的结构化拆解结果。',
+      schema_version: '本阶段输出遵循的结构化结果版本，当前应为 question_decomposition_v1。',
       intent_type: '问题意图类型，例如查询列表、统计、Top-N 或路径查询。',
+      original_question: '进入问题拆解阶段的原始用户问题，用来和拆解结果对照。',
       target_concepts: '问题中提到的业务对象，例如服务、隧道、网元。',
       literal_candidates: '问题中可能需要解析成字段值的词，例如 Gold、down、某个设备 ID。',
       relation_phrases: '表示两个业务对象如何连接的关系短语。例如“服务使用隧道”中的“使用”，会帮助系统匹配 SERVICE_USES_TUNNEL 这类边。',
@@ -234,8 +236,8 @@ const stageFieldHints = {
       time_terms: '时间或时间范围表达，例如“最近”“2024 年”“过去 7 天”。',
       unparsed_terms: '未被前面类别吸收的残留实质词；如果非空，通常意味着需要澄清或生成失败。',
       filters: '问题中表达的过滤条件。',
-      output_shape: '用户期望的返回形态，例如列表、计数或表格。',
-      llm_calls: '本阶段的 LLM 调用记录，包含提示词和原始返回。',
+      output_shape: '回答结果的形态，例如 rows 表示多行结果、scalar 表示单个值、grouped_rows 表示分组统计结果。',
+      llm_calls: '问题拆解阶段的 LLM 调用明细，包含提示词、原始返回、解析后的 JSON 和调用状态。',
     },
   },
   candidate_retrieval: {
@@ -362,25 +364,19 @@ function payloadFieldKeys(payload) {
 function renderStageSectionHelp(stage, section, payload) {
   const hints = stageFieldHint(stage.key, section);
   const keys = payloadFieldKeys(payload);
-  const knownKeys = keys.slice(0, 12);
-  const items = knownKeys.map((key) => {
-    const description = hints[key] || `该字段由 ${stage.title_zh || cgaStageTitles[stage.key] || stage.key || '当前'} 阶段记录，保留原始 trace 字段名。`;
+  const items = keys.map((key) => {
+    const description = hints[key] || '该字段暂未配置专门说明，需要补充到运行中心字段说明表。';
     return `<div><dt>${escapeHtml(key)}</dt><dd>${escapeHtml(description)}</dd></div>`;
   });
   if (!items.length && !hints._summary) {
     return '';
   }
-  const extraCount = Math.max(0, keys.length - knownKeys.length);
   return `
     <aside class="field-help">
       <h4>字段说明</h4>
       ${hints._summary ? `<p>${escapeHtml(hints._summary)}</p>` : ''}
       ${
-        items.length
-          ? `<dl>${items.join('')}${
-              extraCount ? `<div><dt>其他字段</dt><dd>${escapeHtml(`还有 ${extraCount} 个字段，请参考下方原始 JSON。`)}</dd></div>` : ''
-            }</dl>`
-          : `<p>下方没有结构化字段，或本阶段没有额外记录。</p>`
+        items.length ? `<dl>${items.join('')}</dl>` : `<p>下方没有结构化字段，或本阶段没有额外记录。</p>`
       }
     </aside>
   `;

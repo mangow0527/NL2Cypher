@@ -93,6 +93,14 @@ def test_runtime_results_detail_script_puts_cypher_comparison_in_overview():
     assert "模型内容校验值" in script
     assert "vertices" in script
     assert "点类型数量" in script
+    assert "schema_version" in script
+    assert "本阶段输出遵循的结构化结果版本" in script
+    assert "original_question" in script
+    assert "进入问题拆解阶段的原始用户问题" in script
+    assert "output_shape" in script
+    assert "回答结果的形态" in script
+    assert "llm_calls" in script
+    assert "问题拆解阶段的 LLM 调用明细" in script
     assert "filter_phrases" in script
     assert "从问题中抽取出的过滤条件短语" in script
     assert "relation_phrases" in script
@@ -108,6 +116,8 @@ def test_runtime_results_detail_script_puts_cypher_comparison_in_overview():
     assert "时间或时间范围表达" in script
     assert "unparsed_terms" in script
     assert "未被前面类别吸收的残留实质词" in script
+    assert "其他字段" not in script
+    assert "保留原始 trace 字段名" not in script
     assert "关键指标" not in script
     assert "metrics_summary: inlineValue(stage.metrics)" not in script
     assert "renderOntologyLayerPrompts" not in script
