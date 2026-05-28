@@ -129,6 +129,7 @@ semantic_model:
               synonyms:
                 - QoS
                 - 服务质量
+                - 服务质量等级
                 - 服务等级
             valid_values:
               - GOLD

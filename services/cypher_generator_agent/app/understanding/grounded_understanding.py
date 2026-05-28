@@ -317,7 +317,7 @@ def _owner_property(item: Mapping[str, Any]) -> tuple[str, str]:
             return str(owner), str(property_name)
 
     owner = item.get("owner")
-    property_name = item.get("property") or item.get("property_name")
+    property_name = item.get("property") or item.get("property_name") or item.get("name")
     semantic_id = item.get("semantic_id")
     if (owner is None or property_name is None) and isinstance(semantic_id, str) and "." in semantic_id:
         owner, property_name = semantic_id.split(".", 1)

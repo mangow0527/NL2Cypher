@@ -92,6 +92,7 @@ class ProjectionItem:
     target: RoleReference | None = None
     property: PropertyReference | None = None
     source: SourceReference | None = None
+    vertex_full: bool = False
 
 
 @dataclass(frozen=True)

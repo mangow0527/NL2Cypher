@@ -61,7 +61,14 @@ def test_gold_service_tunnel_plan_builds_single_hop_dsl(registry: GraphSemanticR
                 literal=literal,
             )
         ],
-        projection=[{"semantic_type": "vertex", "name": "Tunnel"}],
+        projection=[
+            {
+                "semantic_type": "property",
+                "owner": "Tunnel",
+                "name": "id",
+                "alias": "tunnel_id",
+            }
+        ],
         assumptions=[
             {
                 "type": "literal_fuzzy_match",
@@ -166,6 +173,59 @@ def test_single_hop_uses_backward_edge_direction(registry: GraphSemanticRegistry
     assert dsl["operations"][0]["to"] == "end"
     assert dsl["bindings"]["start"] == {"vertex_name": "Tunnel"}
     assert dsl["bindings"]["end"] == {"vertex_name": "Service"}
+
+
+def test_builder_rejects_bare_vertex_projection_instead_of_guessing_id(
+    registry: GraphSemanticRegistry,
+) -> None:
+    plan = BindingPlan(
+        query_shape="single_hop_traversal",
+        vertex_bindings=[
+            VertexBinding(name="Service", candidate=_candidate("vertex", "Service")),
+            VertexBinding(name="Tunnel", candidate=_candidate("vertex", "Tunnel")),
+        ],
+        edge_bindings=[
+            EdgeBinding(name="SERVICE_USES_TUNNEL", candidate=_candidate("edge", "SERVICE_USES_TUNNEL")),
+        ],
+        projection=[{"semantic_type": "vertex", "name": "Tunnel"}],
+    )
+
+    with pytest.raises(ValueError, match="ambiguous bare vertex projection"):
+        RestrictedDslBuilder(registry).build(
+            plan,
+            source_question="Gold 服务使用了哪些隧道",
+            query_id="q-bare-vertex",
+        )
+
+
+def test_builder_accepts_explicit_vertex_full_projection(
+    registry: GraphSemanticRegistry,
+) -> None:
+    plan = BindingPlan(
+        query_shape="vertex_lookup",
+        vertex_bindings=[
+            VertexBinding(name="Service", candidate=_candidate("vertex", "Service")),
+        ],
+        projection=[{"semantic_type": "vertex_full", "name": "Service", "alias": "service"}],
+    )
+
+    dsl = RestrictedDslBuilder(registry).build(
+        plan,
+        source_question="查询所有服务",
+        query_id="q-service-full",
+    )
+
+    assert dsl["projection"] == {
+        "items": [
+            {
+                "alias": "service",
+                "target": "target",
+                "vertex_full": True,
+            }
+        ]
+    }
+    ast = parse_restricted_query_dsl(dsl, registry)
+    assert ast.projection.items[0].vertex_full is True
 
 
 def test_single_hop_rejects_sort_or_limit_until_compiler_supports_them(

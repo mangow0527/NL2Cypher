@@ -66,12 +66,15 @@ class ProjectionItemModel(RestrictedDslBase):
     target: str | None = None
     property: PropertyReferenceModel | None = None
     source: str | None = None
+    vertex_full: bool = False
 
     @model_validator(mode="after")
     def validate_reference_shape(self) -> "ProjectionItemModel":
         has_target_property = self.target is not None and self.property is not None
-        if has_target_property == (self.source is not None):
-            raise ValueError("projection item must use either target/property or source")
+        has_source = self.source is not None
+        has_vertex_full = self.vertex_full and self.target is not None and self.property is None
+        if sum(bool(item) for item in (has_target_property, has_source, has_vertex_full)) != 1:
+            raise ValueError("projection item must use target/property, source, or target+vertex_full")
         return self
 
 

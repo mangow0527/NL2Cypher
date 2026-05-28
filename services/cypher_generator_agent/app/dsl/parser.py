@@ -585,6 +585,16 @@ def _validate_projection(
 ) -> None:
     for index, item in enumerate(dsl.projection.items):
         location = f"projection.items[{index}]"
+        if item.vertex_full:
+            if item.target is None or item.target not in vertex_bindings:
+                issues.append(
+                    _issue(
+                        "unknown_projection_target",
+                        f"projection target not found: {item.target}",
+                        f"{location}.target",
+                    )
+                )
+            continue
         if item.property is not None:
             if item.target is not None and item.target not in vertex_bindings:
                 issues.append(
@@ -913,6 +923,7 @@ def _build_projection(
                     else None
                 ),
                 source=SourceReference.from_text(item.source) if item.source is not None else None,
+                vertex_full=item.vertex_full,
             )
         )
     return Projection(items=items)

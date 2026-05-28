@@ -25,6 +25,34 @@ def test_vertex_lookup_compiles_parameterized_filter(
     assert result.validation_result.valid is True
 
 
+def test_vertex_lookup_compiles_explicit_vertex_full_projection(
+    registry: GraphSemanticRegistry,
+) -> None:
+    dsl = {
+        "schema_version": "restricted_query_dsl_v1",
+        "query_id": "q-service-full",
+        "query_shape": "vertex_lookup",
+        "source_question": "查询所有服务",
+        "bindings": {"target": {"vertex_name": "Service"}},
+        "operations": [],
+        "projection": {
+            "items": [
+                {
+                    "alias": "service",
+                    "target": "target",
+                    "vertex_full": True,
+                }
+            ]
+        },
+    }
+    ast = parse_dsl(dsl, registry)
+
+    result = compile_restricted_query_ast(ast, registry)
+
+    assert result.cypher == "MATCH (svc:Service)\nRETURN svc AS service"
+    assert result.validation_result.valid is True
+
+
 def _vertex_lookup_dsl() -> dict[str, Any]:
     return {
         "schema_version": "restricted_query_dsl_v1",

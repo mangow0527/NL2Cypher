@@ -99,6 +99,12 @@ def test_prompt_example_1_accepts_attribute_query_without_literal() -> None:
             target_concepts=["服务", "隧道", "时延"],
             relation_phrases=["使用"],
             literal_candidates=[],
+            slot_terms=[
+                {"text": "服务", "slot": "projection"},
+                {"text": "隧道", "slot": "projection"},
+                {"text": "时延", "slot": "projection", "attached_to": "服务"},
+                {"text": "使用", "slot": "path"},
+            ],
         )
     )
 
@@ -110,6 +116,13 @@ def test_prompt_example_1_accepts_attribute_query_without_literal() -> None:
     assert result.target_concepts == ["服务", "隧道", "时延"]
     assert result.relation_phrases == ["使用"]
     assert result.literal_candidates == []
+    assert [item.model_dump(exclude_none=True) for item in result.slot_terms] == [
+        {"text": "服务", "slot": "projection"},
+        {"text": "隧道", "slot": "projection"},
+        {"text": "时延", "slot": "projection", "attached_to": "服务"},
+        {"text": "使用", "slot": "path"},
+    ]
+    assert "轴三：语义槽位" in client.calls[0]["prompt"]
 
 
 def test_prompt_example_2_accepts_literal_filter() -> None:
@@ -240,6 +253,7 @@ def _valid_payload(
     modality_terms: list[str] | None = None,
     time_terms: list[str] | None = None,
     unparsed_terms: list[str] | None = None,
+    slot_terms: list[dict[str, str]] | None = None,
     output_shape: str = "unknown",
 ) -> dict[str, Any]:
     return {
@@ -255,5 +269,6 @@ def _valid_payload(
         "modality_terms": modality_terms or [],
         "time_terms": time_terms or [],
         "unparsed_terms": unparsed_terms or [],
+        "slot_terms": slot_terms or [],
         "output_shape": output_shape,
     }

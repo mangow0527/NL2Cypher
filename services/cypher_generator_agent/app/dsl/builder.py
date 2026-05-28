@@ -64,8 +64,9 @@ class RestrictedDslBuilder:
             vertex = self.registry.get_vertex(target.name)
             plan.projection.append(
                 {
-                    "semantic_type": "vertex",
-                    "name": target.name,
+                    "semantic_type": "property",
+                    "owner": target.name,
+                    "name": vertex.id_property,
                     "alias": f"{_snake_case(target.name)}_{vertex.id_property}",
                 }
             )
@@ -94,7 +95,15 @@ class RestrictedDslBuilder:
         edge = plan.edge_bindings[0]
         role_by_owner = {start.name: "start", end.name: "end"}
         if not plan.projection:
-            plan.projection.append({"semantic_type": "vertex", "name": end.name})
+            vertex = self.registry.get_vertex(end.name)
+            plan.projection.append(
+                {
+                    "semantic_type": "property",
+                    "owner": end.name,
+                    "name": vertex.id_property,
+                    "alias": f"{_snake_case(end.name)}_{vertex.id_property}",
+                }
+            )
 
         dsl = self._base_payload(plan, source_question=source_question, query_id=query_id)
         dsl["bindings"] = {
@@ -385,13 +394,16 @@ class RestrictedDslBuilder:
             return projection
 
         if item.get("semantic_type") == "vertex":
+            raise ValueError(
+                "ambiguous bare vertex projection is not allowed; use property projection or vertex_full"
+            )
+
+        if item.get("semantic_type") == "vertex_full":
             vertex_name = str(item["name"])
-            vertex = self.registry.get_vertex(vertex_name)
-            id_property = vertex.id_property
             return {
-                "alias": item.get("alias") or f"{_snake_case(vertex_name)}_{id_property}",
+                "alias": item.get("alias") or _snake_case(vertex_name),
                 "target": role_by_owner[vertex_name],
-                "property": {"owner": vertex_name, "name": id_property},
+                "vertex_full": True,
             }
 
         if item.get("semantic_type") == "property":

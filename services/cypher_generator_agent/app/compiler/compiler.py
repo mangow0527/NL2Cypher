@@ -451,6 +451,14 @@ def _projection_source_aliases(projection: Projection) -> dict[tuple[str, str], 
 
 
 def _compile_projection_item(item: ProjectionItem, role_variables: Mapping[str, str]) -> str:
+    if item.vertex_full:
+        if item.target is None:
+            raise CypherCompilerError("vertex_full projection requires target")
+        variable = role_variables[item.target.alias]
+        alias = projection_item_alias(item)
+        if not is_cypher_identifier(alias):
+            raise CypherCompilerError(f"invalid projection alias: {alias}")
+        return f"{variable} AS {alias}"
     if item.target is None or item.property is None:
         raise CypherCompilerError("target/property projection is required for generated query compiler MVP")
     variable = role_variables[item.target.alias]

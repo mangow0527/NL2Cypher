@@ -108,6 +108,53 @@ def test_modality_should_is_warning_only_and_becomes_assumption(
     ]
 
 
+def test_missing_projection_slot_term_is_repairable_coverage_error(
+    validator: SemanticValidator,
+) -> None:
+    coverage = build_coverage_report(
+        {
+            "substantive_terms": {"total": 4, "covered": 4, "uncovered": []},
+            "time_terms": {"covered": [], "unresolved": []},
+            "unparsed_terms": {"unresolved": []},
+            "modality_terms": {"warning_only": []},
+            "slot_terms": {
+                "projection": {
+                    "required": ["ID", "服务质量等级"],
+                    "covered": ["ID"],
+                    "uncovered": ["服务质量等级"],
+                }
+            },
+        }
+    )
+    plan = BindingPlan(
+        query_shape="vertex_lookup",
+        vertex_bindings=[
+            VertexBinding(name="Service", candidate=_candidate("vertex", "Service")),
+        ],
+        projection=[
+            {
+                "semantic_type": "property",
+                "owner": "Service",
+                "name": "id",
+                "alias": "service_id",
+                "slot_terms": ["ID"],
+            }
+        ],
+    )
+
+    result = validator.validate(plan, coverage=coverage)
+
+    assert result.is_valid is False
+    assert [(issue.code, issue.recoverability, issue.action) for issue in result.errors] == [
+        ("projection_coverage_missing", "repairable", "repair_binding")
+    ]
+    assert result.errors[0].details == {
+        "required": ["ID", "服务质量等级"],
+        "covered": ["ID"],
+        "uncovered": ["服务质量等级"],
+    }
+
+
 def _vertex_lookup_plan() -> BindingPlan:
     return BindingPlan(
         query_shape="vertex_lookup",

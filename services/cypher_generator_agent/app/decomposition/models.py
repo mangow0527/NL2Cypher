@@ -19,6 +19,7 @@ class DecompositionBaseModel(BaseModel):
 
 IntentType = Literal["lookup", "list", "count", "aggregate", "top_n", "path", "compare", "unknown"]
 OutputShape = Literal["rows", "scalar", "grouped_rows", "path", "unknown"]
+SlotRole = Literal["projection", "filter", "group_by", "order_by", "limit", "path", "unknown"]
 
 
 class LiteralKindHint(str, Enum):
@@ -51,6 +52,28 @@ class LiteralCandidate(DecompositionBaseModel):
         return text
 
 
+class SlotTerm(DecompositionBaseModel):
+    text: str
+    slot: SlotRole
+    attached_to: str | None = None
+
+    @field_validator("text")
+    @classmethod
+    def require_non_empty_text(cls, value: str) -> str:
+        text = value.strip()
+        if not text:
+            raise ValueError("slot term text must not be empty")
+        return text
+
+    @field_validator("attached_to")
+    @classmethod
+    def normalize_optional_attached_to(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        text = value.strip()
+        return text or None
+
+
 class QuestionDecomposition(DecompositionBaseModel):
     schema_version: Literal["question_decomposition_v1"] = QUESTION_DECOMPOSITION_SCHEMA_VERSION
     result_type: Literal["decomposition"]
@@ -64,6 +87,7 @@ class QuestionDecomposition(DecompositionBaseModel):
     modality_terms: list[str] = Field(default_factory=list)
     time_terms: list[str] = Field(default_factory=list)
     unparsed_terms: list[str] = Field(default_factory=list)
+    slot_terms: list[SlotTerm] = Field(default_factory=list)
     output_shape: OutputShape
 
     @field_validator(

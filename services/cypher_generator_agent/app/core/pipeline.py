@@ -37,6 +37,7 @@ from services.cypher_generator_agent.app.repair.notices import render_user_visib
 from services.cypher_generator_agent.app.retrieval.models import CandidateRetrievalResult, SemanticCandidate
 from services.cypher_generator_agent.app.retrieval.retriever import CandidateRetriever
 from services.cypher_generator_agent.app.semantic_model.loader import load_graph_semantic_model
+from services.cypher_generator_agent.app.semantic_model.registry import RegistryLookupError
 from services.cypher_generator_agent.app.understanding.models import (
     GroundedUnderstanding,
     GroundedUnderstandingFailure,
@@ -201,6 +202,7 @@ def _run_pipeline_steps(
         literal_results=literal_results,
         settings=settings,
         llm_client=llm_client,
+        registry=registry,
         attempt_no=1,
     )
     if grounded_output := _output_from_grounded_outcome(trace, grounded):
@@ -254,6 +256,7 @@ def _run_pipeline_steps(
                     literal_results=literal_results,
                     settings=settings,
                     llm_client=llm_client,
+                    registry=registry,
                     repair_context=decision.repair_prompt_delta,
                     attempt_no=repair_attempt_no,
                 )
@@ -462,14 +465,26 @@ def _select_grounded_understanding(
     literal_results: list[LiteralResolverResult],
     settings: Settings,
     llm_client: Any | None,
+    registry: Any,
     repair_context: Mapping[str, Any] | None = None,
 ) -> Any:
     if llm_client is None:
+        if decomposition.get("mock_intent"):
+            return _mock_understand(decomposition, literal_results)
+        deterministic = _deterministic_grounding_from_slots(
+            decomposition=decomposition,
+            retrieval_result=retrieval_result,
+            literal_results=literal_results,
+            registry=registry,
+        )
+        if deterministic is not None:
+            return deterministic
         return _mock_understand(decomposition, literal_results)
     deterministic = _deterministic_grounding_from_slots(
         decomposition=decomposition,
         retrieval_result=retrieval_result,
         literal_results=literal_results,
+        registry=registry,
     )
     if deterministic is not None:
         return deterministic
@@ -489,6 +504,7 @@ def _deterministic_grounding_from_slots(
     decomposition: Mapping[str, Any],
     retrieval_result: CandidateRetrievalResult,
     literal_results: list[LiteralResolverResult],
+    registry: Any,
 ) -> dict[str, Any] | None:
     candidates = list(retrieval_result.candidates)
     vertex_ids = _candidate_ids(candidates, "vertex")
@@ -531,6 +547,16 @@ def _deterministic_grounding_from_slots(
         from_vertex = str(connecting_edge.metadata["from_vertex"])
         to_vertex = str(connecting_edge.metadata["to_vertex"])
         projection_vertex = _projection_vertex_for_traversal([from_vertex, to_vertex], literal_results)
+        projection = _projection_items_from_slots(
+            decomposition=decomposition,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=[from_vertex, to_vertex],
+        )
+        if not projection:
+            projection = [_id_projection_item(projection_vertex, registry)]
+        selected_properties = _append_projection_properties(selected_properties, projection)
+        coverage = _coverage_with_projection_slots(decomposition, coverage, projection)
         return {
             "query_shape": "single_hop",
             "selected_vertices": [from_vertex, to_vertex],
@@ -538,18 +564,28 @@ def _deterministic_grounding_from_slots(
             "selected_properties": selected_properties,
             "selected_literals": literal_payloads,
             "filters": filters,
-            "projection": [{"semantic_type": "vertex", "name": projection_vertex}],
+            "projection": projection,
             "coverage": coverage,
         }
 
     if len(vertex_ids) == 1:
+        projection = _projection_items_from_slots(
+            decomposition=decomposition,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=[vertex_ids[0]],
+        )
+        if not projection:
+            projection = [_id_projection_item(vertex_ids[0], registry)]
+        selected_properties = _append_projection_properties(selected_properties, projection)
+        coverage = _coverage_with_projection_slots(decomposition, coverage, projection)
         return {
             "query_shape": "vertex_lookup",
             "selected_vertices": [vertex_ids[0]],
             "selected_properties": selected_properties,
             "selected_literals": literal_payloads,
             "filters": filters,
-            "projection": [{"semantic_type": "vertex", "name": vertex_ids[0]}],
+            "projection": projection,
             "coverage": coverage,
         }
 
@@ -665,6 +701,201 @@ def _projection_vertex_for_traversal(
     return vertices[-1]
 
 
+def _projection_items_from_slots(
+    *,
+    decomposition: Mapping[str, Any],
+    candidates: list[SemanticCandidate],
+    registry: Any,
+    selected_vertices: list[str],
+) -> list[dict[str, Any]]:
+    projection_terms = [
+        item for item in _slot_terms(decomposition, slot="projection")
+        if _projection_slot_term_requires_property(item)
+    ]
+    if not projection_terms:
+        return []
+
+    items: list[dict[str, Any]] = []
+    for slot_term in projection_terms:
+        property_ref = _resolve_projection_property(
+            slot_term,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+        if property_ref is None:
+            continue
+        owner, property_name = property_ref
+        item = {
+            "semantic_type": "property",
+            "owner": owner,
+            "name": property_name,
+            "alias": f"{_snake_case(owner)}_{property_name}",
+            "slot_terms": [str(slot_term["text"])],
+        }
+        if not any(
+            existing.get("owner") == owner and existing.get("name") == property_name
+            for existing in items
+        ):
+            items.append(item)
+            continue
+        for existing in items:
+            if existing.get("owner") == owner and existing.get("name") == property_name:
+                existing_terms = existing.setdefault("slot_terms", [])
+                term = str(slot_term["text"])
+                if term not in existing_terms:
+                    existing_terms.append(term)
+                break
+    return items
+
+
+def _projection_slot_term_requires_property(slot_term: Mapping[str, Any]) -> bool:
+    text = str(slot_term.get("text") or "").strip()
+    if not text:
+        return False
+    return True
+
+
+def _resolve_projection_property(
+    slot_term: Mapping[str, Any],
+    *,
+    candidates: list[SemanticCandidate],
+    registry: Any,
+    selected_vertices: list[str],
+) -> tuple[str, str] | None:
+    term = str(slot_term.get("text") or "").strip()
+    if not term:
+        return None
+
+    attached_to = str(slot_term.get("attached_to") or "").strip()
+    attached_owners = _attached_vertex_names(attached_to, candidates)
+    owners = [owner for owner in selected_vertices if not attached_owners or owner in attached_owners]
+    if not owners:
+        owners = selected_vertices
+
+    matches: list[tuple[int, int, str, str]] = []
+    for owner_index, owner in enumerate(owners):
+        try:
+            vertex = registry.get_vertex(owner)
+        except RegistryLookupError:
+            continue
+        for prop in vertex.properties:
+            score = _property_surface_match_score(term, owner, prop)
+            if score <= 0:
+                continue
+            matches.append((score, -owner_index, owner, prop.name))
+
+    if not matches:
+        return None
+    matches.sort(reverse=True)
+    best_score, _, best_owner, best_name = matches[0]
+    same_score = [(owner, name) for score, _, owner, name in matches if score == best_score]
+    if len({(owner, name) for owner, name in same_score}) > 1 and attached_to == "" and len(selected_vertices) > 1:
+        return None
+    return best_owner, best_name
+
+
+def _property_surface_match_score(term: str, owner: str, prop: Any) -> int:
+    normalized_term = _norm(term)
+    if not normalized_term:
+        return 0
+    surfaces = [
+        prop.name,
+        f"{owner}.{prop.name}",
+        *(
+            item
+            for item in prop.ai_context.get("synonyms", [])
+            if isinstance(item, str)
+        ),
+    ]
+    for surface in surfaces:
+        normalized_surface = _norm(surface)
+        if normalized_term == normalized_surface:
+            return 100
+    for surface in surfaces:
+        normalized_surface = _norm(surface)
+        if normalized_surface and (
+            normalized_term in normalized_surface or normalized_surface in normalized_term
+        ):
+            return 70
+    return 0
+
+
+def _slot_terms(decomposition: Mapping[str, Any], *, slot: str) -> list[dict[str, Any]]:
+    raw_terms = decomposition.get("slot_terms")
+    if not isinstance(raw_terms, list | tuple):
+        return []
+    terms: list[dict[str, Any]] = []
+    for item in raw_terms:
+        if not isinstance(item, Mapping):
+            continue
+        if str(item.get("slot") or "") != slot:
+            continue
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        payload = {"text": text, "slot": slot}
+        attached_to = str(item.get("attached_to") or "").strip()
+        if attached_to:
+            payload["attached_to"] = attached_to
+        terms.append(payload)
+    return terms
+
+
+def _id_projection_item(vertex_name: str, registry: Any) -> dict[str, Any]:
+    vertex = registry.get_vertex(vertex_name)
+    return {
+        "semantic_type": "property",
+        "owner": vertex_name,
+        "name": vertex.id_property,
+        "alias": f"{_snake_case(vertex_name)}_{vertex.id_property}",
+    }
+
+
+def _append_projection_properties(
+    selected_properties: list[dict[str, str]],
+    projection: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    refs = list(selected_properties)
+    for item in projection:
+        if item.get("semantic_type") != "property":
+            continue
+        refs = _append_unique_property_ref(
+            refs,
+            {"owner": str(item["owner"]), "name": str(item["name"])},
+        )
+    return refs
+
+
+def _coverage_with_projection_slots(
+    decomposition: Mapping[str, Any],
+    coverage: Any,
+    projection: list[dict[str, Any]],
+) -> Any:
+    projection_terms = [str(item["text"]) for item in _slot_terms(decomposition, slot="projection")]
+    if not projection_terms:
+        return coverage
+    covered: list[str] = []
+    for item in projection:
+        raw_terms = item.get("slot_terms")
+        if not isinstance(raw_terms, list | tuple):
+            continue
+        for raw_term in raw_terms:
+            term = str(raw_term).strip()
+            if term and term not in covered:
+                covered.append(term)
+    uncovered = [term for term in projection_terms if term not in covered]
+    payload = dict(coverage) if isinstance(coverage, Mapping) else CoverageReport.model_validate(coverage).model_dump(mode="json")
+    slot_terms = dict(payload.get("slot_terms") or {})
+    slot_terms["projection"] = {
+        "required": projection_terms,
+        "covered": covered,
+        "uncovered": uncovered,
+    }
+    payload["slot_terms"] = slot_terms
+    return payload
+
+
 def _snake_case(value: str) -> str:
     text = value.replace("-", "_")
     text = "".join(f"_{char.lower()}" if char.isupper() else char for char in text)
@@ -679,6 +910,7 @@ def _run_grounded_understanding_stage(
     literal_results: list[LiteralResolverResult],
     settings: Settings,
     llm_client: Any | None,
+    registry: Any,
     attempt_no: int,
     repair_context: Mapping[str, Any] | None = None,
 ) -> Any:
@@ -700,6 +932,7 @@ def _run_grounded_understanding_stage(
             literal_results=literal_results,
             settings=settings,
             llm_client=llm_client,
+            registry=registry,
             repair_context=repair_context,
         ),
         output_payload=lambda result: _with_stage_llm_calls(
@@ -1164,6 +1397,7 @@ def _normalize_decomposition_slots(payload: dict[str, Any]) -> dict[str, Any]:
     normalized["target_concepts"] = target_concepts
     normalized["substantive_terms"] = substantive_terms
     normalized.setdefault("coverage", _coverage(covered=substantive_terms))
+    normalized["coverage"] = _coverage_seeded_with_slot_terms(normalized, normalized["coverage"])
     return normalized
 
 
@@ -1178,6 +1412,23 @@ def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list | tuple):
         return []
     return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _coverage_seeded_with_slot_terms(
+    decomposition: Mapping[str, Any],
+    coverage: Any,
+) -> Any:
+    projection_terms = [str(item["text"]) for item in _slot_terms(decomposition, slot="projection")]
+    if not projection_terms:
+        return coverage
+    payload = dict(coverage) if isinstance(coverage, Mapping) else CoverageReport.model_validate(coverage).model_dump(mode="json")
+    slot_terms = dict(payload.get("slot_terms") or {})
+    slot_terms.setdefault(
+        "projection",
+        {"required": projection_terms, "covered": [], "uncovered": projection_terms},
+    )
+    payload["slot_terms"] = slot_terms
+    return payload
 
 
 def _append_unique_term(values: list[str], term: str) -> list[str]:
@@ -1524,7 +1775,9 @@ def _mock_understand(
                     "raw_literal": "svc-gold-001",
                 }
             ],
-            "projection": [{"semantic_type": "vertex", "name": "Tunnel"}],
+            "projection": [
+                {"semantic_type": "property", "owner": "Tunnel", "name": "id", "alias": "tunnel_id"}
+            ],
         }
 
     if intent == "gold_service_tunnels":
@@ -1542,7 +1795,9 @@ def _mock_understand(
                     "raw_literal": "Gold",
                 }
             ],
-            "projection": [{"semantic_type": "vertex", "name": "Tunnel"}],
+            "projection": [
+                {"semantic_type": "property", "owner": "Tunnel", "name": "id", "alias": "tunnel_id"}
+            ],
         }
 
     if intent == "tunnel_full_path":
@@ -1582,7 +1837,9 @@ def _mock_understand(
                     "raw_literal": "ne-0001",
                 }
             ],
-            "projection": [{"semantic_type": "vertex", "name": "Tunnel"}],
+            "projection": [
+                {"semantic_type": "property", "owner": "Tunnel", "name": "id", "alias": "tunnel_id"}
+            ],
         }
 
     if intent == "device_ports":
@@ -1600,7 +1857,9 @@ def _mock_understand(
                     "raw_literal": decomposition["literal_candidates"][0],
                 }
             ],
-            "projection": [{"semantic_type": "vertex", "name": "Port"}],
+            "projection": [
+                {"semantic_type": "property", "owner": "Port", "name": "id", "alias": "port_id"}
+            ],
         }
 
     if intent == "down_ports":
@@ -1617,7 +1876,9 @@ def _mock_understand(
                     "raw_literal": "down",
                 }
             ],
-            "projection": [{"semantic_type": "vertex", "name": "Port"}],
+            "projection": [
+                {"semantic_type": "property", "owner": "Port", "name": "id", "alias": "port_id"}
+            ],
         }
 
     if intent == "firewall_device_count":

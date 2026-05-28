@@ -33,6 +33,7 @@ class SemanticValidator:
 
         coverage_report = build_coverage_report(coverage) if coverage is not None else None
         if coverage_report is not None:
+            coverage_report = self._merge_plan_slot_coverage(plan, coverage_report)
             self._validate_coverage(coverage_report, errors, warnings, assumptions)
 
         self._validate_dsl_support(plan, errors)
@@ -94,6 +95,58 @@ class SemanticValidator:
                     "message": message,
                 }
             )
+
+        projection_uncovered = list(coverage.slot_terms.projection.uncovered)
+        if projection_uncovered:
+            errors.append(
+                SemanticValidationIssue(
+                    code="projection_coverage_missing",
+                    message=(
+                        "Projection coverage failed for required return terms: "
+                        f"{', '.join(projection_uncovered)}"
+                    ),
+                    severity="error",
+                    recoverability="repairable",
+                    action="repair_binding",
+                    details={
+                        "required": list(coverage.slot_terms.projection.required),
+                        "covered": list(coverage.slot_terms.projection.covered),
+                        "uncovered": projection_uncovered,
+                    },
+                )
+            )
+
+    def _merge_plan_slot_coverage(
+        self,
+        plan: BindingPlan,
+        coverage: CoverageReport,
+    ) -> CoverageReport:
+        projection = coverage.slot_terms.projection
+        if not projection.required:
+            return coverage
+
+        covered = list(projection.covered)
+        for item in plan.projection:
+            raw_terms = item.get("slot_terms") if isinstance(item, Mapping) else None
+            if not isinstance(raw_terms, list | tuple):
+                continue
+            for raw_term in raw_terms:
+                term = str(raw_term).strip()
+                if term and term not in covered:
+                    covered.append(term)
+
+        uncovered = [term for term in projection.required if term not in covered]
+        return coverage.model_copy(
+            update={
+                "slot_terms": coverage.slot_terms.model_copy(
+                    update={
+                        "projection": projection.model_copy(
+                            update={"covered": covered, "uncovered": uncovered}
+                        )
+                    }
+                )
+            }
+        )
 
     def _validate_dsl_support(
         self,

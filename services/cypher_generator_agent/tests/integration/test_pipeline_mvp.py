@@ -56,6 +56,75 @@ def test_gold_service_question_generates_single_hop_cypher() -> None:
     assert "execution_result" not in _all_keys(output.trace)
 
 
+def test_multi_property_service_projection_uses_each_requested_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_decompose(question: str) -> dict[str, Any]:
+        return {
+            "schema_version": "question_decomposition_v1",
+            "result_type": "decomposition",
+            "original_question": question,
+            "intent_type": "list",
+            "output_shape": "rows",
+            "target_concepts": ["服务", "ID", "名称", "元素类型", "服务质量等级", "带宽", "时延"],
+            "relation_phrases": [],
+            "literal_candidates": [],
+            "literal_requests": [],
+            "substantive_terms": ["服务", "ID", "名称", "元素类型", "服务质量等级", "带宽", "时延"],
+            "stopword_terms": ["查询", "所有", "的", "和"],
+            "modality_terms": [],
+            "time_terms": [],
+            "unparsed_terms": [],
+            "slot_terms": [
+                {"text": "ID", "slot": "projection", "attached_to": "服务"},
+                {"text": "名称", "slot": "projection", "attached_to": "服务"},
+                {"text": "元素类型", "slot": "projection", "attached_to": "服务"},
+                {"text": "服务质量等级", "slot": "projection", "attached_to": "服务"},
+                {"text": "带宽", "slot": "projection", "attached_to": "服务"},
+                {"text": "时延", "slot": "projection", "attached_to": "服务"},
+            ],
+            "coverage": {
+                "substantive_terms": {"total": 7, "covered": 7, "uncovered": []},
+                "stopword_terms": {"ignored": ["查询", "所有", "的", "和"]},
+                "modality_terms": {"warning_only": []},
+                "time_terms": {"covered": [], "unresolved": []},
+                "unparsed_terms": {"unresolved": []},
+                "slot_terms": {
+                    "projection": {
+                        "required": ["ID", "名称", "元素类型", "服务质量等级", "带宽", "时延"],
+                        "covered": [],
+                        "uncovered": ["ID", "名称", "元素类型", "服务质量等级", "带宽", "时延"],
+                    }
+                },
+            },
+        }
+
+    monkeypatch.setattr(pipeline_module, "_mock_decompose", fake_decompose)
+
+    output = run_pipeline(
+        question="查询所有服务的 ID、名称、元素类型、服务质量等级、带宽和时延",
+        qa_id="qa_9cfa692813d5",
+        generation_run_id="run-qa_9cfa692813d5",
+    )
+
+    assert output.status == "generated"
+    assert output.dsl is not None
+    assert [item["property"]["name"] for item in output.dsl["projection"]["items"]] == [
+        "id",
+        "name",
+        "elem_type",
+        "quality_of_service",
+        "bandwidth",
+        "latency",
+    ]
+    assert "RETURN svc.id AS service_id" in output.cypher
+    assert "svc.name AS service_name" in output.cypher
+    assert "svc.elem_type AS service_elem_type" in output.cypher
+    assert "svc.quality_of_service AS service_quality_of_service" in output.cypher
+    assert "svc.bandwidth AS service_bandwidth" in output.cypher
+    assert "svc.latency AS service_latency" in output.cypher
+
+
 def test_input_clarification_gate_short_circuits_deictic_question(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -351,6 +420,7 @@ def test_llm_enum_literal_with_qualifier_prefers_enum_property_over_id(
         settings: object,
         llm_client: object | None,
         attempt_no: int,
+        registry: object | None = None,
         repair_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         literal = literal_results[0].model_dump(mode="json")
@@ -382,7 +452,9 @@ def test_llm_enum_literal_with_qualifier_prefers_enum_property_over_id(
                     "raw_literal": "Gold级别",
                 }
             ],
-            "projection": [{"semantic_type": "vertex", "name": "Tunnel"}],
+            "projection": [
+                {"semantic_type": "property", "owner": "Tunnel", "name": "id", "alias": "tunnel_id"}
+            ],
             "coverage": {
                 "substantive_terms": {"total": 4, "covered": 4, "uncovered": []},
                 "stopword_terms": {"ignored": ["都", "哪些"]},
@@ -458,6 +530,7 @@ def test_decomposition_slot_normalization_uses_attachment_and_classifier_without
         settings: object,
         llm_client: object | None,
         attempt_no: int,
+        registry: object | None = None,
         repair_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         candidate_ids = {f"{item.semantic_type}:{item.semantic_id}" for item in retrieval_result.candidates}
@@ -1078,7 +1151,9 @@ def test_grounded_understanding_schema_output_is_converted_before_binding(
                     "raw_literal": "Gold",
                 }
             ],
-            "projection": [{"semantic_type": "vertex", "name": "Tunnel"}],
+            "projection": [
+                {"semantic_type": "property", "owner": "Tunnel", "name": "id", "alias": "tunnel_id"}
+            ],
             "coverage": {
                 "substantive_terms": {
                     "total": 4,
@@ -1246,7 +1321,9 @@ def _grounded_service_tunnel_payload(*, direction: str) -> dict[str, object]:
                 "raw_literal": "Gold",
             }
         ],
-        "projection": [{"semantic_type": "vertex", "name": "Tunnel"}],
+        "projection": [
+            {"semantic_type": "property", "owner": "Tunnel", "name": "id", "alias": "tunnel_id"}
+        ],
         "coverage": {
             "substantive_terms": {
                 "total": 4,

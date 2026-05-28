@@ -407,7 +407,12 @@ class SemanticBinder:
                 candidate_index.require("property", f"{owner}.{property_name}")
                 return
             name = _extract_name(item, str(semantic_type))
+            candidate_type = str(semantic_type)
+            if semantic_type == "vertex_full":
+                candidate_type = "vertex"
             if semantic_type == "vertex":
+                self._require_registry("vertex", name, self.registry.get_vertex)
+            elif semantic_type == "vertex_full":
                 self._require_registry("vertex", name, self.registry.get_vertex)
             elif semantic_type == "edge":
                 self._require_registry("edge", name, self.registry.get_edge)
@@ -417,7 +422,7 @@ class SemanticBinder:
                 self._require_registry("path_pattern", name, self.registry.get_path_pattern)
             else:
                 raise BindingValidationError(f"{field_name} has unsupported semantic_type {semantic_type}")
-            candidate_index.require(str(semantic_type), name)
+            candidate_index.require(candidate_type, name)
         except BindingValidationError as exc:
             raise BindingValidationError(f"{field_name} semantic reference rejected: {exc}") from exc
 
@@ -528,7 +533,15 @@ def _normalize_reference_item(item: Mapping[str, Any], *, field_name: str) -> di
         normalized["property"] = {"owner": owner, "name": name}
     semantic_type = normalized.get("semantic_type")
     if semantic_type == "vertex":
-        return {"semantic_type": "vertex", "name": _extract_name(normalized, "vertex")}
+        reference = {"semantic_type": "vertex", "name": _extract_name(normalized, "vertex")}
+        if normalized.get("alias") is not None:
+            reference["alias"] = normalized["alias"]
+        return reference
+    if semantic_type == "vertex_full":
+        reference = {"semantic_type": "vertex_full", "name": _extract_name(normalized, "vertex")}
+        if normalized.get("alias") is not None:
+            reference["alias"] = normalized["alias"]
+        return reference
     for shorthand_type in ("vertex", "edge", "metric", "path_pattern"):
         if shorthand_type in normalized:
             reference = {
@@ -540,7 +553,11 @@ def _normalize_reference_item(item: Mapping[str, Any], *, field_name: str) -> di
             return reference
     if semantic_type == "property":
         owner, name = _extract_owner_name(normalized)
-        return {"semantic_type": "property", "owner": owner, "name": name}
+        reference = {"semantic_type": "property", "owner": owner, "name": name}
+        for key in ("alias", "slot_terms"):
+            if normalized.get(key) is not None:
+                reference[key] = normalized[key]
+        return reference
     return normalized
 
 

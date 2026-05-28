@@ -325,7 +325,11 @@ semantic_model:
       required: true
       description: Gold | Silver | Bronze | Best_Effort
       ai_context:
-        synonyms: []
+        synonyms:
+        - 服务质量
+        - 服务质量等级
+        - 服务等级
+        - QoS
       valid_values:
       - Gold
       - Silver

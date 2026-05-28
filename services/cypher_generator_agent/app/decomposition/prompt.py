@@ -62,6 +62,19 @@ QUESTION_DECOMPOSITION_PROMPT_TEMPLATE = """# 角色
   - attached_to：这个值修饰哪个概念的表层词，例如 "Gold" 的 attached_to 是 "服务"。
   - 注意：只有"用来限定/过滤某概念的值"才是 literal。被查询的中心名词（如"有多少防火墙"里的"防火墙"）是 target_concept，不是 literal。
 
+## 轴三：语义槽位（用于覆盖校验）
+在已经进入 substantive_terms 的词里，标注它们在查询计划中应该落入哪个槽位。slot_terms 只描述表层语义角色，不输出任何图 schema 名称：
+
+- projection：用户要求返回的字段或对象，例如"名称""带宽""时延""服务"。
+- filter：用户要求用作过滤条件的字段或值，例如"Gold 级别""名称为 Service_002"里的"名称"。
+- group_by：用户要求分组的维度，例如"按状态""按设备类型"。
+- order_by：用户要求排序的依据，例如"最多""最高""按带宽排序"。
+- limit：用户要求的数量限制，例如"前5""5台"。
+- path：路径或连接关系，例如"使用""经过""连接"。
+- unknown：你能判断它有意义，但无法确定槽位。
+
+同一个词可以同时出现在 substantive_terms 和 slot_terms 中。slot_terms 的 text 必须是用户问题里的表层词；attached_to 可选，用来说明该词修饰哪个表层概念，例如"时延" attached_to "服务"。
+
 # 必填与默认
 - 必填：result_type、original_question、intent_type、output_shape。
 - intent_type 只能取：lookup | list | count | aggregate | top_n | path | compare | unknown。
@@ -74,6 +87,7 @@ QUESTION_DECOMPOSITION_PROMPT_TEMPLATE = """# 角色
 - "大概""应该" → modality_terms；不进 substantive。
 - "最近""2024年" → time_terms；不进 substantive。
 - "数量""最多""前5""5台" → substantive_terms（驱动聚合/排序/数量语义）；不是 stopword。
+- "查询服务的名称"中的"名称" → slot_terms: projection；"名称为 Service_002 的服务"中的"名称" → slot_terms: filter。
 - 绝不输出图 label、边名、属性名、指标名、path pattern id 或任何规范化标识——你不知道这些，只输出用户问题里的表层词语。
 
 # 示例
@@ -93,7 +107,13 @@ QUESTION_DECOMPOSITION_PROMPT_TEMPLATE = """# 角色
   "unparsed_terms": [],
   "target_concepts": ["服务", "隧道", "时延"],
   "relation_phrases": ["使用"],
-  "literal_candidates": []
+  "literal_candidates": [],
+  "slot_terms": [
+    {"text": "服务", "slot": "projection"},
+    {"text": "隧道", "slot": "projection"},
+    {"text": "时延", "slot": "projection", "attached_to": "服务"},
+    {"text": "使用", "slot": "path"}
+  ]
 }
 
 ## 示例 2：含字面值与过滤
@@ -113,6 +133,13 @@ QUESTION_DECOMPOSITION_PROMPT_TEMPLATE = """# 角色
   "relation_phrases": ["使用"],
   "literal_candidates": [
     {"text": "Gold", "kind_hint": "enum_or_name", "attached_to": "服务"}
+  ],
+  "slot_terms": [
+    {"text": "Gold", "slot": "filter", "attached_to": "服务"},
+    {"text": "级别", "slot": "filter", "attached_to": "服务"},
+    {"text": "服务", "slot": "path"},
+    {"text": "使用", "slot": "path"},
+    {"text": "隧道", "slot": "projection"}
   ]
 }
 
@@ -131,7 +158,12 @@ QUESTION_DECOMPOSITION_PROMPT_TEMPLATE = """# 角色
   "unparsed_terms": [],
   "target_concepts": ["防火墙"],
   "relation_phrases": [],
-  "literal_candidates": []
+  "literal_candidates": [],
+  "slot_terms": [
+    {"text": "多少", "slot": "projection"},
+    {"text": "台", "slot": "projection"},
+    {"text": "防火墙", "slot": "projection"}
+  ]
 }
 
 ## 示例 4：缺指代对象，需要澄清

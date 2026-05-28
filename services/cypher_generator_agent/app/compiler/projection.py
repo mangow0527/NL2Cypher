@@ -29,6 +29,8 @@ def projection_item_alias(item: ProjectionItem) -> str:
         return item.property.name
     if item.source is not None:
         return item.source.name
+    if item.vertex_full and item.target is not None:
+        return item.target.alias
     raise ValueError("projection item must include alias, property, or source")
 
 

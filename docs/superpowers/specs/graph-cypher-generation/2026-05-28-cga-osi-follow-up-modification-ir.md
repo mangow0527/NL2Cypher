@@ -21,7 +21,7 @@
 
 | MIR | 名称 | 状态 | 触发样本 | 优先级 |
 | --- | --- | --- | --- | --- |
-| MIR-001 | Projection Slot Coverage and No Silent ID Downgrade | 已补充审核意见，待实施确认 | `qa_9cfa692813d5` | P0 |
+| MIR-001 | Projection Slot Coverage and No Silent ID Downgrade | 已实施核心链路，本地验收通过；回归矩阵扩展待追加 | `qa_9cfa692813d5` | P0 |
 
 后续新增问题按 `MIR-002`、`MIR-003` 继续追加。
 
@@ -469,6 +469,42 @@ docs/experiments/2026-05-28-runtime-center-cga-job-analysis.md
 - projection coverage slice 可独立执行。
 - `qa_9cfa692813d5` 修复后不能只靠最终 Cypher 字符串通过，必须 DSL projection 与 expected projection 同时通过。
 - 新增 regression case 失败时，错误能指向 projection slot，而不是泛化 testing mismatch。
+
+### MIR-001 Implementation Audit 2026-05-28
+
+执行结论：核心链路已落地，并通过本地 CGA 全量测试；`MIR-001.8` 的专用 regression matrix 扩展仍作为后续追加项保留。
+
+验证命令：
+
+```bash
+PYTHONPATH=. pytest services/cypher_generator_agent/tests -q
+```
+
+验证结果：
+
+```text
+475 passed in 3.43s
+```
+
+对照 IR：
+
+| 子 IR | 状态 | 实现/证据 |
+| --- | --- | --- |
+| MIR-001.0 Regression Fixture and Baseline | 部分完成 | 已新增 `qa_9cfa692813d5` 形态的 integration regression，断言 DSL projection 和最终 Cypher；尚未把 3 个扩展样本并入 golden matrix。 |
+| MIR-001.1 Question Decomposer Slot Role Annotation | 完成 | `question_decomposition_v1` 新增 `slot_terms`，prompt 增加“轴三：语义槽位”与示例；测试覆盖 projection/path slot。 |
+| MIR-001.2 Projection Slot Resolver | 核心完成 | deterministic grounding 根据 `slot_terms`、候选集合和 semantic model property synonyms 生成 property-level projection；字段词映射从 semantic model 派生，补充了 `Service.quality_of_service` 的同义词。未新增独立 `projection_resolver.py` 文件，当前实现位于 pipeline helper。 |
+| MIR-001.3 Projection Coverage Validator | 完成 | coverage schema 新增 slot coverage；validator 合并 plan projection 中的 `slot_terms`，缺失时返回 `projection_coverage_missing` / `repair_binding`。 |
+| MIR-001.4 DSL Builder No Silent ID Downgrade | 完成 | builder 禁止裸 `semantic_type=vertex` projection；默认 ID 返回改为显式 property projection；DSL/AST/compiler 支持一等 `vertex_full`。 |
+| MIR-001.5 Grounded Understanding Projection Contract | 部分完成 | boundary validator 支持 property projection 的 `owner/name` 形态；测试中的 grounded payload 已迁移到 property-level projection。Grounded schema 仍允许自由 dict，后续可继续收紧。 |
+| MIR-001.6 Trace and Repair Contract | 部分完成 | semantic validator 的 projection coverage failure 可进入 repair；trace 中可见缺失项。尚未为 Runtime Center 单独补 projection coverage 展示用例。 |
+| MIR-001.7 Self-Validation Shape Guard Extension | 完成已有能力确认 | compiler 对 DSL projection 产出 `expected_return_aliases`，self-validation shape 继续校验 RETURN alias；新增 `vertex_full` compiler case。 |
+| MIR-001.8 Regression Matrix Integration | 待追加 | 现有全量测试通过，但未新增 golden matrix projection slice；后续应将 `qa_9cfa692813d5` 与同类多字段样本纳入统一 golden fixture。 |
+
+实现边界：
+
+- 本轮没有引入 raw Cypher fallback，也没有连接数据库。
+- 没有在 resolver 中维护中文字段硬编码词表；需要的新同义词补在 semantic model YAML 中。
+- 默认“无显式字段的 list 查询”仍保持既有 ID 口径，但实现上已从“裸 vertex 静默降级”改成“显式 id property projection”。是否改为 `vertex_full` 需要先审核 qa-agent/golden 口径。
 
 ## 4. 后续 MIR 模板
 
