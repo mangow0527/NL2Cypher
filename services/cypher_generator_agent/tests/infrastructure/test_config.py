@@ -30,3 +30,13 @@ def test_llm_settings_default_to_mock_disabled() -> None:
     assert settings.llm_enabled is False
     assert settings.llm_provider == "mock"
     assert settings.llm_model == "qwen3-32b"
+
+
+def test_settings_default_to_packaged_tugraph_semantic_artifacts() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.graph_model_path.name == "tugraph_network_semantic_model.yaml"
+    assert settings.graph_model_path.parent.name == "artifacts"
+    assert settings.value_index_path.name == "tugraph_value_index.json"
+    assert settings.graph_model_path.exists()
+    assert settings.value_index_path.exists()

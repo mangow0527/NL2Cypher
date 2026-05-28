@@ -142,6 +142,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
 
     allowed_semantic_model_files = {
         "__init__.py",
+        "artifacts",
         "loader.py",
         "model.py",
         "registry.py",
@@ -149,6 +150,12 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "validator.py",
     }
     assert _source_names(SERVICE_ROOT / "app" / "semantic_model") <= allowed_semantic_model_files
+
+    allowed_semantic_model_artifacts = {
+        "tugraph_network_semantic_model.yaml",
+        "tugraph_value_index.json",
+    }
+    assert _source_names(SERVICE_ROOT / "app" / "semantic_model" / "artifacts") <= allowed_semantic_model_artifacts
 
     allowed_cypher_validation_files = {
         "__init__.py",

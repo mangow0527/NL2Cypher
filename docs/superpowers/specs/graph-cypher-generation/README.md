@@ -45,8 +45,8 @@ flowchart TD
 ## 工程边界
 
 - 当前工程目标数据库为 TuGraph，参考 schema 固定为 `services/testing_agent/docs/reference/schema.json`。
-- cypher-generator-agent 默认语义语料来自 `services/cypher_generator_agent/tests/fixtures/tugraph_network_graph_model.yaml`，该文件由 TuGraph schema 转成 Graph Semantic Model v1。
-- 当前静态 literal 语料为 `services/cypher_generator_agent/tests/fixtures/tugraph_value_index.json`，只包含 schema 枚举和少量稳定样例 ID，不代表 live value-index 服务。
+- cypher-generator-agent 默认语义语料来自 `services/cypher_generator_agent/app/semantic_model/artifacts/tugraph_network_semantic_model.yaml`，这是一份 OSI 风格的 Graph Semantic Model v1 YAML，由 TuGraph schema 转换生成。
+- 当前静态 literal 语料为 `services/cypher_generator_agent/app/semantic_model/artifacts/tugraph_value_index.json`，只包含 schema 枚举和少量稳定样例 ID，不代表 live value-index 服务。
 - cypher-generator-agent 只负责自然语言到 Cypher 的生成和静态自校验。
 - cypher-generator-agent 不连接 TuGraph，不执行 `EXPLAIN`、dry-run、probe query 或正式查询。
 - DSL 无法表达时不允许 fallback 到 LLM 直接生成 Cypher。

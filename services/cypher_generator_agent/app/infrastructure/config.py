@@ -6,7 +6,7 @@ from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-_DEFAULT_ARTIFACT_DIR = Path(__file__).resolve().parents[2] / "tests" / "fixtures"
+_DEFAULT_ARTIFACT_DIR = Path(__file__).resolve().parents[1] / "semantic_model" / "artifacts"
 
 
 class Settings(BaseSettings):
@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     port: int = 8000
     testing_agent_url: str = "http://127.0.0.1:8003"
     request_timeout_seconds: float = 120.0
-    graph_model_path: Path = _DEFAULT_ARTIFACT_DIR / "tugraph_network_graph_model.yaml"
+    graph_model_path: Path = _DEFAULT_ARTIFACT_DIR / "tugraph_network_semantic_model.yaml"
     value_index_path: Path = _DEFAULT_ARTIFACT_DIR / "tugraph_value_index.json"
     llm_enabled: bool = Field(
         default=False,
