@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from services.cypher_generator_agent.app.api.main import parse_semantics
@@ -11,8 +13,11 @@ from services.cypher_generator_agent.app.decomposition.models import (
     QuestionDecompositionClarification,
     QuestionDecompositionFailure,
 )
+from services.cypher_generator_agent.app.infrastructure.config import get_settings
 from services.cypher_generator_agent.app.understanding.models import GroundedUnderstandingFailure
 
+
+FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures"
 
 EXPECTED_STAGES = [
     "graph_model_loader",
@@ -47,6 +52,33 @@ def test_gold_service_question_generates_single_hop_cypher() -> None:
     assert _stage_names(output.trace) == EXPECTED_STAGES
     assert "db_connection" not in _all_keys(output.trace)
     assert "execution_result" not in _all_keys(output.trace)
+
+
+def test_pipeline_semantic_artifacts_can_be_overridden_from_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "CYPHER_GENERATOR_AGENT_GRAPH_MODEL_PATH",
+        str(FIXTURE_DIR / "network_topology_graph_model.yaml"),
+    )
+    monkeypatch.setenv(
+        "CYPHER_GENERATOR_AGENT_VALUE_INDEX_PATH",
+        str(FIXTURE_DIR / "value_index.json"),
+    )
+    get_settings.cache_clear()
+
+    try:
+        output = run_pipeline(
+            question="Gold 服务使用了哪些隧道",
+            qa_id="settings-override",
+            generation_run_id="run-settings-override",
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert output.status == "generated"
+    assert output.trace["semantic_model"]["name"] == "network_topology"
+    assert _compiler_parameters(output.trace)["quality_of_service"] == "GOLD"
 
 
 def test_tunnel_path_question_generates_named_path_pattern_cypher() -> None:

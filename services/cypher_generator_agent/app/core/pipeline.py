@@ -18,6 +18,7 @@ from services.cypher_generator_agent.app.decomposition.models import (
 )
 from services.cypher_generator_agent.app.dsl.builder import RestrictedDslBuilder
 from services.cypher_generator_agent.app.dsl.parser import RestrictedDslValidationError, parse_restricted_query_dsl
+from services.cypher_generator_agent.app.infrastructure.config import get_settings
 from services.cypher_generator_agent.app.literals.models import LiteralResolverRequest, LiteralResolverResult
 from services.cypher_generator_agent.app.literals.resolver import LiteralResolver
 from services.cypher_generator_agent.app.literals.value_index import StaticValueIndex
@@ -33,12 +34,6 @@ from services.cypher_generator_agent.app.understanding.models import (
 )
 from services.cypher_generator_agent.app.validation.coverage import CoverageReport
 from services.cypher_generator_agent.app.validation.semantic_validator import SemanticValidator
-
-
-_FIXTURE_DIR = Path(__file__).resolve().parents[2] / "tests" / "fixtures"
-_MODEL_PATH = _FIXTURE_DIR / "tugraph_network_graph_model.yaml"
-_VALUE_INDEX_PATH = _FIXTURE_DIR / "tugraph_value_index.json"
-
 
 def run_pipeline(
     *,
@@ -57,8 +52,9 @@ def run_pipeline(
         source_question=question,
     )
 
-    model_path = _model_path or _MODEL_PATH
-    value_index_path = _value_index_path or _VALUE_INDEX_PATH
+    settings = get_settings()
+    model_path = _model_path or settings.graph_model_path
+    value_index_path = _value_index_path or settings.value_index_path
 
     try:
         return _run_pipeline_steps(
