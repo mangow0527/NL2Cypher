@@ -238,6 +238,14 @@ def test_pipeline_can_use_real_llm_mode_with_openai_compatible_client(
     assert [call["schema_name"] for call in fake_client.calls] == ["question_decomposition_v1"]
     assert output.trace["semantic_model"]["name"] == "network_schema_v10"
     assert _compiler_parameters(output.trace)["quality_of_service"] == "Gold"
+    decomposer_stage = next(
+        stage for stage in output.trace["stages"] if stage["stage"] == "question_decomposer"
+    )
+    llm_calls = decomposer_stage["output_ref"]["value"]["llm_calls"]
+    assert llm_calls[0]["stage"] == "question_decomposer"
+    assert llm_calls[0]["schema_name"] == "question_decomposition_v1"
+    assert "Return exactly one JSON object" in llm_calls[0]["prompt"]
+    assert '"intent_type": "list"' in llm_calls[0]["raw_output"]
 
 
 def test_llm_literal_kind_hint_outside_contract_is_normalized_before_resolution(

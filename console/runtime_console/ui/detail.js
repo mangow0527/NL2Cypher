@@ -2,6 +2,23 @@ const taskMeta = document.getElementById('task-meta');
 const overviewGrid = document.getElementById('overview-grid');
 const pipelineView = document.getElementById('pipeline-view');
 
+const cgaStageTitles = {
+  graph_model_loader: '语义模型加载',
+  input_clarification_gate: '输入澄清门',
+  question_decomposer: '问题结构化拆解',
+  candidate_retrieval: '语义候选召回',
+  literal_resolver: '字面值解析',
+  grounded_understanding: '语义落地理解',
+  semantic_binder: '语义绑定计划',
+  semantic_validator: '语义正确性校验',
+  repair_controller: '修复与澄清决策',
+  dsl_builder: '受限 DSL 构建',
+  dsl_parser: 'DSL 解析',
+  cypher_compiler: 'Cypher 编译',
+  cypher_self_validation: 'Cypher 自校验',
+  output: '服务输出',
+};
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -26,6 +43,7 @@ function tone(status) {
     case 'passed':
     case 'pass':
     case 'generated':
+    case 'success':
     case 'ok':
     case 'applied':
     case true:
@@ -39,6 +57,7 @@ function tone(status) {
       return 'danger';
     case 'running':
     case 'generation_failed':
+    case 'unsupported_query_shape':
     case 'clarification_required':
     case 'waiting_human_review':
     case 'apply_paused':
@@ -109,7 +128,7 @@ function renderClarificationBlock(clarification) {
     <section class="clarification-box">
       <h3>澄清反问</h3>
       <div class="field-grid">
-        ${metricCard('澄清问题', clarification.question_zh || '未记录')}
+        ${metricCard('澄清问题', clarification.question_zh || clarification.question || '未记录')}
         ${metricCard('原因代码', clarification.reason_code || '未记录')}
         ${metricCard('来源层级', clarification.source_stage || clarification.source_step || '未记录')}
         ${metricCard('回答类型', clarification.expected_answer_type || '未记录')}
@@ -139,93 +158,6 @@ function generationCypherText(section) {
     return '需要澄清';
   }
   return emptyCypherText(section.generated_cypher || section.parsed_cypher);
-}
-
-function renderCgaLlmPrompt(item, fallbackTitle, fallbackRawOutputTitle) {
-  const title = item?.title_zh || fallbackTitle;
-  const rawOutputTitle = item?.raw_output_title_zh || fallbackRawOutputTitle;
-  const attempts = Array.isArray(item?.attempts) ? item.attempts : [];
-  if (attempts.length) {
-    return attempts
-      .map((attempt, index) => {
-        const suffix = attempt.call_id ? ` · ${attempt.call_id}` : ` #${index + 1}`;
-        const meta = [
-          attempt.stage ? `阶段：${attempt.stage}` : null,
-          attempt.model ? `模型：${attempt.model}` : null,
-          attempt.accepted === true ? '采用：是' : null,
-          attempt.accepted === false ? '采用：否' : null,
-          attempt.rejected_reason ? `拒绝原因：${attempt.rejected_reason}` : null,
-        ].filter(Boolean).join(' · ');
-        return `
-          <h3>${escapeHtml(`${title}${suffix}`)}</h3>
-          ${meta ? `<p class="empty">${escapeHtml(meta)}</p>` : ''}
-          ${codeBlock(attempt.prompt || item?.empty_label_zh || '本次未触发')}
-          <h3>${escapeHtml(rawOutputTitle)}</h3>
-          ${codeBlock(attempt.raw_output || item?.empty_raw_output_label_zh || '本次未触发或未记录返回')}
-        `;
-      })
-      .join('');
-  }
-  const body = item?.triggered ? item.prompt : (item?.empty_label_zh || '本次未触发');
-  const rawOutputBody = item?.triggered ? (item.raw_output || item?.empty_raw_output_label_zh || '本次未触发或未记录返回') : (item?.empty_label_zh || '本次未触发');
-  return `
-    <h3>${escapeHtml(title)}</h3>
-    ${codeBlock(body)}
-    <h3>${escapeHtml(rawOutputTitle)}</h3>
-    ${codeBlock(rawOutputBody)}
-  `;
-}
-
-function isOntologyCgaSection(section = {}) {
-  if (section.trace_profile === 'ontology') {
-    return true;
-  }
-  const layers = Array.isArray(section.trace_layers) ? section.trace_layers : [];
-  return layers.some((layer) => ['preprocessing', 'lexical', 'intent_shape', 'ontology', 'validation', 'compilation'].includes(layer.key));
-}
-
-function renderCgaLlmPrompts(prompts = {}, section = {}) {
-  const traceV2Order = [
-    ['intent_primary_classification', '意图识别：一级分类 LLM 判定', '意图识别：一级分类 LLM 原始返回'],
-    ['intent_secondary_classification', '意图识别：二级分类 LLM 判定', '意图识别：二级分类 LLM 原始返回'],
-    ['semantic_view_disambiguation', '语义视图匹配：受控 LLM 消歧', '语义视图匹配：受控 LLM 消歧原始返回'],
-    ['cypher_generation_fallback', 'Renderer 失败后的 Cypher 兜底生成', 'Cypher 兜底生成 LLM 原始返回'],
-  ];
-  const hasTraceV2Prompts = traceV2Order
-    .slice(0, 4)
-    .some(([key]) => Object.prototype.hasOwnProperty.call(prompts, key));
-  if (hasTraceV2Prompts) {
-    return traceV2Order
-      .map(([key, title, rawTitle]) => renderCgaLlmPrompt(prompts[key], title, rawTitle))
-      .join('');
-  }
-  return [
-    renderCgaLlmPrompt(prompts.intent_recognition_fallback, '意图识别 LLM 兜底提示词', '意图识别 LLM 原始返回'),
-    renderCgaLlmPrompt(prompts.cypher_generation_fallback, 'Renderer 失败后的 Cypher 兜底提示词', 'Cypher 生成 LLM 原始返回'),
-  ].join('');
-}
-
-function renderOntologyLayerPrompts(layerKey, prompts = {}) {
-  const promptOrderByLayer = {
-    intent_shape: [
-      ['intent_primary_classification', '一层意图 LLM 判定', '一层意图 LLM 原始输出'],
-      ['intent_secondary_classification', '二层意图 LLM 判定', '二层意图 LLM 原始输出'],
-    ],
-  };
-  return (promptOrderByLayer[layerKey] || [])
-    .map(([key, title, rawTitle]) => renderCgaLlmPrompt(prompts[key], title, rawTitle))
-    .join('');
-}
-
-function renderTraceFields(fields = []) {
-  if (!fields.length) {
-    return '';
-  }
-  return `
-    <div class="field-grid">
-      ${fields.map((field) => metricCard(field.label_zh || '字段', inlineValue(field.value))).join('')}
-    </div>
-  `;
 }
 
 function tableCellValue(value) {
@@ -262,9 +194,7 @@ function renderTraceTable(table = {}) {
         <table class="trace-table">
           <colgroup>${colgroup}</colgroup>
           <thead>
-            <tr>
-              ${columns.map((column) => `<th>${escapeHtml(column.label_zh || column.key || '字段')}</th>`).join('')}
-            </tr>
+            <tr>${columns.map((column) => `<th>${escapeHtml(column.label_zh || column.key || '字段')}</th>`).join('')}</tr>
           </thead>
           <tbody>
             ${
@@ -272,11 +202,9 @@ function renderTraceTable(table = {}) {
                 ? rows
                     .map(
                       (row) => `
-                        <tr>
-                          ${columns
-                            .map((column) => `<td>${escapeHtml(tableCellValue(row?.[column.key]))}</td>`)
-                            .join('')}
-                        </tr>
+                        <tr>${columns
+                          .map((column) => `<td>${escapeHtml(tableCellValue(row?.[column.key]))}</td>`)
+                          .join('')}</tr>
                       `,
                     )
                     .join('')
@@ -286,114 +214,6 @@ function renderTraceTable(table = {}) {
         </table>
       </div>
     </div>
-  `;
-}
-
-function renderTraceTables(tables = []) {
-  if (!tables.length) {
-    return '';
-  }
-  return tables.map((table) => renderTraceTable(table)).join('');
-}
-
-function renderTraceSectionBlock(block = {}) {
-  return `
-    <h3>${escapeHtml(block.title_zh || '输出')}</h3>
-    ${codeBlock(Object.prototype.hasOwnProperty.call(block, 'value') ? block.value : {})}
-  `;
-}
-
-function renderStructuredTraceSection(section = {}) {
-  const fields = Array.isArray(section.fields) ? section.fields : [];
-  const tables = Array.isArray(section.tables) ? section.tables : [];
-  const blocks = Array.isArray(section.blocks) ? section.blocks : [];
-  if (!fields.length && !tables.length && !blocks.length) {
-    return `
-      <h3>${escapeHtml(section.title_zh || '分段证据')}</h3>
-      ${codeBlock(section.value)}
-    `;
-  }
-  return `
-    <section class="trace-substep">
-      <h3>${escapeHtml(section.title_zh || '分段证据')}</h3>
-      ${renderTraceFields(fields)}
-      ${renderTraceTables(tables)}
-      ${blocks.map((block) => renderTraceSectionBlock(block)).join('')}
-    </section>
-  `;
-}
-
-function chainMetric(label, item, valueKey = 'label_zh') {
-  const value = item && typeof item === 'object' ? item[valueKey] : item;
-  const raw = item && typeof item === 'object' ? item.value || item.reason || item.decision || item.source : null;
-  const rawText = raw ? `（原始值：${raw}）` : '';
-  return metricCard(label, `${value || '未记录'}${rawText}`);
-}
-
-const cgaTraceLayerTitles = {
-  orchestration: '服务编排层',
-  preprocessing: '自然语言问题预处理',
-  question_framing: 'Step 0 问题框定 / 检索计划',
-  lexical: '词法层',
-  intent_shape: '意图识别与答案形态',
-  ontology: '本体层',
-  validation: '校验层',
-  compilation: '编译层',
-  intent_recognition: '意图识别层',
-  semantic_view_matching: '语义视图匹配层',
-  planning: '规划层',
-  generation: '生成与提交层',
-};
-
-function renderLegacyCgaChainSummary(chain) {
-  const intent = chain.intent || {};
-  const validation = chain.validation || {};
-  const knowledge = chain.knowledge || {};
-  const preflight = chain.preflight || {};
-  return `
-    <h3>生成链路摘要</h3>
-    <div class="field-grid">
-      ${chainMetric('生成状态', chain.generation_status)}
-      ${chainMetric('生成方式', chain.generation_mode)}
-      ${chainMetric('生成门禁', chain.gate)}
-      ${chainMetric('失败原因', chain.failure_reason)}
-      ${metricCard('意图识别', `${intent.decision_label_zh || '未记录'} · ${intent.source || '未知来源'} · 置信度 ${intent.confidence ?? '未记录'}`)}
-      ${metricCard('意图类型', [intent.primary_intent, intent.secondary_intent].filter(Boolean).join(' / ') || '未记录')}
-      ${metricCard('语义校验', validation.label_zh || '未记录')}
-      ${metricCard('知识选择', `${knowledge.source_label_zh || '未记录'} · ${(knowledge.selection_trace || []).length} 条 trace`)}
-      ${metricCard('预检结果', `${preflight.label_zh || '未记录'}${preflight.reason_label_zh ? ` · ${preflight.reason_label_zh}` : ''}`)}
-    </div>
-  `;
-}
-
-function renderCgaTraceLayers(layers = [], section = {}) {
-  if (!layers.length) {
-    return '';
-  }
-  const prompts = section.llm_prompts || {};
-  const showOntologyPromptsInLayer = isOntologyCgaSection(section);
-  return `
-    ${layers
-      .map((layer) => {
-        const fields = Array.isArray(layer.fields) ? layer.fields : [];
-        const sections = Array.isArray(layer.sections) ? layer.sections : [];
-        const title = layer.title_zh || cgaTraceLayerTitles[layer.key] || layer.key || '未命名层级';
-        const layerPrompts = showOntologyPromptsInLayer ? renderOntologyLayerPrompts(layer.key, prompts) : '';
-        const rawEvidence = Object.prototype.hasOwnProperty.call(layer, 'raw')
-          ? `
-            <h3>${escapeHtml(title)}原始证据</h3>
-            ${codeBlock(layer.raw || {})}
-          `
-          : '';
-        return `
-          <h3>${escapeHtml(title)}</h3>
-          ${renderTraceFields(fields)}
-          ${layerPrompts}
-          ${sections.map((section) => renderStructuredTraceSection(section)).join('')}
-          ${rawEvidence}
-        `;
-      })
-      .join('')}
   `;
 }
 
@@ -419,15 +239,140 @@ function renderOverview(detail) {
   ].join('');
 }
 
-function renderCypherGenerator(section) {
-  const chain = section.chain_summary || {};
-  const traceLayers = Array.isArray(section.trace_layers) ? section.trace_layers : [];
-  const standalonePrompts = isOntologyCgaSection(section)
-    ? ''
-    : `
-      <h3>LLM 调用提示词</h3>
-      ${renderCgaLlmPrompts(section.llm_prompts || {}, section)}
+function renderCgaFlowSummary(flow = {}, section = {}) {
+  const summary = flow.summary || {};
+  return `
+    <h3>CGA 全流程</h3>
+    <div class="field-grid">
+      ${metricCard('Trace ID', flow.trace_id || '未记录')}
+      ${metricCard('Trace Schema', flow.schema_version || section.trace_schema_version || '未记录')}
+      ${metricCard('最终状态', flow.final_status || section.generation_status || '未记录', flow.final_status || section.generation_status)}
+      ${metricCard('语义模型', summary.semantic_model || '未记录')}
+      ${metricCard('阶段数', summary.stage_count ?? 0)}
+      ${metricCard('LLM 调用数', summary.llm_call_count ?? 0)}
+      ${metricCard('开始时间', flow.started_at || '未记录')}
+      ${metricCard('结束时间', flow.finished_at || '未记录')}
+    </div>
+  `;
+}
+
+function renderCgaFlowStages(flow = {}) {
+  const stages = Array.isArray(flow.stages) ? flow.stages : [];
+  const table = {
+    title_zh: 'GraphTrace v1 阶段明细',
+    columns: [
+      { key: 'title_zh', label_zh: '阶段', width: 180 },
+      { key: 'key', label_zh: 'stage key', width: 220 },
+      { key: 'status', label_zh: '状态', width: 120 },
+      { key: 'duration_ms', label_zh: '耗时 ms', width: 100 },
+      { key: 'metrics_summary', label_zh: '关键指标', width: 420 },
+      { key: 'error_summary', label_zh: '错误 / 警告', width: 520 },
+    ],
+    rows: stages.map((stage) => ({
+      ...stage,
+      title_zh: stage.title_zh || cgaStageTitles[stage.key] || stage.key,
+      metrics_summary: inlineValue(stage.metrics),
+      error_summary: [stage.errors?.length ? `errors=${stage.errors.length}` : '', stage.warnings?.length ? `warnings=${stage.warnings.length}` : '']
+        .filter(Boolean)
+        .join(' · ') || '无',
+    })),
+  };
+  return `
+    ${renderTraceTable(table)}
+    ${stages
+      .map(
+        (stage) => `
+          <details class="trace-substep">
+            <summary>
+              <span>${escapeHtml(stage.title_zh || cgaStageTitles[stage.key] || stage.key || '未命名阶段')}</span>
+              <span class="status-pill tone-${tone(stage.status)}">${escapeHtml(stage.status || 'unknown')}</span>
+            </summary>
+            <h3>阶段输入</h3>
+            ${codeBlock(stage.input)}
+            <h3>阶段输出</h3>
+            ${codeBlock(stage.output)}
+            <h3>metrics / errors / warnings</h3>
+            ${codeBlock({ metrics: stage.metrics, errors: stage.errors, warnings: stage.warnings })}
+          </details>
+        `,
+      )
+      .join('')}
+  `;
+}
+
+function renderCgaLlmCalls(flow = {}) {
+  const calls = Array.isArray(flow.llm_calls) ? flow.llm_calls : [];
+  if (!calls.length) {
+    return `
+      <h3>LLM 调用明细</h3>
+      <p class="empty">本次 CGA 主链路未触发 LLM 调用，或历史记录未保存 prompt/raw output。</p>
     `;
+  }
+  return `
+    <h3>LLM 调用明细</h3>
+    ${calls
+      .map(
+        (call, index) => `
+          <section class="llm-call-card">
+            <div class="task-card-head">
+              <strong>${escapeHtml(call.stage_title_zh || call.stage || `LLM 调用 ${index + 1}`)}</strong>
+              <span class="status-pill tone-${tone(call.status)}">${escapeHtml(call.status || 'unknown')}</span>
+            </div>
+            <div class="field-grid">
+              ${metricCard('Call ID', call.call_id || `llm-${index + 1}`)}
+              ${metricCard('Schema', call.schema_name || '未记录')}
+              ${metricCard('模型', call.model || '未记录')}
+              ${metricCard('Attempt', call.attempt ?? '未记录')}
+            </div>
+            <h3>发给 LLM 的提示词</h3>
+            ${codeBlock(call.prompt || '未记录')}
+            <h3>LLM 原始返回</h3>
+            ${codeBlock(call.raw_output || '未记录')}
+            <h3>解析后输出 / 错误</h3>
+            ${codeBlock({ parsed_output: call.parsed_output, error: call.error })}
+          </section>
+        `,
+      )
+      .join('')}
+  `;
+}
+
+function renderCgaArtifacts(flow = {}) {
+  const artifacts = flow.artifacts || {};
+  return `
+    <h3>DSL / Cypher / 自校验</h3>
+    <div class="artifact-grid">
+      <section>
+        <h3>最终 DSL</h3>
+        ${codeBlock(artifacts.dsl)}
+      </section>
+      <section>
+        <h3>最终 Cypher</h3>
+        ${codeBlock(artifacts.cypher)}
+      </section>
+      <section>
+        <h3>Cypher 编译输出</h3>
+        ${codeBlock(artifacts.compiler)}
+      </section>
+      <section>
+        <h3>Cypher 自校验输出</h3>
+        ${codeBlock(artifacts.self_validation)}
+      </section>
+      <section>
+        <h3>用户可见说明</h3>
+        ${codeBlock(artifacts.user_visible_notices || [])}
+      </section>
+      <section>
+        <h3>失败 / 澄清输出</h3>
+        ${codeBlock({ failure: artifacts.failure, clarification: artifacts.clarification })}
+      </section>
+    </div>
+  `;
+}
+
+function renderCypherGenerator(section) {
+  const flow = section.cga_flow || {};
+  const hasFlow = Array.isArray(flow.stages) && flow.stages.length;
   return `
     <details class="pipeline-step" open>
       <summary>
@@ -435,12 +380,22 @@ function renderCypherGenerator(section) {
         <span class="status-pill tone-${tone(section.generation_status)}">${escapeHtml(section.generation_status || 'unknown')}</span>
       </summary>
       ${renderClarificationBlock(section.clarification)}
-      ${standalonePrompts}
-      ${traceLayers.length ? renderCgaTraceLayers(traceLayers, section) : renderLegacyCgaChainSummary(chain)}
+      ${
+        hasFlow
+          ? `
+            ${renderCgaFlowSummary(flow, section)}
+            ${renderCgaFlowStages(flow)}
+            ${renderCgaLlmCalls(flow)}
+            ${renderCgaArtifacts(flow)}
+          `
+          : `
+            <h3>CGA 全流程</h3>
+            <p class="empty">未读取到 cga_graph_trace_v1 快照。以下仅保留原始生成证据。</p>
+            ${codeBlock(section.prompt_markdown)}
+          `
+      }
       <h3>生成运行 ID</h3>
       ${codeBlock(section.generation_run_id || '未提供')}
-      <h3>CGA 分层证据快照</h3>
-      ${codeBlock(section.prompt_markdown)}
     </details>
   `;
 }
@@ -524,9 +479,9 @@ function renderRepairAgent(section) {
       ${repairState.message ? `<h3>诊断状态说明</h3>${codeBlock(repairState.message)}` : ''}
       ${applyState.message ? `<h3>知识应用说明</h3>${codeBlock(applyState.message)}` : ''}
       ${redispatchState.message ? `<h3>redispatch 说明</h3>${codeBlock(redispatchState.message)}` : ''}
-      <h3>发给诊断大模型的完整提示词</h3>
+      <h3>repair-agent 诊断提示词</h3>
       ${codeBlock(section.llm_prompt_markdown)}
-      <h3>大模型原始返回</h3>
+      <h3>repair-agent 原始返回</h3>
       ${codeBlock(section.raw_output)}
       ${nonRepairableReason}
       <h3>发送给 knowledge-agent 的报文</h3>

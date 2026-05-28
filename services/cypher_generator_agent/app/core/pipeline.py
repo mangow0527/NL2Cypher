@@ -21,7 +21,10 @@ from services.cypher_generator_agent.app.decomposition.models import (
 from services.cypher_generator_agent.app.dsl.builder import RestrictedDslBuilder
 from services.cypher_generator_agent.app.dsl.parser import RestrictedDslValidationError, parse_restricted_query_dsl
 from services.cypher_generator_agent.app.infrastructure.config import Settings, get_settings
-from services.cypher_generator_agent.app.infrastructure.llm_client import OpenAICompatibleStructuredLLMClient
+from services.cypher_generator_agent.app.infrastructure.llm_client import (
+    OpenAICompatibleStructuredLLMClient,
+    TracedStructuredLLMClient,
+)
 from services.cypher_generator_agent.app.literals.models import LiteralResolverRequest, LiteralResolverResult
 from services.cypher_generator_agent.app.literals.resolver import LiteralResolver
 from services.cypher_generator_agent.app.literals.value_index import StaticValueIndex
@@ -89,7 +92,11 @@ def _run_pipeline_steps(
     settings: Settings,
     path_pattern_template_overrides_for_tests: Mapping[str, str] | None,
 ) -> GenerationOutput:
-    llm_client = _structured_llm_client_from_settings(settings) if settings.llm_enabled else None
+    llm_client = (
+        TracedStructuredLLMClient(_structured_llm_client_from_settings(settings))
+        if settings.llm_enabled
+        else None
+    )
 
     load_result = _run_stage(
         trace,
@@ -122,6 +129,7 @@ def _run_pipeline_steps(
             question=str(input_gate.get("question") or "请补充澄清信息。"),
         )
 
+    decomposition_llm_start = _llm_trace_count(llm_client)
     decomposition = _run_stage(
         trace,
         stage=StageName.QUESTION_DECOMPOSER,
@@ -131,6 +139,15 @@ def _run_pipeline_steps(
             settings=settings,
             llm_client=llm_client,
         ),
+        output_payload=lambda result: _with_stage_llm_calls(
+            _stage_result_payload(result),
+            llm_client,
+            decomposition_llm_start,
+            stage="question_decomposer",
+        ),
+        metrics=lambda result: {
+            "llm_call_count": len(_llm_trace_slice(llm_client, decomposition_llm_start)),
+        },
     )
     if decomposition_output := _output_from_decomposition_outcome(trace, decomposition):
         return decomposition_output
@@ -348,6 +365,43 @@ def _run_stage(
         metrics=metrics(result) if metrics is not None else {},
     )
     return result
+
+
+def _stage_result_payload(result: Any) -> Any:
+    if hasattr(result, "model_dump"):
+        return result.model_dump(mode="json")
+    return result
+
+
+def _llm_trace_count(llm_client: Any | None) -> int:
+    calls = getattr(llm_client, "trace_calls", None)
+    return len(calls) if isinstance(calls, list) else 0
+
+
+def _llm_trace_slice(llm_client: Any | None, start: int) -> list[dict[str, Any]]:
+    calls = getattr(llm_client, "trace_calls", None)
+    if not isinstance(calls, list):
+        return []
+    return [dict(call) for call in calls[start:]]
+
+
+def _with_stage_llm_calls(
+    payload: Any,
+    llm_client: Any | None,
+    start: int,
+    *,
+    stage: str,
+) -> Any:
+    calls = _llm_trace_slice(llm_client, start)
+    if not calls:
+        return payload
+    stage_calls = [{**call, "stage": call.get("stage") or stage} for call in calls]
+    if isinstance(payload, dict):
+        return {**payload, "llm_calls": stage_calls}
+    return {
+        "value": payload,
+        "llm_calls": stage_calls,
+    }
 
 
 def _structured_llm_client_from_settings(settings: Settings) -> Any:
@@ -635,6 +689,7 @@ def _run_grounded_understanding_stage(
     }
     if repair_context:
         input_payload["repair_context"] = dict(repair_context)
+    llm_start = _llm_trace_count(llm_client)
     return _run_stage(
         trace,
         stage=StageName.GROUNDED_UNDERSTANDING,
@@ -647,6 +702,15 @@ def _run_grounded_understanding_stage(
             llm_client=llm_client,
             repair_context=repair_context,
         ),
+        output_payload=lambda result: _with_stage_llm_calls(
+            _stage_result_payload(result),
+            llm_client,
+            llm_start,
+            stage="grounded_understanding",
+        ),
+        metrics=lambda result: {
+            "llm_call_count": len(_llm_trace_slice(llm_client, llm_start)),
+        },
     )
 
 

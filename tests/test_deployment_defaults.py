@@ -24,13 +24,32 @@ class DeploymentDefaultsTest(unittest.TestCase):
         self.assertNotIn("REPAIR_SERVICE_TUGRAPH_URL", env_example)
         self.assertNotIn("REPAIR_SERVICE_MOCK_TUGRAPH", env_example)
 
-    def test_cypher_generator_agent_defaults_keep_only_io_stub_settings(self):
+    def test_cypher_generator_agent_defaults_include_semantic_pipeline_settings(self):
         settings = CypherGeneratorAgentSettings(_env_file=None)
 
         self.assertEqual(settings.testing_agent_url, "http://127.0.0.1:8003")
+        self.assertFalse(settings.llm_enabled)
+        self.assertEqual(settings.llm_provider, "mock")
+        self.assertEqual(settings.llm_model, "qwen3-32b")
         self.assertEqual(
             set(CypherGeneratorAgentSettings.model_fields),
-            {"app_name", "host", "port", "testing_agent_url", "request_timeout_seconds"},
+            {
+                "app_name",
+                "host",
+                "port",
+                "testing_agent_url",
+                "request_timeout_seconds",
+                "graph_model_path",
+                "value_index_path",
+                "llm_enabled",
+                "llm_provider",
+                "llm_base_url",
+                "llm_api_key",
+                "llm_model",
+                "llm_temperature",
+                "llm_timeout_seconds",
+                "llm_max_schema_retries",
+            },
         )
 
     def test_cypher_generator_agent_service_failure_reason_uses_local_context_name(self):

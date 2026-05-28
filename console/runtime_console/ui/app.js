@@ -13,6 +13,7 @@ const generationLabels = {
   generated: '生成成功',
   clarification_required: '需要澄清',
   generation_failed: '生成失败',
+  unsupported_query_shape: '不支持的查询形态',
   service_failed: '服务失败',
 };
 
@@ -55,6 +56,7 @@ function tone(status) {
     case 'running':
     case 'pending':
     case 'generation_failed':
+    case 'unsupported_query_shape':
     case 'clarification_required':
       return 'warn';
     default:

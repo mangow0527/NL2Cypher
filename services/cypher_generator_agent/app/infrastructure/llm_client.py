@@ -31,6 +31,7 @@ class OpenAICompatibleStructuredLLMClient:
         self.model = model
         self.temperature = temperature
         self.timeout_seconds = timeout_seconds
+        self.last_call_trace: dict[str, Any] | None = None
 
     def generate_structured(
         self,
@@ -40,6 +41,13 @@ class OpenAICompatibleStructuredLLMClient:
         schema: Mapping[str, Any],
         attempt: int,
     ) -> Mapping[str, Any]:
+        prompt_markdown = _schema_bound_prompt(
+            prompt=prompt,
+            schema_name=schema_name,
+            schema=schema,
+            attempt=attempt,
+        )
+        self.last_call_trace = None
         with httpx.Client(timeout=self.timeout_seconds) as client:
             response = client.post(
                 f"{self.base_url}/chat/completions",
@@ -55,12 +63,7 @@ class OpenAICompatibleStructuredLLMClient:
                     "messages": [
                         {
                             "role": "user",
-                            "content": _schema_bound_prompt(
-                                prompt=prompt,
-                                schema_name=schema_name,
-                                schema=schema,
-                                attempt=attempt,
-                            ),
+                            "content": prompt_markdown,
                         }
                     ],
                 },
@@ -68,9 +71,86 @@ class OpenAICompatibleStructuredLLMClient:
             response.raise_for_status()
 
         content = _response_content(response.json())
+        self.last_call_trace = {
+            "schema_name": schema_name,
+            "attempt": attempt,
+            "model": self.model,
+            "prompt": prompt_markdown,
+            "raw_output": content,
+            "status": "success",
+        }
         payload = json.loads(_strip_json_fence(content))
         if not isinstance(payload, Mapping):
             raise ValueError("structured LLM response must be a JSON object")
+        return payload
+
+
+class TracedStructuredLLMClient:
+    def __init__(self, inner: Any) -> None:
+        self.inner = inner
+        self.trace_calls: list[dict[str, Any]] = []
+
+    @property
+    def provider(self) -> str:
+        return str(getattr(self.inner, "provider", "unknown"))
+
+    def generate_structured(
+        self,
+        *,
+        prompt: str,
+        schema_name: str,
+        schema: Mapping[str, Any],
+        attempt: int,
+    ) -> Mapping[str, Any]:
+        prompt_markdown = _schema_bound_prompt(
+            prompt=prompt,
+            schema_name=schema_name,
+            schema=schema,
+            attempt=attempt,
+        )
+        call: dict[str, Any] = {
+            "call_id": f"{schema_name}-attempt-{attempt}",
+            "schema_name": schema_name,
+            "attempt": attempt,
+            "provider": self.provider,
+            "model": getattr(self.inner, "model", None),
+            "prompt": prompt_markdown,
+            "raw_output": "",
+            "parsed_output": None,
+            "status": "running",
+            "error": None,
+        }
+        try:
+            payload = self.inner.generate_structured(
+                prompt=prompt,
+                schema_name=schema_name,
+                schema=schema,
+                attempt=attempt,
+            )
+        except Exception as exc:
+            inner_trace = getattr(self.inner, "last_call_trace", None)
+            if isinstance(inner_trace, Mapping):
+                call["model"] = inner_trace.get("model") or call["model"]
+                call["prompt"] = inner_trace.get("prompt") or call["prompt"]
+                call["raw_output"] = inner_trace.get("raw_output") or ""
+            call["status"] = "failed"
+            call["error"] = {
+                "type": exc.__class__.__name__,
+                "message": str(exc),
+            }
+            self.trace_calls.append(call)
+            raise
+
+        inner_trace = getattr(self.inner, "last_call_trace", None)
+        if isinstance(inner_trace, Mapping):
+            call["model"] = inner_trace.get("model") or call["model"]
+            call["prompt"] = inner_trace.get("prompt") or call["prompt"]
+            call["raw_output"] = inner_trace.get("raw_output") or ""
+        if not call["raw_output"]:
+            call["raw_output"] = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        call["parsed_output"] = dict(payload)
+        call["status"] = "success"
+        self.trace_calls.append(call)
         return payload
 
 

@@ -12,7 +12,7 @@ from services.testing_agent.app.clients import LLMEvaluationClient
 from services.testing_agent.app.config import Settings as TestingServiceSettings
 
 
-def test_cypher_generator_agent_io_stub_allows_missing_llm_configuration(monkeypatch: pytest.MonkeyPatch):
+def test_cypher_generator_agent_allows_missing_llm_configuration_when_disabled(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("CYPHER_GENERATOR_AGENT_LLM_ENABLED", raising=False)
     monkeypatch.delenv("CYPHER_GENERATOR_AGENT_LLM_BASE_URL", raising=False)
     monkeypatch.delenv("CYPHER_GENERATOR_AGENT_LLM_API_KEY", raising=False)
@@ -20,10 +20,10 @@ def test_cypher_generator_agent_io_stub_allows_missing_llm_configuration(monkeyp
 
     settings = CypherGeneratorAgentSettings(_env_file=None)
 
-    assert "llm_enabled" not in CypherGeneratorAgentSettings.model_fields
-    assert "llm_base_url" not in CypherGeneratorAgentSettings.model_fields
-    assert "llm_api_key" not in CypherGeneratorAgentSettings.model_fields
-    assert "llm_model" not in CypherGeneratorAgentSettings.model_fields
+    assert settings.llm_enabled is False
+    assert settings.llm_base_url is None
+    assert settings.llm_api_key is None
+    assert settings.llm_model == "qwen3-32b"
 
 
 def test_testing_service_requires_complete_llm_configuration(monkeypatch: pytest.MonkeyPatch):

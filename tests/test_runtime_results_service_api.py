@@ -70,28 +70,28 @@ def test_runtime_results_detail_script_puts_cypher_comparison_in_overview():
     assert "标准 Cypher" in script
     assert "生成 Cypher" in script
     assert "生成对照" not in script
-    assert "意图识别 LLM 原始返回" in script
-    assert "Cypher 生成 LLM 原始返回" in script
-    assert "服务编排层" in script
-    assert "意图识别层" in script
-    assert "语义视图匹配层" in script
-    assert "规划层" in script
-    assert "生成与提交层" in script
-    assert "意图识别：一级分类 LLM 判定" in script
-    assert "语义视图匹配：受控 LLM 消歧" in script
-    assert "renderOntologyLayerPrompts(layer.key" in script
-    assert "renderStructuredTraceSection" in script
+    assert "CGA 全流程" in script
+    assert "GraphTrace v1 阶段明细" in script
+    assert "LLM 调用明细" in script
+    assert "发给 LLM 的提示词" in script
+    assert "LLM 原始返回" in script
+    assert "DSL / Cypher / 自校验" in script
+    assert "renderCgaFlowStages" in script
+    assert "renderCgaLlmCalls" in script
+    assert "renderCgaArtifacts" in script
     assert "renderTraceTable" in script
     assert "trace-table" in script
-    assert "const standalonePrompts = isOntologyCgaSection(section)" in script
+    assert "renderOntologyLayerPrompts" not in script
+    assert "renderLegacyCgaChainSummary" not in script
+    assert "isOntologyCgaSection" not in script
     assert "ontology_path_selection', '3.3 本体路径选择 LLM 输入提示词" not in script
-    assert "一层意图 LLM 原始输出" in script
-    assert "二层意图 LLM 原始输出" in script
+    assert "一层意图 LLM 原始输出" not in script
+    assert "二层意图 LLM 原始输出" not in script
     assert "意图识别与答案形态：二层意图 LLM 原始输出" not in script
     assert "white-space: pre-line" in script or "white-space: pre-line" in (
         Path(__file__).resolve().parents[1] / "console" / "runtime_console" / "ui" / "styles.css"
     ).read_text(encoding="utf-8")
-    assert "生成链路摘要" in script
+    assert "生成链路摘要" not in script
     assert "澄清反问" in script
     assert "澄清选项" in script
     assert "no_option_reason" in script
@@ -284,6 +284,56 @@ def test_runtime_results_tasks_support_server_side_pagination_and_filters(monkey
     filtered_payload = filtered_response.json()
     assert [task["id"] for task in filtered_payload["tasks"]] == ["qa_page_5"]
     assert filtered_payload["pagination"]["total"] == 1
+
+
+def test_runtime_results_task_index_does_not_decode_full_prompt_snapshots(tmp_path: Path, monkeypatch):
+    testing_dir = tmp_path / "testing"
+    repair_dir = tmp_path / "repair"
+    _write_json(testing_dir / "goldens" / "qa_big_trace.json", {"id": "qa_big_trace", "difficulty": "L2"})
+    _write_json(
+        testing_dir / "submissions" / "qa_big_trace.json",
+        {
+            "id": "qa_big_trace",
+            "attempt_no": 1,
+            "question": "查询大 trace 样本",
+            "generation_run_id": "run-big-trace",
+            "generated_cypher": "MATCH (s:Service) RETURN s",
+            "input_prompt_snapshot": json.dumps(
+                {"schema_version": "cga_trace_v2", "trace_profile": "ontology", "large": "x" * 200_000},
+                ensure_ascii=False,
+            ),
+            "generation_status": "generated",
+            "state": "passed",
+            "received_at": "2026-05-25T12:00:00+00:00",
+            "updated_at": "2026-05-25T12:01:00+00:00",
+        },
+    )
+
+    from console.runtime_console.app.service import RuntimeResultsService
+
+    service = RuntimeResultsService(
+        testing_data_dir=str(testing_dir),
+        repair_data_dir=str(repair_dir),
+        cypher_generator_agent_base_url="http://127.0.0.1:8000",
+        testing_service_base_url="http://127.0.0.1:8003",
+        repair_service_base_url="http://127.0.0.1:8002",
+        knowledge_agent_base_url="http://127.0.0.1:8010",
+        qa_generator_base_url="http://127.0.0.1:8020",
+    )
+
+    def fail_full_json_read(path: Path):
+        raise AssertionError(f"list/summary should use lightweight metadata, not full JSON reads: {path}")
+
+    monkeypatch.setattr(service, "_read_json", fail_full_json_read)
+
+    tasks_payload = service.list_tasks()
+    summary_payload = service.get_task_summary()
+
+    assert [task["id"] for task in tasks_payload["tasks"]] == ["qa_big_trace"]
+    assert tasks_payload["tasks"][0]["final_verdict"] == "pass"
+    l2_bucket = next(bucket for bucket in summary_payload["buckets"] if bucket["difficulty"] == "L2")
+    assert l2_bucket["total"] == 1
+    assert l2_bucket["pass"] == 1
 
 
 def test_runtime_results_tasks_exclude_legacy_or_non_contract_records(monkeypatch, tmp_path: Path):
@@ -1287,6 +1337,187 @@ def test_runtime_results_generator_section_exposes_cga_llm_prompts(monkeypatch, 
     assert prompts["cypher_generation_fallback"]["prompt"].endswith("Renderer 失败后的 Cypher 兜底 prompt")
     assert prompts["cypher_generation_fallback"]["raw_output"] == "MATCH (s:Service) RETURN s.name"
     assert prompts["cypher_generation_fallback"]["raw_output_title_zh"] == "Cypher 生成 LLM 原始返回"
+
+
+def _inline_ref(value: object) -> dict:
+    return {"type": "inline", "value": value, "reason": None, "artifact_uri": None}
+
+
+def _graph_stage(
+    stage: str,
+    *,
+    output: object | None = None,
+    input_payload: object | None = None,
+    status: str = "success",
+    duration_ms: int = 3,
+    metrics: dict | None = None,
+    errors: list[dict] | None = None,
+    warnings: list[dict] | None = None,
+) -> dict:
+    return {
+        "stage": stage,
+        "status": status,
+        "started_at": "2026-05-28T00:00:00+00:00",
+        "duration_ms": duration_ms,
+        "input_ref": _inline_ref(input_payload) if input_payload is not None else None,
+        "output_ref": _inline_ref(output) if output is not None else None,
+        "metrics": metrics or {},
+        "errors": errors or [],
+        "warnings": warnings or [],
+    }
+
+
+def test_runtime_results_generator_section_parses_cga_graph_trace_v1(monkeypatch, tmp_path: Path):
+    testing_dir = tmp_path / "testing"
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(testing_dir))
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_REPAIR_DATA_DIR", str(tmp_path / "repair"))
+    llm_call = {
+        "call_id": "question_decomposer-1",
+        "stage": "question_decomposer",
+        "schema_name": "question_decomposition_v1",
+        "attempt": 1,
+        "model": "qwen3-32b",
+        "prompt": "请把问题拆成结构化槽位。\nJSON Schema: ...",
+        "raw_output": "{\"schema_version\":\"question_decomposition_v1\",\"intent_type\":\"list\"}",
+        "parsed_output": {
+            "schema_version": "question_decomposition_v1",
+            "intent_type": "list",
+            "target_concepts": ["服务", "隧道"],
+        },
+        "status": "success",
+    }
+    dsl = {
+        "schema_version": "restricted_query_dsl_v1",
+        "query_shape": "single_hop_traversal",
+        "operations": [{"op": "match", "from": "Service", "edge": "SERVICE_USES_TUNNEL", "to": "Tunnel"}],
+    }
+    trace_snapshot = {
+        "trace_schema_version": "cga_graph_trace_v1",
+        "trace_id": "run-graph-trace",
+        "question_id": "qa_graph_trace",
+        "generation_run_id": "run-graph-trace",
+        "source_question": "Gold 服务使用了哪些隧道？",
+        "started_at": "2026-05-28T00:00:00+00:00",
+        "finished_at": "2026-05-28T00:00:01+00:00",
+        "final_status": "generated",
+        "semantic_model": {"name": "network_schema_v10", "checksum": "sha256:test"},
+        "stages": [
+            _graph_stage("graph_model_loader", output={"model_name": "network_schema_v10", "vertices": 5, "edges": 4}),
+            _graph_stage("input_clarification_gate", input_payload={"question": "Gold 服务使用了哪些隧道？"}, output={"status": "pass"}),
+            _graph_stage(
+                "question_decomposer",
+                input_payload={"question": "Gold 服务使用了哪些隧道？"},
+                output={
+                    "schema_version": "question_decomposition_v1",
+                    "intent_type": "list",
+                    "target_concepts": ["服务", "隧道"],
+                    "literal_candidates": ["Gold"],
+                    "llm_calls": [llm_call],
+                },
+                metrics={"llm_call_count": 1},
+            ),
+            _graph_stage("candidate_retrieval", output={"candidates": [{"semantic_id": "Service"}, {"semantic_id": "Tunnel"}]}, metrics={"candidate_count": 2}),
+            _graph_stage("literal_resolver", output=[{"raw_literal": "Gold", "resolved": True, "resolved_value": "Gold"}]),
+            _graph_stage("grounded_understanding", output={"query_shape": "single_hop", "selected_vertices": ["Service", "Tunnel"]}),
+            _graph_stage("semantic_binder", output={"query_shape": "single_hop_traversal"}),
+            _graph_stage("semantic_validator", output={"is_valid": True, "assumptions": []}),
+            _graph_stage("dsl_builder", output=dsl),
+            _graph_stage("dsl_parser", output={"query_shape": "single_hop_traversal", "operation_count": 1}),
+            _graph_stage(
+                "cypher_compiler",
+                output={
+                    "schema_version": "cypher_compile_result_v1",
+                    "cypher": "MATCH (svc:Service)-[:SERVICE_USES_TUNNEL]->(tun:Tunnel) RETURN tun.id AS tunnel_id",
+                    "parameters": {"quality_of_service": "Gold"},
+                    "expected_return_aliases": ["tunnel_id"],
+                },
+            ),
+            _graph_stage(
+                "cypher_self_validation",
+                output={"valid": True, "errors": [], "warnings": [], "checked_rules": ["syntax", "readonly", "schema"]},
+            ),
+            _graph_stage("output", output={"status": "generated", "has_dsl": True, "has_cypher": True}),
+        ],
+        "final_outputs": {
+            "dsl": dsl,
+            "cypher": "MATCH (svc:Service)-[:SERVICE_USES_TUNNEL]->(tun:Tunnel) RETURN tun.id AS tunnel_id",
+            "clarification": None,
+            "user_visible_notices": ["我把 Gold 理解为 Service.quality_of_service=Gold。"],
+            "failure": None,
+        },
+    }
+    _write_json(
+        testing_dir / "goldens" / "qa_graph_trace.json",
+        {
+            "id": "qa_graph_trace",
+            "difficulty": "L3",
+            "cypher": "MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel) RETURN t.id",
+        },
+    )
+    _write_json(
+        testing_dir / "submissions" / "qa_graph_trace.json",
+        {
+            "id": "qa_graph_trace",
+            "attempt_no": 1,
+            "question": "Gold 服务使用了哪些隧道？",
+            "generation_run_id": "run-graph-trace",
+            "generated_cypher": trace_snapshot["final_outputs"]["cypher"],
+            "input_prompt_snapshot": json.dumps(trace_snapshot, ensure_ascii=False),
+            "generation_status": "generated",
+            "state": "received_submission_only",
+            "received_at": "2026-05-28T00:00:01+00:00",
+            "updated_at": "2026-05-28T00:00:01+00:00",
+        },
+    )
+
+    from console.runtime_console.app.main import create_app
+
+    client = TestClient(create_app())
+    response = client.get("/api/v1/tasks/qa_graph_trace")
+
+    assert response.status_code == 200
+    generator = response.json()["pipeline"]["cypher_generator_agent"]
+    assert generator["trace_schema_version"] == "cga_graph_trace_v1"
+    assert generator["trace_profile"] == "graph"
+    assert generator["trace_layers"] == []
+    flow = generator["cga_flow"]
+    assert flow["trace_id"] == "run-graph-trace"
+    assert flow["summary"]["semantic_model"] == "network_schema_v10"
+    assert [stage["key"] for stage in flow["stages"]][:4] == [
+        "graph_model_loader",
+        "input_clarification_gate",
+        "question_decomposer",
+        "candidate_retrieval",
+    ]
+    stage_titles = {stage["key"]: stage["title_zh"] for stage in flow["stages"]}
+    assert stage_titles["question_decomposer"] == "问题结构化拆解"
+    assert stage_titles["cypher_self_validation"] == "Cypher 自校验"
+    assert flow["stages"][2]["output"]["llm_calls"][0]["call_id"] == "question_decomposer-1"
+    assert flow["llm_calls"] == [
+        {
+            "call_id": "question_decomposer-1",
+            "stage": "question_decomposer",
+            "stage_title_zh": "问题结构化拆解",
+            "schema_name": "question_decomposition_v1",
+            "attempt": 1,
+            "model": "qwen3-32b",
+            "prompt": "请把问题拆成结构化槽位。\nJSON Schema: ...",
+            "raw_output": "{\"schema_version\":\"question_decomposition_v1\",\"intent_type\":\"list\"}",
+            "parsed_output": {
+                "schema_version": "question_decomposition_v1",
+                "intent_type": "list",
+                "target_concepts": ["服务", "隧道"],
+            },
+            "status": "success",
+            "error": None,
+        }
+    ]
+    assert flow["artifacts"]["dsl"]["query_shape"] == "single_hop_traversal"
+    assert flow["artifacts"]["cypher"].startswith("MATCH (svc:Service)")
+    assert flow["artifacts"]["compiler"]["parameters"] == {"quality_of_service": "Gold"}
+    assert flow["artifacts"]["self_validation"]["valid"] is True
+    assert flow["artifacts"]["user_visible_notices"] == ["我把 Gold 理解为 Service.quality_of_service=Gold。"]
+    assert "chain_summary" not in flow
 
 
 def _llm_trace_call(

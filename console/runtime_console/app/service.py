@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -20,12 +22,56 @@ class ServiceHealthClient:
 
 
 class RuntimeResultsService:
+    _TOP_LEVEL_JSON_FIELD_RE = re.compile(r'^\s{2}"(?P<key>[^"]+)":\s*(?P<value>.*)$')
+    _LIGHTWEIGHT_SUBMISSION_KEYS = {
+        "id",
+        "attempt_no",
+        "question",
+        "generation_run_id",
+        "generation_status",
+        "state",
+        "received_at",
+        "updated_at",
+        "trace_profile",
+        "cga_trace_profile",
+        "clarification",
+    }
+    _LIGHTWEIGHT_FAILURE_KEYS = {
+        "id",
+        "question",
+        "generation_run_id",
+        "generation_status",
+        "failure_reason",
+        "received_at",
+        "updated_at",
+        "trace_profile",
+        "cga_trace_profile",
+        "clarification",
+    }
+    _LIGHTWEIGHT_GOLDEN_KEYS = {"id", "difficulty", "updated_at"}
     _DIFFICULTY_ORDER = ["L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8"]
     _GENERATION_STATUS_LABELS = {
         "generated": "生成成功",
         "clarification_required": "需要澄清",
         "generation_failed": "生成失败",
+        "unsupported_query_shape": "不支持的查询形态",
         "service_failed": "服务失败",
+    }
+    _CGA_GRAPH_STAGE_TITLES = {
+        "graph_model_loader": "语义模型加载",
+        "input_clarification_gate": "输入澄清门",
+        "question_decomposer": "问题结构化拆解",
+        "candidate_retrieval": "语义候选召回",
+        "literal_resolver": "字面值解析",
+        "grounded_understanding": "语义落地理解",
+        "semantic_binder": "语义绑定计划",
+        "semantic_validator": "语义正确性校验",
+        "repair_controller": "修复与澄清决策",
+        "dsl_builder": "受限 DSL 构建",
+        "dsl_parser": "DSL 解析",
+        "cypher_compiler": "Cypher 编译",
+        "cypher_self_validation": "Cypher 自校验",
+        "output": "服务输出",
     }
     _FINAL_VERDICT_LABELS = {
         "pass": "通过",
@@ -54,6 +100,9 @@ class RuntimeResultsService:
         self._analyses_dir = Path(repair_data_dir) / "analyses"
         self._cga_trace_profile = cga_trace_profile
         self._health_client = health_client or ServiceHealthClient()
+        self._task_index_lock = threading.RLock()
+        self._task_index_cache_signature: tuple[tuple[str, int, float], ...] | None = None
+        self._task_index_cache: list[dict[str, Any]] | None = None
         self._service_cards = [
             {
                 "service_key": "cypher-generator-agent",
@@ -126,15 +175,11 @@ class RuntimeResultsService:
         difficulty: str | None = None,
         q: str | None = None,
     ) -> dict[str, Any]:
-        tasks = []
-        for task_id in self._recent_task_ids():
-            task = self._build_task_summary_lightweight(task_id)
-            if (
-                task is not None
-                and self._task_matches_profile(task)
-                and self._task_matches_filters(task, difficulty=difficulty, q=q)
-            ):
-                tasks.append(task)
+        tasks = [
+            task
+            for task in self._task_index()
+            if self._task_matches_filters(task, difficulty=difficulty, q=q)
+        ]
         tasks.sort(key=lambda item: item["updated_at"], reverse=True)
         page = max(page, 1)
         page_size = min(max(page_size, 1), 100)
@@ -169,12 +214,7 @@ class RuntimeResultsService:
             }
             for difficulty in self._DIFFICULTY_ORDER
         }
-        for task_id in self._recent_task_ids():
-            task = self._build_task_summary_lightweight(task_id)
-            if task is None:
-                continue
-            if not self._task_matches_profile(task):
-                continue
+        for task in self._task_index():
             difficulty = task.get("difficulty")
             if difficulty not in buckets:
                 continue
@@ -193,6 +233,41 @@ class RuntimeResultsService:
             ],
             "buckets": [buckets[difficulty] for difficulty in self._DIFFICULTY_ORDER],
         }
+
+    def _task_index(self) -> list[dict[str, Any]]:
+        signature = self._task_index_signature()
+        with self._task_index_lock:
+            if self._task_index_cache_signature == signature and self._task_index_cache is not None:
+                return [dict(task) for task in self._task_index_cache]
+            tasks: list[dict[str, Any]] = []
+            for task_id in self._recent_task_ids():
+                task = self._build_task_summary_lightweight(task_id)
+                if task is not None and self._task_matches_profile(task):
+                    tasks.append(task)
+            tasks.sort(key=lambda item: item["updated_at"], reverse=True)
+            self._task_index_cache_signature = signature
+            self._task_index_cache = [dict(task) for task in tasks]
+            return [dict(task) for task in tasks]
+
+    def _task_index_signature(self) -> tuple[tuple[str, int, float], ...]:
+        return (
+            self._directory_signature("goldens", self._goldens_dir, "*.json"),
+            self._directory_signature("submissions", self._submissions_dir, "*.json"),
+            self._directory_signature("submission_attempts", self._attempt_submissions_dir, "*.json"),
+            self._directory_signature("generation_failures", self._generation_failures_dir, "*.json"),
+        )
+
+    def _directory_signature(self, name: str, directory: Path, pattern: str) -> tuple[str, int, float]:
+        count = 0
+        latest_mtime = 0.0
+        for path in directory.glob(pattern):
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            count += 1
+            latest_mtime = max(latest_mtime, stat.st_mtime)
+        return (name, count, latest_mtime)
 
     def get_task_detail(self, id: str) -> dict[str, Any] | None:
         submission = self._read_submission(id)
@@ -255,11 +330,11 @@ class RuntimeResultsService:
         }
 
     def _build_task_summary_lightweight(self, id: str) -> dict[str, Any] | None:
-        submission = self._read_submission(id)
-        submission, generation_failure = self._select_profile_records(id, submission)
+        submission = self._read_submission_metadata(id)
+        submission, generation_failure = self._select_profile_records_lightweight(id, submission)
         if submission is None and generation_failure is None:
             return None
-        golden = self._read_json(self._goldens_dir / f"{id}.json")
+        golden = self._read_json_metadata(self._goldens_dir / f"{id}.json", self._LIGHTWEIGHT_GOLDEN_KEYS)
         if not self._is_contract_task(golden=golden, submission=submission, generation_failure=generation_failure):
             return None
         record = submission or generation_failure or {}
@@ -359,6 +434,22 @@ class RuntimeResultsService:
             return self._read_json(attempts[-1])
         return self._read_json(self._submissions_dir / f"{id}.json")
 
+    def _read_submission_metadata(self, id: str) -> dict[str, Any] | None:
+        latest = self._read_json_metadata(self._submissions_dir / f"{id}.json", self._LIGHTWEIGHT_SUBMISSION_KEYS)
+        if latest is not None:
+            return latest
+        attempts = sorted(
+            self._attempt_submissions_dir.glob(f"{id}__attempt_*.json"),
+            key=self._attempt_path_sort_key,
+        )
+        if attempts:
+            return self._read_json_metadata(attempts[-1], self._LIGHTWEIGHT_SUBMISSION_KEYS)
+        return None
+
+    def _attempt_path_sort_key(self, path: Path) -> tuple[int, str]:
+        match = re.search(r"__attempt_(\d+)\.json$", path.name)
+        return (int(match.group(1)) if match else 0, path.name)
+
     def _read_generation_failure(self, id: str, generation_run_id: Any | None = None) -> dict[str, Any] | None:
         if generation_run_id:
             exact = self._read_json(self._generation_failures_dir / f"{id}__{generation_run_id}.json")
@@ -378,12 +469,44 @@ class RuntimeResultsService:
             ),
         )[-1]
 
+    def _read_generation_failure_metadata(self, id: str, generation_run_id: Any | None = None) -> dict[str, Any] | None:
+        if generation_run_id:
+            return self._read_json_metadata(
+                self._generation_failures_dir / f"{id}__{generation_run_id}.json",
+                self._LIGHTWEIGHT_FAILURE_KEYS,
+            )
+        reports = [
+            report
+            for path in sorted(self._generation_failures_dir.glob(f"{id}__*.json"))
+            if (report := self._read_json_metadata(path, self._LIGHTWEIGHT_FAILURE_KEYS)) is not None
+        ]
+        if not reports:
+            return None
+        return sorted(
+            reports,
+            key=lambda item: (
+                str(item.get("received_at", "")),
+                str(item.get("generation_run_id", "")),
+            ),
+        )[-1]
+
     def _read_generation_failure_for_submission(self, id: str, submission: dict[str, Any] | None) -> dict[str, Any] | None:
         if submission is None:
             return self._read_generation_failure(id)
         if submission.get("generation_status") == "generated":
             return None
         return self._read_generation_failure(id, submission.get("generation_run_id"))
+
+    def _read_generation_failure_for_submission_metadata(
+        self,
+        id: str,
+        submission: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if submission is None:
+            return self._read_generation_failure_metadata(id)
+        if submission.get("generation_status") == "generated":
+            return None
+        return self._read_generation_failure_metadata(id, submission.get("generation_run_id"))
 
     def _select_profile_records(
         self,
@@ -412,6 +535,38 @@ class RuntimeResultsService:
             return same_run_submission, latest_failure
         if submission_matches:
             failure = self._read_generation_failure_for_submission(id, submission)
+            if failure is not None and self._record_trace_profile(failure) != profile:
+                failure = None
+            return submission, failure
+        return None, None
+
+    def _select_profile_records_lightweight(
+        self,
+        id: str,
+        submission: dict[str, Any] | None,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        profile = str(self._cga_trace_profile or "all").strip().lower()
+        if profile in {"", "all"}:
+            return submission, self._read_generation_failure_for_submission_metadata(id, submission)
+
+        submission_matches = submission is not None and self._record_trace_profile(submission) == profile
+        latest_failure = self._read_generation_failure_metadata(id)
+        failure_matches = latest_failure is not None and self._record_trace_profile(latest_failure) == profile
+        if submission_matches and failure_matches:
+            if submission.get("generation_run_id") == latest_failure.get("generation_run_id"):
+                return submission, latest_failure
+            if self._latest_timestamp(submission) >= self._latest_timestamp(latest_failure):
+                return submission, None
+            return None, latest_failure
+        if failure_matches:
+            same_run_submission = (
+                submission
+                if submission_matches and submission.get("generation_run_id") == latest_failure.get("generation_run_id")
+                else None
+            )
+            return same_run_submission, latest_failure
+        if submission_matches:
+            failure = self._read_generation_failure_for_submission_metadata(id, submission)
             if failure is not None and self._record_trace_profile(failure) != profile:
                 failure = None
             return submission, failure
@@ -534,10 +689,28 @@ class RuntimeResultsService:
         prompt_snapshot = source.get("input_prompt_snapshot") or ""
         snapshot = self._decode_generation_snapshot(prompt_snapshot)
         clarification = self._clarification_from(source, generation_failure)
-        trace_schema_version = (
-            snapshot.get("schema_version") or "cga_trace_v2" if self._is_cga_trace_v2(snapshot) else None
-        )
+        trace_schema_version = self._generation_trace_schema_version(snapshot)
         failure_reason = source.get("failure_reason") or (generation_failure or {}).get("failure_reason")
+        if self._is_cga_graph_trace(snapshot):
+            cga_flow = self._graph_generation_flow(snapshot)
+            return {
+                "question": source.get("question", "") or snapshot.get("source_question", ""),
+                "difficulty": (golden or {}).get("difficulty"),
+                "golden_cypher": (golden or {}).get("cypher"),
+                "generated_cypher": display_cypher,
+                "generation_run_id": source.get("generation_run_id") or snapshot.get("generation_run_id"),
+                "prompt_markdown": prompt_snapshot,
+                "parsed_cypher": parsed_cypher,
+                "gate_passed": gate_passed,
+                "failure_reason": failure_reason or ((snapshot.get("final_outputs") or {}).get("failure") or {}).get("reason"),
+                "clarification": clarification,
+                "generation_status": generation_status or snapshot.get("final_status"),
+                "trace_profile": "graph",
+                "trace_schema_version": trace_schema_version,
+                "cga_flow": cga_flow,
+                "trace_layers": [],
+                "llm_prompts": self._graph_generation_llm_prompts(cga_flow.get("llm_calls") or []),
+            }
         return {
             "question": source.get("question", ""),
             "difficulty": (golden or {}).get("difficulty"),
@@ -568,6 +741,13 @@ class RuntimeResultsService:
             "llm_prompts": self._generation_llm_prompts(snapshot),
         }
 
+    def _generation_trace_schema_version(self, snapshot: dict[str, Any]) -> str | None:
+        if self._is_cga_graph_trace(snapshot):
+            return "cga_graph_trace_v1"
+        if self._is_cga_trace_v2(snapshot):
+            return str(snapshot.get("schema_version") or "cga_trace_v2")
+        return None
+
     def _decode_generation_snapshot(self, prompt_snapshot: Any) -> dict[str, Any]:
         if isinstance(prompt_snapshot, dict):
             return prompt_snapshot
@@ -578,6 +758,169 @@ class RuntimeResultsService:
         except json.JSONDecodeError:
             return {}
         return parsed if isinstance(parsed, dict) else {}
+
+    def _is_cga_graph_trace(self, snapshot: dict[str, Any]) -> bool:
+        return snapshot.get("trace_schema_version") == "cga_graph_trace_v1"
+
+    def _graph_generation_flow(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        stages = [self._graph_stage_display(stage) for stage in self._trace_dicts(snapshot.get("stages"))]
+        llm_calls: list[dict[str, Any]] = []
+        for stage in stages:
+            llm_calls.extend(self._graph_stage_llm_calls(stage))
+        final_outputs = self._trace_object(snapshot.get("final_outputs"))
+        semantic_model = self._trace_object(snapshot.get("semantic_model"))
+        return {
+            "schema_version": "cga_graph_trace_v1",
+            "trace_id": snapshot.get("trace_id"),
+            "question_id": snapshot.get("question_id"),
+            "generation_run_id": snapshot.get("generation_run_id"),
+            "source_question": snapshot.get("source_question"),
+            "started_at": snapshot.get("started_at"),
+            "finished_at": snapshot.get("finished_at"),
+            "final_status": snapshot.get("final_status"),
+            "semantic_model": semantic_model,
+            "summary": {
+                "final_status": snapshot.get("final_status"),
+                "stage_count": len(stages),
+                "llm_call_count": len(llm_calls),
+                "semantic_model": semantic_model.get("name") or "未记录",
+                "model_checksum": semantic_model.get("checksum"),
+            },
+            "stages": stages,
+            "llm_calls": llm_calls,
+            "artifacts": {
+                "dsl": final_outputs.get("dsl"),
+                "cypher": final_outputs.get("cypher"),
+                "clarification": final_outputs.get("clarification"),
+                "failure": final_outputs.get("failure"),
+                "user_visible_notices": final_outputs.get("user_visible_notices") or [],
+                "compiler": self._graph_stage_output(snapshot, "cypher_compiler"),
+                "self_validation": self._graph_stage_output(snapshot, "cypher_self_validation"),
+            },
+        }
+
+    def _graph_stage_display(self, stage: dict[str, Any]) -> dict[str, Any]:
+        key = str(stage.get("stage") or "")
+        return {
+            "key": key,
+            "title_zh": self._CGA_GRAPH_STAGE_TITLES.get(key, key or "未命名阶段"),
+            "status": stage.get("status"),
+            "started_at": stage.get("started_at"),
+            "duration_ms": stage.get("duration_ms"),
+            "input": self._trace_ref_value(stage.get("input_ref")),
+            "output": self._trace_ref_value(stage.get("output_ref")),
+            "metrics": stage.get("metrics") or {},
+            "errors": stage.get("errors") or [],
+            "warnings": stage.get("warnings") or [],
+        }
+
+    def _trace_ref_value(self, ref: Any) -> Any:
+        if not isinstance(ref, dict):
+            return None
+        ref_type = ref.get("type")
+        if ref_type == "inline":
+            return ref.get("value")
+        if ref_type == "redacted":
+            return {"type": "redacted", "reason": ref.get("reason") or "redacted"}
+        if ref_type == "artifact":
+            return {"type": "artifact", "artifact_uri": ref.get("artifact_uri")}
+        return ref
+
+    def _graph_stage_llm_calls(self, stage: dict[str, Any]) -> list[dict[str, Any]]:
+        calls: list[dict[str, Any]] = []
+        for payload in (stage.get("input"), stage.get("output"), stage.get("metrics")):
+            calls.extend(self._llm_call_payloads(payload))
+        normalized: list[dict[str, Any]] = []
+        for index, call in enumerate(calls, start=1):
+            normalized.append(self._normalize_graph_llm_call(call, stage=stage, index=index))
+        return normalized
+
+    def _llm_call_payloads(self, payload: Any) -> list[dict[str, Any]]:
+        if isinstance(payload, dict):
+            for key in (
+                "llm_calls",
+                "llm_call",
+                "llm_attempts",
+                "llm_primary_attempts",
+                "llm_secondary_attempts",
+                "llm_disambiguation_attempts",
+            ):
+                value = payload.get(key)
+                if value is None:
+                    continue
+                if isinstance(value, list):
+                    return [item for item in value if isinstance(item, dict)]
+                if isinstance(value, dict):
+                    return [value]
+            return []
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict) and self._looks_like_llm_call(item)]
+        return []
+
+    def _looks_like_llm_call(self, value: dict[str, Any]) -> bool:
+        return any(key in value for key in ("prompt", "prompt_markdown", "raw_output", "raw_response", "raw_text"))
+
+    def _normalize_graph_llm_call(
+        self,
+        call: dict[str, Any],
+        *,
+        stage: dict[str, Any],
+        index: int,
+    ) -> dict[str, Any]:
+        stage_key = str(call.get("stage") or stage.get("key") or "")
+        prompt = self._trace_text(
+            call.get("prompt_markdown")
+            or call.get("rendered_prompt")
+            or call.get("prompt")
+        )
+        raw_output = self._trace_text(
+            call.get("raw_output")
+            or call.get("raw_response")
+            or call.get("raw_text")
+            or call.get("output")
+        )
+        error = call.get("error")
+        if error is None and call.get("error_type"):
+            error = {
+                "type": call.get("error_type"),
+                "message": call.get("message"),
+            }
+        return {
+            "call_id": call.get("call_id") or f"{stage.get('key') or 'llm'}-{index}",
+            "stage": stage_key or stage.get("key"),
+            "stage_title_zh": self._CGA_GRAPH_STAGE_TITLES.get(stage_key) or stage.get("title_zh"),
+            "schema_name": call.get("schema_name"),
+            "attempt": call.get("attempt"),
+            "model": call.get("model"),
+            "prompt": prompt,
+            "raw_output": raw_output,
+            "parsed_output": call.get("parsed_output") or call.get("payload"),
+            "status": call.get("status") or ("failed" if error else "success"),
+            "error": error,
+        }
+
+    def _graph_stage_output(self, snapshot: dict[str, Any], stage_name: str) -> Any:
+        for stage in self._trace_dicts(snapshot.get("stages")):
+            if stage.get("stage") == stage_name:
+                return self._trace_ref_value(stage.get("output_ref"))
+        return None
+
+    def _graph_generation_llm_prompts(self, llm_calls: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        prompts: dict[str, dict[str, Any]] = {}
+        for index, call in enumerate(llm_calls, start=1):
+            key = str(call.get("call_id") or f"llm_call_{index}")
+            prompts[key] = {
+                "key": key,
+                "title_zh": f"{call.get('stage_title_zh') or call.get('stage') or 'LLM 调用'}",
+                "raw_output_title_zh": "LLM 原始返回",
+                "triggered": True,
+                "prompt": call.get("prompt") or "",
+                "raw_output": call.get("raw_output") or "",
+                "attempts": [call],
+                "empty_label_zh": "本次未触发",
+                "empty_raw_output_label_zh": "本次未触发或未记录返回",
+            }
+        return prompts
 
     def _is_cga_trace_v2(self, snapshot: dict[str, Any]) -> bool:
         return snapshot.get("schema_version") == "cga_trace_v2" or self._is_ontology_cga_trace(snapshot)
@@ -601,9 +944,23 @@ class RuntimeResultsService:
 
     def _record_trace_profile(self, record: dict[str, Any]) -> str:
         explicit_profile = str(record.get("trace_profile") or record.get("cga_trace_profile") or "").strip().lower()
-        if explicit_profile in {"ontology", "legacy"}:
+        if explicit_profile in {"graph", "ontology", "legacy"}:
             return explicit_profile
+        metadata_profile_hint = str(record.get("_trace_profile_hint") or "").strip().lower()
+        if record.get("_metadata_only") and metadata_profile_hint in {"graph", "ontology", "legacy"}:
+            return metadata_profile_hint
+        if record.get("_metadata_only"):
+            profile = str(self._cga_trace_profile or "all").strip().lower()
+            if (
+                profile == "ontology"
+                and record.get("generation_status") == "clarification_required"
+                and isinstance(record.get("clarification"), dict)
+            ):
+                return "ontology"
+            return "legacy"
         snapshot = self._decode_generation_snapshot(record.get("input_prompt_snapshot") or "")
+        if self._is_cga_graph_trace(snapshot):
+            return "graph"
         if self._is_ontology_cga_trace(snapshot):
             return "ontology"
         profile = str(self._cga_trace_profile or "all").strip().lower()
@@ -2326,7 +2683,7 @@ class RuntimeResultsService:
             return "pending"
         if submission.get("generation_status") == "generated" and submission.get("generated_cypher"):
             return "passed"
-        if submission.get("generation_status") in {"generation_failed", "service_failed"}:
+        if submission.get("generation_status") in {"generation_failed", "unsupported_query_shape", "service_failed"}:
             return "failed"
         return "pending"
 
@@ -2518,3 +2875,64 @@ class RuntimeResultsService:
         if not path.exists():
             return None
         return json.loads(path.read_text(encoding="utf-8"))
+
+    def _read_json_metadata(self, path: Path, keys: set[str]) -> dict[str, Any] | None:
+        if not path.exists():
+            return None
+        result: dict[str, Any] = {
+            "_metadata_only": True,
+            "_source_path": str(path),
+        }
+        remaining = set(keys)
+        try:
+            with path.open("r", encoding="utf-8") as file:
+                line_iter = iter(file)
+                for line in line_iter:
+                    match = self._TOP_LEVEL_JSON_FIELD_RE.match(line)
+                    if match is None:
+                        continue
+                    key = match.group("key")
+                    raw_value = match.group("value")
+                    if key == "input_prompt_snapshot" and "_trace_profile_hint" not in result:
+                        result["_trace_profile_hint"] = self._trace_profile_hint_from_snapshot_line(raw_value)
+                    if key not in remaining:
+                        continue
+                    parsed = self._parse_top_level_json_value(raw_value, line_iter)
+                    if parsed is _UNPARSED_JSON_VALUE:
+                        continue
+                    result[key] = parsed
+                    remaining.remove(key)
+                    if not remaining:
+                        break
+        except OSError:
+            return None
+        return result
+
+    def _trace_profile_hint_from_snapshot_line(self, raw_value: str) -> str:
+        if "cga_graph_trace_v1" in raw_value:
+            return "graph"
+        if "cga_trace_v2" in raw_value or "trace_profile" in raw_value and "ontology" in raw_value:
+            return "ontology"
+        return ""
+
+    def _parse_top_level_json_value(self, raw_value: str, line_iter: Any) -> Any:
+        decoder = json.JSONDecoder()
+        buffer = raw_value.strip()
+        while True:
+            candidate = buffer.rstrip()
+            if candidate.endswith(","):
+                candidate = candidate[:-1].rstrip()
+            try:
+                value, end_index = decoder.raw_decode(candidate)
+            except json.JSONDecodeError:
+                pass
+            else:
+                if not candidate[end_index:].strip():
+                    return value
+            try:
+                buffer += next(line_iter)
+            except StopIteration:
+                return _UNPARSED_JSON_VALUE
+
+
+_UNPARSED_JSON_VALUE = object()
