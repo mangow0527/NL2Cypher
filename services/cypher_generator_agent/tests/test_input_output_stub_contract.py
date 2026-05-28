@@ -137,7 +137,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
     allowed_core_files = {"__init__.py", "errors.py", "pipeline.py", "result.py"}
     assert _source_names(SERVICE_ROOT / "app" / "core") <= allowed_core_files
 
-    allowed_infrastructure_files = {"__init__.py", "clients.py", "config.py"}
+    allowed_infrastructure_files = {"__init__.py", "clients.py", "config.py", "llm_client.py"}
     assert _source_names(SERVICE_ROOT / "app" / "infrastructure") <= allowed_infrastructure_files
 
     allowed_semantic_model_files = {
@@ -224,6 +224,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "decomposition",
         "dsl",
         "fixtures",
+        "infrastructure",
         "integration",
         "literals",
         "observability",
@@ -232,6 +233,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "semantic_model",
         "understanding",
         "validation",
+        "conftest.py",
         "test_input_output_stub_contract.py",
     }
     assert _source_names(SERVICE_ROOT / "tests") <= allowed_tests
@@ -247,6 +249,13 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "test_variable_path.py",
     }
     assert _source_names(SERVICE_ROOT / "tests" / "integration") <= allowed_integration_files
+
+    allowed_infrastructure_tests = {
+        "__init__.py",
+        "test_config.py",
+        "test_llm_client.py",
+    }
+    assert _source_names(SERVICE_ROOT / "tests" / "infrastructure") <= allowed_infrastructure_tests
 
     allowed_semantic_model_tests = {
         "__init__.py",

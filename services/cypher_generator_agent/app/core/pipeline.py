@@ -11,6 +11,7 @@ from services.cypher_generator_agent.app.core.errors import GenerationFailureRea
 from services.cypher_generator_agent.app.core.result import GenerationOutput
 from services.cypher_generator_agent.app.cypher_validation import CypherSelfValidator
 from services.cypher_generator_agent.app.cypher_validation.models import CypherSelfValidationResult
+from services.cypher_generator_agent.app.decomposition import QuestionDecomposer
 from services.cypher_generator_agent.app.decomposition.models import (
     QuestionDecomposition,
     QuestionDecompositionClarification,
@@ -18,7 +19,8 @@ from services.cypher_generator_agent.app.decomposition.models import (
 )
 from services.cypher_generator_agent.app.dsl.builder import RestrictedDslBuilder
 from services.cypher_generator_agent.app.dsl.parser import RestrictedDslValidationError, parse_restricted_query_dsl
-from services.cypher_generator_agent.app.infrastructure.config import get_settings
+from services.cypher_generator_agent.app.infrastructure.config import Settings, get_settings
+from services.cypher_generator_agent.app.infrastructure.llm_client import OpenAICompatibleStructuredLLMClient
 from services.cypher_generator_agent.app.literals.models import LiteralResolverRequest, LiteralResolverResult
 from services.cypher_generator_agent.app.literals.resolver import LiteralResolver
 from services.cypher_generator_agent.app.literals.value_index import StaticValueIndex
@@ -26,12 +28,14 @@ from services.cypher_generator_agent.app.observability.stages import StageName
 from services.cypher_generator_agent.app.observability.trace import GraphTraceBuilder, inline_ref
 from services.cypher_generator_agent.app.repair.controller import RepairController
 from services.cypher_generator_agent.app.repair.models import RepairDecision, RepairIssue
+from services.cypher_generator_agent.app.retrieval.models import CandidateRetrievalResult, SemanticCandidate
 from services.cypher_generator_agent.app.retrieval.retriever import CandidateRetriever
 from services.cypher_generator_agent.app.semantic_model.loader import load_graph_semantic_model
 from services.cypher_generator_agent.app.understanding.models import (
     GroundedUnderstanding,
     GroundedUnderstandingFailure,
 )
+from services.cypher_generator_agent.app.understanding.grounded_understanding import GroundedUnderstandingSelector
 from services.cypher_generator_agent.app.validation.coverage import CoverageReport
 from services.cypher_generator_agent.app.validation.semantic_validator import SemanticValidator
 
@@ -64,6 +68,7 @@ def run_pipeline(
             generation_run_id=generation_run_id,
             model_path=model_path,
             value_index_path=value_index_path,
+            settings=settings,
             path_pattern_template_overrides_for_tests=_path_pattern_template_overrides_for_tests,
         )
     except Exception as exc:
@@ -78,8 +83,11 @@ def _run_pipeline_steps(
     generation_run_id: str,
     model_path: Path,
     value_index_path: Path,
+    settings: Settings,
     path_pattern_template_overrides_for_tests: Mapping[str, str] | None,
 ) -> GenerationOutput:
+    llm_client = _structured_llm_client_from_settings(settings) if settings.llm_enabled else None
+
     load_result = _run_stage(
         trace,
         stage=StageName.GRAPH_MODEL_LOADER,
@@ -103,7 +111,11 @@ def _run_pipeline_steps(
         trace,
         stage=StageName.QUESTION_DECOMPOSER,
         input_payload={"question": question},
-        action=lambda: _mock_decompose(question),
+        action=lambda: _decompose_question(
+            question=question,
+            settings=settings,
+            llm_client=llm_client,
+        ),
     )
     if decomposition_output := _output_from_decomposition_outcome(trace, decomposition):
         return decomposition_output
@@ -117,6 +129,7 @@ def _run_pipeline_steps(
         output_payload=lambda result: result.model_dump(mode="json"),
         metrics=lambda result: {"candidate_count": len(result.candidates)},
     )
+    decomposition = _with_literal_requests_from_candidates(decomposition, retrieval_result)
 
     literal_results = _run_stage(
         trace,
@@ -156,7 +169,13 @@ def _run_pipeline_steps(
             "decomposition": decomposition,
             "resolved_literals": [result.model_dump(mode="json") for result in literal_results],
         },
-        action=lambda: _mock_understand(decomposition, literal_results),
+        action=lambda: _select_grounded_understanding(
+            decomposition=decomposition,
+            retrieval_result=retrieval_result,
+            literal_results=literal_results,
+            settings=settings,
+            llm_client=llm_client,
+        ),
     )
     if grounded_output := _output_from_grounded_outcome(trace, grounded):
         return grounded_output
@@ -296,6 +315,195 @@ def _run_stage(
     return result
 
 
+def _structured_llm_client_from_settings(settings: Settings) -> Any:
+    if settings.llm_provider != "openai_compatible":
+        raise ValueError(f"unsupported LLM provider {settings.llm_provider!r}")
+    if settings.llm_base_url is None:
+        raise ValueError("CYPHER_GENERATOR_AGENT_LLM_BASE_URL is required when LLM is enabled")
+    if settings.llm_api_key is None:
+        raise ValueError("CYPHER_GENERATOR_AGENT_LLM_API_KEY is required when LLM is enabled")
+    return OpenAICompatibleStructuredLLMClient(
+        base_url=settings.llm_base_url,
+        api_key=settings.llm_api_key.get_secret_value(),
+        model=settings.llm_model,
+        temperature=settings.llm_temperature,
+        timeout_seconds=settings.llm_timeout_seconds,
+    )
+
+
+def _decompose_question(
+    *,
+    question: str,
+    settings: Settings,
+    llm_client: Any | None,
+) -> Any:
+    if llm_client is None:
+        return _mock_decompose(question)
+    return QuestionDecomposer(
+        llm_client,
+        max_schema_retries=settings.llm_max_schema_retries,
+    ).decompose(question)
+
+
+def _select_grounded_understanding(
+    *,
+    decomposition: dict[str, Any],
+    retrieval_result: CandidateRetrievalResult,
+    literal_results: list[LiteralResolverResult],
+    settings: Settings,
+    llm_client: Any | None,
+) -> Any:
+    if llm_client is None:
+        return _mock_understand(decomposition, literal_results)
+    return GroundedUnderstandingSelector(
+        llm_client,
+        max_schema_retries=settings.llm_max_schema_retries,
+    ).select(
+        question_decomposition=decomposition,
+        candidates=retrieval_result,
+        literal_results=literal_results,
+    )
+
+
+def _with_literal_requests_from_candidates(
+    decomposition: dict[str, Any],
+    retrieval_result: CandidateRetrievalResult,
+) -> dict[str, Any]:
+    if decomposition.get("literal_requests"):
+        return decomposition
+
+    literal_candidates = _literal_candidate_payloads(decomposition)
+    if not literal_candidates:
+        return decomposition
+
+    requests = [
+        request
+        for request in (
+            _literal_request_from_candidate(literal, retrieval_result.candidates)
+            for literal in literal_candidates
+        )
+        if request is not None
+    ]
+    if not requests:
+        return decomposition
+
+    enriched = dict(decomposition)
+    enriched["literal_requests"] = requests
+    return enriched
+
+
+def _literal_candidate_payloads(decomposition: Mapping[str, Any]) -> list[dict[str, Any]]:
+    raw_candidates = decomposition.get("literal_candidate_objects") or decomposition.get("literal_candidates") or []
+    if not isinstance(raw_candidates, list):
+        return []
+    payloads: list[dict[str, Any]] = []
+    for item in raw_candidates:
+        if isinstance(item, Mapping):
+            text = item.get("text") or item.get("raw_literal") or item.get("value")
+            if not text:
+                continue
+            payloads.append(
+                {
+                    "text": str(text),
+                    "kind_hint": str(item.get("kind_hint") or item.get("literal_kind_hint") or "unknown"),
+                    "attached_to": str(item.get("attached_to") or item.get("owner") or ""),
+                }
+            )
+        elif isinstance(item, str):
+            payloads.append({"text": item, "kind_hint": "unknown", "attached_to": ""})
+    return payloads
+
+
+def _literal_request_from_candidate(
+    literal: Mapping[str, Any],
+    candidates: list[SemanticCandidate],
+) -> dict[str, Any] | None:
+    raw_literal = str(literal.get("text") or "").strip()
+    if not raw_literal:
+        return None
+
+    property_candidate = _best_literal_property_candidate(literal, candidates)
+    if property_candidate is None or property_candidate.owner is None:
+        return None
+
+    owner_kind = _candidate_owner_kind(property_candidate.owner, candidates)
+    if owner_kind is None:
+        return None
+
+    return {
+        "raw_literal": raw_literal,
+        owner_kind: property_candidate.owner,
+        "expected_property": property_candidate.semantic_name,
+        "literal_kind_hint": str(literal.get("kind_hint") or "unknown"),
+    }
+
+
+def _best_literal_property_candidate(
+    literal: Mapping[str, Any],
+    candidates: list[SemanticCandidate],
+) -> SemanticCandidate | None:
+    raw_literal = str(literal.get("text") or "")
+    attached_to = str(literal.get("attached_to") or "")
+    attached_owners = _attached_vertex_names(attached_to, candidates)
+    property_candidates = [
+        candidate
+        for candidate in candidates
+        if candidate.semantic_type == "property" and candidate.owner is not None
+    ]
+    if not property_candidates:
+        return None
+    return max(
+        property_candidates,
+        key=lambda candidate: _literal_property_score(raw_literal, attached_owners, candidate),
+    )
+
+
+def _literal_property_score(
+    raw_literal: str,
+    attached_owners: set[str],
+    candidate: SemanticCandidate,
+) -> tuple[int, float, str]:
+    score = 0
+    valid_values = candidate.metadata.get("valid_values", [])
+    if any(_norm(value) == _norm(raw_literal) for value in valid_values):
+        score += 100
+    if candidate.owner in attached_owners:
+        score += 25
+    if candidate.semantic_name == "id":
+        score += 5
+    return (score, candidate.score, candidate.semantic_id)
+
+
+def _attached_vertex_names(attached_to: str, candidates: list[SemanticCandidate]) -> set[str]:
+    if not attached_to:
+        return set()
+    attached = _norm(attached_to)
+    owners: set[str] = set()
+    for candidate in candidates:
+        if candidate.semantic_type != "vertex":
+            continue
+        if _norm(candidate.semantic_name) == attached:
+            owners.add(candidate.semantic_id)
+            continue
+        for evidence in candidate.evidence:
+            if _norm(evidence.term) == attached or _norm(evidence.matched_text) == attached:
+                owners.add(candidate.semantic_id)
+    return owners
+
+
+def _candidate_owner_kind(owner: str, candidates: list[SemanticCandidate]) -> str | None:
+    for candidate in candidates:
+        if candidate.semantic_type == "vertex" and candidate.semantic_id == owner:
+            return "expected_vertex"
+        if candidate.semantic_type == "edge" and candidate.semantic_id == owner:
+            return "expected_edge"
+    return None
+
+
+def _norm(value: Any) -> str:
+    return str(value).casefold().strip().replace("_", " ").replace("-", " ")
+
+
 def _duration_ms(started: float) -> int:
     return max(0, int((perf_counter() - started) * 1000))
 
@@ -382,6 +590,7 @@ def _output_from_decomposition_outcome(
 def _decomposition_payload(result: Any) -> dict[str, Any]:
     if isinstance(result, QuestionDecomposition):
         payload = result.model_dump(mode="json")
+        payload["literal_candidate_objects"] = list(payload.get("literal_candidates", []))
         payload["literal_candidates"] = [
             candidate["text"]
             for candidate in payload.get("literal_candidates", [])

@@ -53,6 +53,21 @@ flowchart TD
 - path_pattern 和 metric 的手写 Cypher 模板必须在模型加载期通过 Cypher Self-Validation。
 - 所有示例名称必须来自 Network Topology Vocabulary，避免文档之间出现同义漂移。
 
+## LLM 运行配置
+
+默认情况下 cypher-generator-agent 仍使用确定性 mock pipeline。打开真实 LLM 时只使用 `CYPHER_GENERATOR_AGENT_*` 变量：
+
+```bash
+CYPHER_GENERATOR_AGENT_LLM_ENABLED=true
+CYPHER_GENERATOR_AGENT_LLM_PROVIDER=openai_compatible
+CYPHER_GENERATOR_AGENT_LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+CYPHER_GENERATOR_AGENT_LLM_API_KEY=<secret>
+CYPHER_GENERATOR_AGENT_LLM_MODEL=qwen3-32b
+CYPHER_GENERATOR_AGENT_LLM_TEMPERATURE=0.1
+```
+
+API key 不应写入代码、fixture、测试或设计文档；只允许通过本地环境变量或部署密钥系统注入。
+
 ## Sprint 0 一致性检查
 
 实现开始前需要准备一份真实的 graph semantic model fixture，并用它校验本文档集中的示例：

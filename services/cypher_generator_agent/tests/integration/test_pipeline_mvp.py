@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -79,6 +80,144 @@ def test_pipeline_semantic_artifacts_can_be_overridden_from_settings(
     assert output.status == "generated"
     assert output.trace["semantic_model"]["name"] == "network_topology"
     assert _compiler_parameters(output.trace)["quality_of_service"] == "GOLD"
+
+
+def test_pipeline_can_use_real_llm_mode_with_openai_compatible_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeStructuredClient:
+        provider = "openai_compatible"
+
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+            self.responses = [
+                {
+                    "schema_version": "question_decomposition_v1",
+                    "intent_type": "list",
+                    "original_question": "Gold 服务使用了哪些隧道",
+                    "target_concepts": ["服务", "隧道"],
+                    "relation_phrases": ["使用隧道"],
+                    "literal_candidates": [
+                        {"text": "Gold", "kind_hint": "enum", "attached_to": "服务"}
+                    ],
+                    "filter_phrases": ["Gold 服务"],
+                    "substantive_terms": ["Gold", "服务", "使用", "隧道"],
+                    "stopword_terms": [],
+                    "modality_terms": [],
+                    "time_terms": [],
+                    "unparsed_terms": [],
+                    "output_shape": "rows",
+                },
+                {
+                    "schema_version": "grounded_understanding_v1",
+                    "status": "grounded",
+                    "query_shape": "single_hop",
+                    "selected_bindings": [
+                        _grounded_binding("source", "vertex", "Service"),
+                        _grounded_binding("target", "vertex", "Tunnel"),
+                        _grounded_binding("relation", "edge", "SERVICE_USES_TUNNEL", direction="forward"),
+                        _grounded_binding(
+                            "filter_property",
+                            "property",
+                            "Service.quality_of_service",
+                            semantic_name="quality_of_service",
+                            owner="Service",
+                        ),
+                    ],
+                    "selected_literals": [
+                        {
+                            "schema_version": "literal_resolver_result_v1",
+                            "raw_literal": "Gold",
+                            "resolved": True,
+                            "resolved_value": "Gold",
+                            "normalized_value": "Gold",
+                            "match_type": "exact",
+                            "confidence": 1.0,
+                            "expected_vertex": "Service",
+                            "expected_edge": None,
+                            "expected_property": "quality_of_service",
+                            "evidence": [
+                                {"source": "property.valid_values", "matched": "Gold", "target": "Gold"}
+                            ],
+                            "alternatives": [],
+                            "requires_user_choice": False,
+                            "value_index_miss": False,
+                            "error_code": None,
+                        }
+                    ],
+                    "filters": [
+                        {
+                            "owner": "Service",
+                            "property": "quality_of_service",
+                            "operator": "=",
+                            "raw_literal": "Gold",
+                        }
+                    ],
+                    "projection": [{"semantic_type": "vertex", "name": "Tunnel"}],
+                    "coverage": {
+                        "substantive_terms": {
+                            "total": 4,
+                            "covered": 4,
+                            "uncovered": [],
+                        },
+                        "stopword_terms": {"ignored": []},
+                        "modality_terms": {"warning_only": []},
+                        "time_terms": {"covered": [], "unresolved": []},
+                        "unparsed_terms": {"unresolved": []},
+                    },
+                    "unsupported": None,
+                    "confidence": 0.93,
+                },
+            ]
+
+        def generate_structured(
+            self,
+            *,
+            prompt: str,
+            schema_name: str,
+            schema: dict[str, Any],
+            attempt: int,
+        ) -> dict[str, Any]:
+            self.calls.append(
+                {
+                    "prompt": prompt,
+                    "schema_name": schema_name,
+                    "schema": schema,
+                    "attempt": attempt,
+                }
+            )
+            return self.responses.pop(0)
+
+    fake_client = FakeStructuredClient()
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_ENABLED", "true")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_API_KEY", "test-key")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_MODEL", "qwen3-32b")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        pipeline_module,
+        "_structured_llm_client_from_settings",
+        lambda settings: fake_client,
+    )
+
+    try:
+        output = run_pipeline(
+            question="Gold 服务使用了哪些隧道",
+            qa_id="real-llm-mode",
+            generation_run_id="run-real-llm-mode",
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert output.status == "generated"
+    assert len(fake_client.calls) == 2
+    assert [call["schema_name"] for call in fake_client.calls] == [
+        "question_decomposition_v1",
+        "grounded_understanding_v1",
+    ]
+    assert output.trace["semantic_model"]["name"] == "network_schema_v10"
+    assert _compiler_parameters(output.trace)["quality_of_service"] == "Gold"
 
 
 def test_tunnel_path_question_generates_named_path_pattern_cypher() -> None:
