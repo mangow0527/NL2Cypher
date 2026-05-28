@@ -153,6 +153,40 @@ def test_projection_vertex_shorthand_is_normalized_to_semantic_reference(
     assert plan.projection == [{"semantic_type": "vertex", "name": "Tunnel"}]
 
 
+def test_lookup_with_two_vertices_infers_unambiguous_connecting_edge(
+    binder: SemanticBinder,
+) -> None:
+    plan = binder.bind(
+        {
+            "query_shape": "lookup",
+            "selected_vertices": ["Service", "Tunnel"],
+            "selected_properties": ["Service.quality_of_service"],
+            "projection": [{"vertex": "Tunnel"}],
+        },
+        candidates=[
+            _candidate("vertex", "Service"),
+            _candidate("vertex", "Tunnel"),
+            _candidate(
+                "property",
+                "Service.quality_of_service",
+                owner="Service",
+                semantic_name="quality_of_service",
+            ),
+        ],
+    )
+
+    assert plan.query_shape == "single_hop_traversal"
+    assert [binding.name for binding in plan.edge_bindings] == ["SERVICE_USES_TUNNEL"]
+    assert plan.edge_bindings[0].candidate.match_type == "semantic_inference"
+    assert plan.assumptions[-1] == {
+        "type": "inferred_edge_binding",
+        "edge": "SERVICE_USES_TUNNEL",
+        "from_vertex": "Service",
+        "to_vertex": "Tunnel",
+        "direction": "forward",
+    }
+
+
 def test_edge_direction_mapping_is_preserved_for_validator_and_dsl_builder(
     binder: SemanticBinder,
 ) -> None:

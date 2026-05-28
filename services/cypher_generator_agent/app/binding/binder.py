@@ -113,6 +113,19 @@ class SemanticBinder:
         metric_bindings = self._bind_metrics(grounded_understanding, candidate_index)
         path_pattern_bindings = self._bind_path_patterns(grounded_understanding, candidate_index)
         query_shape = _normalize_query_shape(grounded_understanding.get("query_shape"))
+        if not edge_bindings and query_shape in {"vertex_lookup", "single_hop_traversal"}:
+            inferred_edge = self._infer_unambiguous_connecting_edge(vertex_bindings, candidate_index)
+            if inferred_edge is not None:
+                edge_bindings = _append_unique_edge(edge_bindings, inferred_edge)
+                assumptions.append(
+                    {
+                        "type": "inferred_edge_binding",
+                        "edge": inferred_edge.name,
+                        "from_vertex": self.registry.get_edge(inferred_edge.name).from_vertex,
+                        "to_vertex": self.registry.get_edge(inferred_edge.name).to_vertex,
+                        "direction": inferred_edge.direction,
+                    }
+                )
         if query_shape == "vertex_lookup" and edge_bindings and len(vertex_bindings) >= 2:
             query_shape = "single_hop_traversal"
         if query_shape == "metric_aggregate" and not metric_bindings and measures:
@@ -428,6 +441,36 @@ class SemanticBinder:
                 )
         return assumptions
 
+    def _infer_unambiguous_connecting_edge(
+        self,
+        vertex_bindings: list[VertexBinding],
+        candidate_index: "_CandidateIndex",
+    ) -> EdgeBinding | None:
+        if len(vertex_bindings) < 2:
+            return None
+
+        vertex_names = [binding.name for binding in vertex_bindings]
+        matches: list[EdgeBinding] = []
+        for left_index, left in enumerate(vertex_names):
+            for right in vertex_names[left_index + 1 :]:
+                for edge in self.registry.model.edges:
+                    direction: str | None = None
+                    if edge.from_vertex == left and edge.to_vertex == right:
+                        direction = "forward"
+                    elif edge.from_vertex == right and edge.to_vertex == left:
+                        direction = "backward"
+                    if direction is None:
+                        continue
+                    candidate = candidate_index.get("edge", edge.name) or _inferred_edge_candidate(edge)
+                    matches.append(
+                        EdgeBinding(
+                            name=edge.name,
+                            candidate=candidate,
+                            direction=direction,
+                        )
+                    )
+        return matches[0] if len(matches) == 1 else None
+
     def _require_registry(self, object_type: str, name: str, lookup: Any) -> None:
         try:
             lookup(name)
@@ -528,6 +571,9 @@ class _CandidateIndex:
                 f"cannot bind {semantic_type} {semantic_id}: not present in candidate set"
             ) from exc
 
+    def get(self, semantic_type: str, semantic_id: str) -> CandidateBinding | None:
+        return self._by_key.get((semantic_type, semantic_id))
+
 
 def _coerce_candidates(
     candidates: CandidateRetrievalResult | Sequence[SemanticCandidate] | Mapping[str, Any],
@@ -552,6 +598,28 @@ def _candidate_binding(candidate: SemanticCandidate) -> CandidateBinding:
         owner=candidate.owner,
         evidence=[evidence.model_dump() for evidence in candidate.evidence],
         metadata=candidate.metadata,
+    )
+
+
+def _inferred_edge_candidate(edge: Any) -> CandidateBinding:
+    return CandidateBinding(
+        semantic_type="edge",
+        semantic_id=edge.name,
+        semantic_name=edge.name,
+        score=1.0,
+        match_type="semantic_inference",
+        owner=None,
+        evidence=[
+            {
+                "term": f"{edge.from_vertex}->{edge.to_vertex}",
+                "source": "semantic_model.edge_connects",
+                "matched_text": edge.name,
+            }
+        ],
+        metadata={
+            "from_vertex": edge.from_vertex,
+            "to_vertex": edge.to_vertex,
+        },
     )
 
 
