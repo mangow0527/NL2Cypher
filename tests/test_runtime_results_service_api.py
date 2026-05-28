@@ -94,7 +94,7 @@ def test_runtime_results_detail_script_puts_cypher_comparison_in_overview():
     assert "vertices" in script
     assert "点类型数量" in script
     assert "schema_version" in script
-    assert "本阶段输出遵循的结构化结果版本" in script
+    assert "问题拆解结果的结构版本" in script
     assert "original_question" in script
     assert "进入问题拆解阶段的原始用户问题" in script
     assert "output_shape" in script
@@ -104,13 +104,21 @@ def test_runtime_results_detail_script_puts_cypher_comparison_in_overview():
     assert "stripLlmCallsFromPayload" in script
     assert "renderStageLlmCalls" in script
     assert "本阶段 LLM 调用" in script
+    assert "阶段输入" not in script
     assert "const stageOutput = stripLlmCallsFromPayload(stage.output)" in script
+    assert "codeBlock(stageInput)" not in script
     assert "codeBlock(stageOutput)" in script
     assert "codeBlock(stage.output)" not in script
     assert "filter_phrases" not in script
     assert "从问题中抽取出的过滤条件短语" not in script
     assert "result_type" in script
     assert "拆解结果类型" in script
+    assert "literal_candidate_objects" in script
+    assert "保留 literal_candidates 的结构化对象列表" in script
+    assert "literal_requests" in script
+    assert "由工程代码生成的字面值解析请求" in script
+    assert "coverage" in script
+    assert "覆盖率报告，记录 substantive_terms 中哪些词已覆盖、哪些仍缺失" in script
     assert "relation_phrases" in script
     assert "表示两个业务对象如何连接的关系短语" in script
     assert "例如“服务使用隧道”中的“使用”" in script

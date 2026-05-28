@@ -19,6 +19,29 @@ const cgaStageTitles = {
   output: '服务输出',
 };
 
+const questionDecompositionFieldHints = {
+  schema_version: '问题拆解结果的结构版本，当前应为 question_decomposition_v1。',
+  result_type: '拆解结果类型。decomposition 表示已完成结构化拆解，clarification_required 表示问题缺少明确指代、需要先反问用户。',
+  intent_type: '问题意图类型，例如 lookup、list、count、aggregate、top_n、path、compare 或 unknown。',
+  original_question: '进入问题拆解阶段的原始用户问题，用来和拆解结果对照。',
+  target_concepts: '检索角色轴字段：从 substantive_terms 里抽出的名词性业务对象或概念，例如服务、隧道、时延、端口。',
+  literal_candidates: '检索角色轴字段：用户问题中用来限定某个概念的具体值。新 schema 中每项包含 text、kind_hint、attached_to。',
+  relation_phrases: '检索角色轴字段：表示两个业务对象如何连接的关系短语。例如“服务使用隧道”中的“使用”，会帮助系统匹配 SERVICE_USES_TUNNEL 这类边。',
+  relation_mentions: '兼容旧 trace 的关系短语字段，含义等同于 relation_phrases。',
+  relationships_mentioned: '兼容旧 trace 的关系短语字段，含义等同于 relation_phrases。',
+  literal_candidate_objects: '保留 literal_candidates 的结构化对象列表，供后续字面值解析读取 text、kind_hint、attached_to。',
+  literal_requests: '由工程代码生成的字面值解析请求，明确 raw_literal 应该绑定到哪个 vertex/edge 的哪个 property。',
+  substantive_terms: '覆盖分类轴字段：驱动查询语义的实质词，包括实体、关系、状态、属性、动作、聚合词、排序词和数量词。',
+  stopword_terms: '覆盖分类轴字段：礼貌语、连接词、助词或查询引导词，例如“查询”“帮我”“及其”“的”。',
+  modality_terms: '覆盖分类轴字段：表达近似、不确定或软约束的词，例如“大概”“应该”“可能”。',
+  time_terms: '覆盖分类轴字段：时间或时间范围表达，例如“最近”“2024 年”“过去 7 天”。',
+  unparsed_terms: '覆盖分类轴字段：无法可靠分类但可能影响语义的残留词；如果非空，通常意味着需要澄清或生成失败。',
+  output_shape: '回答结果的形态，例如 rows 表示多行结果、scalar 表示单个值、grouped_rows 表示分组统计结果。',
+  coverage: '覆盖率报告，记录 substantive_terms 中哪些词已覆盖、哪些仍缺失，是后续是否澄清或失败的重要依据。',
+  filters: '后续阶段可能补充的过滤条件结构；Question Decomposer 本身不再输出旧的过滤短语字段。',
+  mock_intent: '本地 mock 流程使用的测试意图标记，真实 LLM 流程通常不依赖它。',
+};
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -221,22 +244,7 @@ const stageFieldHints = {
     },
     output: {
       _summary: '这里展示 LLM 对问题的结构化拆解结果。',
-      schema_version: '本阶段输出遵循的结构化结果版本，当前应为 question_decomposition_v1。',
-      result_type: '拆解结果类型。decomposition 表示已完成结构化拆解，clarification_required 表示问题缺少明确指代、需要先反问用户。',
-      intent_type: '问题意图类型，例如查询列表、统计、Top-N 或路径查询。',
-      original_question: '进入问题拆解阶段的原始用户问题，用来和拆解结果对照。',
-      target_concepts: '检索角色轴字段：从 substantive_terms 里抽出的名词性业务对象或概念，例如服务、隧道、时延、端口。',
-      literal_candidates: '检索角色轴字段：用来限定某个概念的具体值，每项包含 text、kind_hint、attached_to。例如 Gold 修饰服务。',
-      relation_phrases: '检索角色轴字段：表示两个业务对象如何连接的关系短语。例如“服务使用隧道”中的“使用”，会帮助系统匹配 SERVICE_USES_TUNNEL 这类边。',
-      relation_mentions: '表示两个业务对象如何连接的关系短语。例如“隧道穿过网元”中的“穿过”，会帮助系统匹配 PATH_THROUGH 这类边。',
-      relationships_mentioned: '表示两个业务对象如何连接的关系短语。例如“服务使用隧道”中的“使用”，会帮助系统匹配 SERVICE_USES_TUNNEL 这类边。',
-      substantive_terms: '覆盖分类轴字段：驱动查询语义的实质词，包括实体、关系、状态、属性、动作、聚合词、排序词和数量词。',
-      stopword_terms: '覆盖分类轴字段：礼貌语、连接词、助词或查询引导词，例如“查询”“帮我”“及其”“的”。',
-      modality_terms: '覆盖分类轴字段：表达近似、不确定或软约束的词，例如“大概”“应该”“可能”。',
-      time_terms: '覆盖分类轴字段：时间或时间范围表达，例如“最近”“2024 年”“过去 7 天”。',
-      unparsed_terms: '覆盖分类轴字段：无法可靠分类但可能影响语义的残留词；如果非空，通常意味着需要澄清或生成失败。',
-      filters: '问题中表达的过滤条件。',
-      output_shape: '回答结果的形态，例如 rows 表示多行结果、scalar 表示单个值、grouped_rows 表示分组统计结果。',
+      ...questionDecompositionFieldHints,
     },
   },
   candidate_retrieval: {
@@ -705,7 +713,6 @@ function renderCgaFlowStages(flow = {}) {
     ${renderTraceTable(table)}
     ${stages
       .map((stage) => {
-        const stageInput = stripLlmCallsFromPayload(stage.input);
         const stageOutput = stripLlmCallsFromPayload(stage.output);
         const stageMetrics = stripLlmCallsFromPayload(stage.metrics);
         return `
@@ -714,9 +721,6 @@ function renderCgaFlowStages(flow = {}) {
               <span>${escapeHtml(stage.title_zh || cgaStageTitles[stage.key] || stage.key || '未命名阶段')}</span>
               <span class="status-pill tone-${tone(stage.status)}">${escapeHtml(stage.status || 'unknown')}</span>
             </summary>
-            <h3>阶段输入</h3>
-            ${renderStageSectionHelp(stage, 'input', stageInput)}
-            ${codeBlock(stageInput)}
             <h3>阶段输出</h3>
             ${renderStageSectionHelp(stage, 'output', stageOutput)}
             ${codeBlock(stageOutput)}
