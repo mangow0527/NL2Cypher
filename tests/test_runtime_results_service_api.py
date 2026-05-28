@@ -93,6 +93,18 @@ def test_runtime_results_detail_script_puts_cypher_comparison_in_overview():
     assert "模型内容校验值" in script
     assert "vertices" in script
     assert "点类型数量" in script
+    assert "filter_phrases" in script
+    assert "从问题中抽取出的过滤条件短语" in script
+    assert "substantive_terms" in script
+    assert "对查询语义有实际影响的词" in script
+    assert "stopword_terms" in script
+    assert "礼貌用语、连接词或语气词" in script
+    assert "modality_terms" in script
+    assert "表达不确定、推测或要求程度的词" in script
+    assert "time_terms" in script
+    assert "时间或时间范围表达" in script
+    assert "unparsed_terms" in script
+    assert "未被前面类别吸收的残留实质词" in script
     assert "关键指标" not in script
     assert "metrics_summary: inlineValue(stage.metrics)" not in script
     assert "renderOntologyLayerPrompts" not in script
