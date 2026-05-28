@@ -94,6 +94,15 @@ def test_runtime_results_detail_script_puts_cypher_comparison_in_overview():
     assert "生成链路摘要" not in script
     assert "澄清反问" in script
     assert "澄清选项" in script
+    assert "未解析项" in script
+    assert "校验错误" in script
+    assert "系统决策" in script
+    assert "触发原因" in script
+    assert "触发阶段" in script
+    assert "回答方式" in script
+    assert "metricCard('原因代码'" not in script
+    assert "metricCard('来源层级'" not in script
+    assert "metricCard('回答类型'" not in script
     assert "no_option_reason" in script
     assert "发给大模型的完整提示词" not in script
     assert "大模型原始输出" not in script
@@ -1518,6 +1527,160 @@ def test_runtime_results_generator_section_parses_cga_graph_trace_v1(monkeypatch
     assert flow["artifacts"]["self_validation"]["valid"] is True
     assert flow["artifacts"]["user_visible_notices"] == ["我把 Gold 理解为 Service.quality_of_service=Gold。"]
     assert "chain_summary" not in flow
+
+
+def test_runtime_results_graph_clarification_uses_repair_and_literal_trace(monkeypatch, tmp_path: Path):
+    testing_dir = tmp_path / "testing"
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(testing_dir))
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_REPAIR_DATA_DIR", str(tmp_path / "repair"))
+    trace_snapshot = {
+        "trace_schema_version": "cga_graph_trace_v1",
+        "trace_id": "run-graph-clarify",
+        "question_id": "qa_graph_clarify",
+        "generation_run_id": "run-graph-clarify",
+        "source_question": "查询所有服务使用的隧道的名称、ID及详细信息。",
+        "started_at": "2026-05-28T00:00:00+00:00",
+        "finished_at": "2026-05-28T00:00:01+00:00",
+        "final_status": "clarification_required",
+        "semantic_model": {"name": "network_schema_v10", "checksum": "sha256:test"},
+        "stages": [
+            _graph_stage("graph_model_loader", output={"model_name": "network_schema_v10"}),
+            _graph_stage("question_decomposer", output={"literal_candidates": ["名称", "ID", "详细信息"]}),
+            _graph_stage(
+                "literal_resolver",
+                output=[
+                    {
+                        "raw_literal": "名称",
+                        "expected": "Tunnel.elem_type",
+                        "resolved": False,
+                        "error_code": "literal_value_index_miss",
+                        "value_index_miss": True,
+                        "alternatives": [],
+                    },
+                    {
+                        "raw_literal": "ID",
+                        "expected": "Tunnel.elem_type",
+                        "resolved": False,
+                        "error_code": "literal_value_index_miss",
+                        "value_index_miss": True,
+                    },
+                ],
+            ),
+            _graph_stage("semantic_validator", output={"is_valid": False}),
+            _graph_stage(
+                "repair_controller",
+                input_payload={
+                    "validator_errors": [
+                        {
+                            "code": "literal_unresolved",
+                            "message": "literal '名称' could not be resolved for Tunnel.elem_type",
+                            "action": "ask_user",
+                            "details": {
+                                "literal": "名称",
+                                "property": "Tunnel.elem_type",
+                                "alternatives": [],
+                            },
+                        },
+                        {
+                            "code": "literal_unresolved",
+                            "message": "literal 'ID' could not be resolved for Tunnel.elem_type",
+                            "action": "ask_user",
+                            "details": {
+                                "literal": "ID",
+                                "property": "Tunnel.elem_type",
+                                "alternatives": [],
+                            },
+                        },
+                    ]
+                },
+                output={
+                    "decision": "ask_user",
+                    "reason_code": "literal_unresolved",
+                    "clarification": {
+                        "source_stage": "semantic_validator",
+                        "reason_code": "literal_unresolved",
+                        "question": "我没有确定“名称”对应的值，请选择或补充。",
+                        "expected_answer_type": "free_text",
+                        "options": [],
+                    },
+                },
+            ),
+            _graph_stage("output", output={"status": "clarification_required"}),
+        ],
+        "final_outputs": {
+            "dsl": None,
+            "cypher": None,
+            "clarification": {"question": "我没有确定“名称”对应的值，请选择或补充。"},
+            "failure": None,
+            "user_visible_notices": [],
+        },
+    }
+    _write_json(testing_dir / "goldens" / "qa_graph_clarify.json", {"id": "qa_graph_clarify", "difficulty": "L3"})
+    _write_json(
+        testing_dir / "generation_failures" / "qa_graph_clarify__run-graph-clarify.json",
+        {
+            "id": "qa_graph_clarify",
+            "question": "查询所有服务使用的隧道的名称、ID及详细信息。",
+            "generation_run_id": "run-graph-clarify",
+            "generation_status": "clarification_required",
+            "input_prompt_snapshot": json.dumps(trace_snapshot, ensure_ascii=False),
+            "clarification": {"question": "我没有确定“名称”对应的值，请选择或补充。"},
+            "gate_passed": False,
+            "received_at": "2026-05-28T00:00:01+00:00",
+        },
+    )
+
+    from console.runtime_console.app.main import create_app
+
+    client = TestClient(create_app())
+    response = client.get("/api/v1/tasks/qa_graph_clarify")
+
+    assert response.status_code == 200
+    generator = response.json()["pipeline"]["cypher_generator_agent"]
+    clarification = generator["clarification"]
+    assert clarification["question_zh"] == "我没有确定“名称”对应的值，请选择或补充。"
+    assert clarification["decision"] == "ask_user"
+    assert clarification["reason_code"] == "literal_unresolved"
+    assert clarification["source_stage"] == "semantic_validator"
+    assert clarification["source_stage_label_zh"] == "语义正确性校验"
+    assert clarification["expected_answer_type"] == "free_text"
+    assert clarification["no_option_reason"] == "当前澄清需要用户补充文本，不是固定选项选择。"
+    assert clarification["unresolved_items"] == [
+        {
+            "term": "名称",
+            "expected": "Tunnel.elem_type",
+            "code": "literal_value_index_miss",
+            "alternatives": [],
+            "value_index_miss": True,
+        },
+        {
+            "term": "ID",
+            "expected": "Tunnel.elem_type",
+            "code": "literal_value_index_miss",
+            "alternatives": [],
+            "value_index_miss": True,
+        },
+    ]
+    assert clarification["validation_errors"] == [
+        {
+            "code": "literal_unresolved",
+            "message": "literal '名称' could not be resolved for Tunnel.elem_type",
+            "action": "ask_user",
+            "literal": "名称",
+            "property": "Tunnel.elem_type",
+            "alternatives": [],
+        },
+        {
+            "code": "literal_unresolved",
+            "message": "literal 'ID' could not be resolved for Tunnel.elem_type",
+            "action": "ask_user",
+            "literal": "ID",
+            "property": "Tunnel.elem_type",
+            "alternatives": [],
+        },
+    ]
+    assert generator["cga_flow"]["artifacts"]["clarification"] == clarification
+    assert response.json()["summary"]["clarification"]["unresolved_items"][0]["term"] == "名称"
 
 
 def _llm_trace_call(

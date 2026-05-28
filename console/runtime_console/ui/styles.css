@@ -571,6 +571,31 @@ tbody tr.is-selected {
   background: rgba(237, 197, 138, 0.16);
 }
 
+.clarification-list {
+  display: grid;
+  gap: 10px;
+  margin: 10px 0 16px;
+}
+
+.clarification-item {
+  display: grid;
+  gap: 6px;
+  border: 1px solid rgba(140, 91, 10, 0.2);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.5);
+  padding: 12px 14px;
+}
+
+.clarification-item strong {
+  word-break: break-word;
+}
+
+.clarification-item small {
+  color: var(--muted);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
 .clarification-options {
   display: flex;
   flex-wrap: wrap;

@@ -90,6 +90,13 @@ function metricCard(label, value, status = null) {
   `;
 }
 
+function optionalMetricCard(label, value, status = null) {
+  if (value === null || value === undefined || value === '' || (Array.isArray(value) && !value.length)) {
+    return '';
+  }
+  return metricCard(label, value, status);
+}
+
 function codeBlock(value) {
   return `<pre>${escapeHtml(pretty(value))}</pre>`;
 }
@@ -119,32 +126,135 @@ function inlineValue(value) {
   return String(value);
 }
 
+function humanAnswerType(value) {
+  const labels = {
+    free_text: '自由文本回答',
+    single_choice: '单选',
+    multi_choice: '多选',
+    confirmation: '确认',
+  };
+  return labels[value] || value || '';
+}
+
+function humanDecision(value) {
+  const labels = {
+    ask_user: '请求用户澄清',
+    continue_with_assumption: '带假设继续',
+    retry_llm: '回灌 LLM 修正',
+    generation_failed: '生成失败',
+    unsupported_query_shape: '不支持的查询形态',
+  };
+  return labels[value] || value || '';
+}
+
+function humanReason(value) {
+  const labels = {
+    literal_unresolved: '字面值无法解析',
+    ambiguous_binding: '语义绑定存在歧义',
+    coverage_missing: '问题中有实质词未覆盖',
+    type_mismatch: '语义类型不匹配',
+    unsupported_query_shape: '不支持的查询形态',
+  };
+  return labels[value] || value || '';
+}
+
+function compactParts(parts) {
+  return parts.filter((part) => part !== null && part !== undefined && part !== '').join(' · ');
+}
+
+function optionLabel(option) {
+  if (option && typeof option === 'object') {
+    return option.label || option.summary || option.description || option.value || option.id || JSON.stringify(option);
+  }
+  return String(option ?? '');
+}
+
+function formatAlternatives(alternatives) {
+  if (!Array.isArray(alternatives) || !alternatives.length) {
+    return '';
+  }
+  return `候选：${alternatives.map(optionLabel).filter(Boolean).join('、')}`;
+}
+
+function renderClarificationList(title, items, formatter) {
+  if (!Array.isArray(items) || !items.length) {
+    return '';
+  }
+  return `
+    <h3>${escapeHtml(title)}</h3>
+    <div class="clarification-list">
+      ${items.map((item) => formatter(item)).join('')}
+    </div>
+  `;
+}
+
+function renderClarificationItem(primary, meta, alternatives = '') {
+  return `
+    <article class="clarification-item">
+      <strong>${escapeHtml(primary || '未命名项')}</strong>
+      ${meta ? `<small>${escapeHtml(meta)}</small>` : ''}
+      ${alternatives ? `<small>${escapeHtml(alternatives)}</small>` : ''}
+    </article>
+  `;
+}
+
+function renderUnresolvedItem(item = {}) {
+  const meta = compactParts([
+    item.expected ? `期望语义：${item.expected}` : '',
+    item.code ? `原因：${item.code}` : '',
+    item.value_index_miss ? 'value-index 未命中' : '',
+  ]);
+  return renderClarificationItem(item.term || item.literal || item.raw_literal, meta, formatAlternatives(item.alternatives));
+}
+
+function renderValidationError(item = {}) {
+  const meta = compactParts([
+    item.code ? `代码：${item.code}` : '',
+    item.action ? `动作：${item.action}` : '',
+    item.literal ? `字面值：${item.literal}` : '',
+    item.property ? `期望语义：${item.property}` : '',
+  ]);
+  return renderClarificationItem(item.message || item.reason || item.code, meta, formatAlternatives(item.alternatives));
+}
+
 function renderClarificationBlock(clarification) {
   if (!clarification || typeof clarification !== 'object') {
     return '';
   }
   const options = Array.isArray(clarification.options) ? clarification.options : [];
+  const sourceStage =
+    clarification.source_stage_label_zh ||
+    cgaStageTitles[clarification.source_stage] ||
+    cgaStageTitles[clarification.source_step] ||
+    clarification.source_stage ||
+    clarification.source_step;
+  const fieldCards = [
+    optionalMetricCard('澄清问题', clarification.question_zh || clarification.question || clarification.user_message),
+    optionalMetricCard('系统决策', humanDecision(clarification.decision), clarification.decision),
+    optionalMetricCard('触发原因', humanReason(clarification.reason_code)),
+    optionalMetricCard('触发阶段', sourceStage),
+    optionalMetricCard('回答方式', humanAnswerType(clarification.expected_answer_type)),
+  ].join('');
+  const optionBlock = options.length
+    ? `
+      <h3>澄清选项</h3>
+      <div class="clarification-options">${options
+        .map((option) => `<span>${escapeHtml(optionLabel(option) || '未命名选项')}</span>`)
+        .join('')}</div>
+    `
+    : clarification.no_option_reason
+      ? `
+        <h3>澄清选项</h3>
+        <p class="empty">${escapeHtml(clarification.no_option_reason)}</p>
+      `
+      : '';
   return `
     <section class="clarification-box">
       <h3>澄清反问</h3>
-      <div class="field-grid">
-        ${metricCard('澄清问题', clarification.question_zh || clarification.question || '未记录')}
-        ${metricCard('原因代码', clarification.reason_code || '未记录')}
-        ${metricCard('来源层级', clarification.source_stage || clarification.source_step || '未记录')}
-        ${metricCard('回答类型', clarification.expected_answer_type || '未记录')}
-      </div>
-      <h3>澄清选项</h3>
-      ${
-        options.length
-          ? `<div class="clarification-options">${options
-              .map((option) => `<span>${escapeHtml(option.label || option.id || option.value || '未命名选项')}</span>`)
-              .join('')}</div>`
-          : `<p class="empty">${escapeHtml(
-              clarification.no_option_reason
-                ? `未提供固定选项：${clarification.no_option_reason}`
-                : '未提供固定选项',
-            )}</p>`
-      }
+      ${fieldCards ? `<div class="field-grid">${fieldCards}</div>` : ''}
+      ${renderClarificationList('未解析项', clarification.unresolved_items, renderUnresolvedItem)}
+      ${renderClarificationList('校验错误', clarification.validation_errors, renderValidationError)}
+      ${optionBlock}
     </section>
   `;
 }

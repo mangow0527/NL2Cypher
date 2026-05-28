@@ -584,6 +584,9 @@ class RuntimeResultsService:
     ) -> dict[str, Any]:
         record = submission or generation_failure or {}
         clarification = self._clarification_from(record, generation_failure)
+        snapshot = self._decode_generation_snapshot(record.get("input_prompt_snapshot") or "")
+        if self._is_cga_graph_trace(snapshot):
+            clarification = self._graph_clarification_from_flow(self._graph_generation_flow(snapshot), clarification)
         return {
             "id": id,
             "question": record.get("question", ""),
@@ -693,6 +696,9 @@ class RuntimeResultsService:
         failure_reason = source.get("failure_reason") or (generation_failure or {}).get("failure_reason")
         if self._is_cga_graph_trace(snapshot):
             cga_flow = self._graph_generation_flow(snapshot)
+            clarification = self._graph_clarification_from_flow(cga_flow, clarification)
+            if clarification is not None:
+                cga_flow["artifacts"]["clarification"] = clarification
             return {
                 "question": source.get("question", "") or snapshot.get("source_question", ""),
                 "difficulty": (golden or {}).get("difficulty"),
@@ -904,6 +910,168 @@ class RuntimeResultsService:
             if stage.get("stage") == stage_name:
                 return self._trace_ref_value(stage.get("output_ref"))
         return None
+
+    def _graph_clarification_from_flow(
+        self,
+        flow: dict[str, Any],
+        base: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        result: dict[str, Any] = {}
+        artifacts = self._trace_object(flow.get("artifacts"))
+        artifact_clarification = self._trace_object(artifacts.get("clarification"))
+        if artifact_clarification:
+            result.update(artifact_clarification)
+        if isinstance(base, dict):
+            result.update(base)
+
+        stage_by_key = {str(stage.get("key") or ""): stage for stage in self._trace_dicts(flow.get("stages"))}
+        repair_stage = stage_by_key.get("repair_controller") or {}
+        repair_input = self._trace_object(repair_stage.get("input"))
+        repair_output = self._trace_object(repair_stage.get("output"))
+        repair_clarification = self._trace_object(repair_output.get("clarification"))
+        for key, value in repair_clarification.items():
+            if value not in (None, "", [], {}):
+                result.setdefault(key, value)
+        for key in ("reason_code", "expected_answer_type", "source_stage", "source_step"):
+            value = repair_output.get(key)
+            if value not in (None, "", [], {}):
+                result.setdefault(key, value)
+        decision = repair_output.get("decision")
+        if isinstance(decision, dict):
+            decision_label = self._first_text(decision, "decision", "action", "kind", "status")
+        elif decision not in (None, ""):
+            decision_label = str(decision)
+        else:
+            decision_label = ""
+        if decision_label:
+            result.setdefault("decision", decision_label)
+
+        validation_errors = self._graph_validation_errors(repair_input, repair_output)
+        unresolved_items = self._graph_unresolved_items(stage_by_key, validation_errors)
+        if validation_errors:
+            result["validation_errors"] = validation_errors
+        if unresolved_items:
+            result["unresolved_items"] = unresolved_items
+
+        if not result:
+            return None
+        normalized = self._normalize_clarification(result)
+        if not normalized:
+            return None
+        source_stage = self._first_text(normalized, "source_stage", "source_step")
+        if source_stage:
+            normalized["source_stage_label_zh"] = self._CGA_GRAPH_STAGE_TITLES.get(source_stage, source_stage)
+        if not normalized.get("options") and normalized.get("expected_answer_type") == "free_text":
+            normalized.setdefault("no_option_reason", "当前澄清需要用户补充文本，不是固定选项选择。")
+        return normalized
+
+    def _graph_validation_errors(self, repair_input: dict[str, Any], repair_output: dict[str, Any]) -> list[dict[str, Any]]:
+        raw_errors = repair_input.get("validator_errors")
+        if not isinstance(raw_errors, list):
+            raw_errors = repair_output.get("validator_errors")
+        errors: list[dict[str, Any]] = []
+        for error in self._trace_dicts(raw_errors):
+            details = error.get("details")
+            detail_items = self._trace_dicts(details) if isinstance(details, list) else [details] if isinstance(details, dict) else [{}]
+            for detail in detail_items:
+                normalized = {
+                    "code": error.get("code") or detail.get("code"),
+                    "message": error.get("message") or detail.get("message"),
+                    "action": error.get("action") or detail.get("action"),
+                    "literal": detail.get("literal") or error.get("literal") or detail.get("raw_literal"),
+                    "property": self._graph_expected_label(detail) or self._graph_expected_label(error),
+                    "alternatives": self._graph_alternatives(detail.get("alternatives") or error.get("alternatives")),
+                }
+                errors.append({key: value for key, value in normalized.items() if value not in (None, "", {})})
+        return errors
+
+    def _graph_unresolved_items(
+        self,
+        stage_by_key: dict[str, dict[str, Any]],
+        validation_errors: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        unresolved: list[dict[str, Any]] = []
+        literal_stage = stage_by_key.get("literal_resolver") or {}
+        literal_output = literal_stage.get("output")
+        if isinstance(literal_output, dict):
+            raw_items = (
+                literal_output.get("items")
+                or literal_output.get("results")
+                or literal_output.get("resolved_literals")
+                or literal_output.get("unresolved_literals")
+                or []
+            )
+        else:
+            raw_items = literal_output if isinstance(literal_output, list) else []
+        for item in self._trace_dicts(raw_items):
+            is_unresolved = item.get("resolved") is False or bool(item.get("error_code")) or bool(item.get("value_index_miss"))
+            if not is_unresolved:
+                continue
+            unresolved.append(
+                {
+                    "term": self._graph_term_label(item),
+                    "expected": self._graph_expected_label(item),
+                    "code": item.get("error_code") or item.get("code"),
+                    "alternatives": self._graph_alternatives(item.get("alternatives")),
+                    "value_index_miss": bool(item.get("value_index_miss")),
+                }
+            )
+        for error in validation_errors:
+            if not (error.get("literal") or error.get("property")):
+                continue
+            unresolved.append(
+                {
+                    "term": error.get("literal"),
+                    "expected": error.get("property"),
+                    "code": error.get("code"),
+                    "alternatives": self._graph_alternatives(error.get("alternatives")),
+                    "value_index_miss": False,
+                }
+            )
+        return self._dedupe_graph_unresolved_items(unresolved)
+
+    def _dedupe_graph_unresolved_items(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for item in items:
+            clean_item = {key: value for key, value in item.items() if value not in (None, "", {})}
+            term = str(clean_item.get("term") or "")
+            expected = str(clean_item.get("expected") or "")
+            if not term and not expected:
+                continue
+            key = (term, expected)
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(clean_item)
+        return result
+
+    def _graph_term_label(self, item: dict[str, Any]) -> str:
+        return self._first_text(item, "raw_literal", "literal", "term", "raw", "value")
+
+    def _graph_expected_label(self, item: dict[str, Any]) -> str:
+        direct = self._first_text(
+            item,
+            "expected",
+            "expected_field",
+            "field",
+            "property",
+            "semantic_id",
+            "target",
+        )
+        if direct:
+            return direct
+        property_value = item.get("property")
+        if isinstance(property_value, dict):
+            owner = self._first_text(property_value, "owner", "dataset", "vertex", "node")
+            name = self._first_text(property_value, "name", "property", "field")
+            return ".".join(part for part in (owner, name) if part)
+        owner = self._first_text(item, "expected_owner", "owner", "dataset", "vertex")
+        name = self._first_text(item, "expected_property", "property_name", "name")
+        return ".".join(part for part in (owner, name) if part)
+
+    def _graph_alternatives(self, value: Any) -> list[Any]:
+        return value if isinstance(value, list) else []
 
     def _graph_generation_llm_prompts(self, llm_calls: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         prompts: dict[str, dict[str, Any]] = {}
