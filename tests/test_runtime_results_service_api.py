@@ -100,7 +100,13 @@ def test_runtime_results_detail_script_puts_cypher_comparison_in_overview():
     assert "output_shape" in script
     assert "回答结果的形态" in script
     assert "llm_calls" in script
-    assert "问题拆解阶段的 LLM 调用明细" in script
+    assert "问题拆解阶段的 LLM 调用明细" not in script
+    assert "stripLlmCallsFromPayload" in script
+    assert "renderStageLlmCalls" in script
+    assert "本阶段 LLM 调用" in script
+    assert "const stageOutput = stripLlmCallsFromPayload(stage.output)" in script
+    assert "codeBlock(stageOutput)" in script
+    assert "codeBlock(stage.output)" not in script
     assert "filter_phrases" in script
     assert "从问题中抽取出的过滤条件短语" in script
     assert "relation_phrases" in script

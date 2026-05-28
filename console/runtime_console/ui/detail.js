@@ -237,7 +237,6 @@ const stageFieldHints = {
       unparsed_terms: '未被前面类别吸收的残留实质词；如果非空，通常意味着需要澄清或生成失败。',
       filters: '问题中表达的过滤条件。',
       output_shape: '回答结果的形态，例如 rows 表示多行结果、scalar 表示单个值、grouped_rows 表示分组统计结果。',
-      llm_calls: '问题拆解阶段的 LLM 调用明细，包含提示词、原始返回、解析后的 JSON 和调用状态。',
     },
   },
   candidate_retrieval: {
@@ -359,6 +358,65 @@ function payloadFieldKeys(payload) {
     return [];
   }
   return Object.keys(payload).filter((key) => key !== '_summary');
+}
+
+const llmCallFieldKeys = new Set([
+  'llm_calls',
+  'llm_call',
+  'llm_attempts',
+  'llm_primary_attempts',
+  'llm_secondary_attempts',
+  'llm_disambiguation_attempts',
+]);
+
+function stripLlmCallsFromPayload(payload) {
+  if (Array.isArray(payload)) {
+    return payload.map((item) => stripLlmCallsFromPayload(item));
+  }
+  if (!payload || typeof payload !== 'object') {
+    return payload;
+  }
+  return Object.fromEntries(
+    Object.entries(payload)
+      .filter(([key]) => !llmCallFieldKeys.has(key))
+      .map(([key, value]) => [key, stripLlmCallsFromPayload(value)]),
+  );
+}
+
+function looksLikeLlmCall(value) {
+  return Boolean(
+    value &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      (value.prompt || value.prompt_markdown || value.rendered_prompt || value.raw_output || value.raw_response || value.raw_text),
+  );
+}
+
+function llmCallsFromValue(value) {
+  if (!value) {
+    return [];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => (looksLikeLlmCall(item) ? [item] : llmCallsFromPayload(item)));
+  }
+  if (!value || typeof value !== 'object') {
+    return [];
+  }
+  if (looksLikeLlmCall(value)) {
+    return [value];
+  }
+  return llmCallsFromPayload(value);
+}
+
+function llmCallsFromPayload(payload) {
+  if (!payload || typeof payload !== 'object') {
+    return [];
+  }
+  const calls = [];
+  for (const [key, value] of Object.entries(payload)) {
+    calls.push(...llmCallsFromValue(value));
+  }
+  return calls;
 }
 
 function renderStageSectionHelp(stage, section, payload) {
@@ -646,31 +704,89 @@ function renderCgaFlowStages(flow = {}) {
   return `
     ${renderTraceTable(table)}
     ${stages
-      .map(
-        (stage) => `
+      .map((stage) => {
+        const stageInput = stripLlmCallsFromPayload(stage.input);
+        const stageOutput = stripLlmCallsFromPayload(stage.output);
+        const stageMetrics = stripLlmCallsFromPayload(stage.metrics);
+        return `
           <details class="trace-substep">
             <summary>
               <span>${escapeHtml(stage.title_zh || cgaStageTitles[stage.key] || stage.key || '未命名阶段')}</span>
               <span class="status-pill tone-${tone(stage.status)}">${escapeHtml(stage.status || 'unknown')}</span>
             </summary>
             <h3>阶段输入</h3>
-            ${renderStageSectionHelp(stage, 'input', stage.input)}
-            ${codeBlock(stage.input)}
+            ${renderStageSectionHelp(stage, 'input', stageInput)}
+            ${codeBlock(stageInput)}
             <h3>阶段输出</h3>
-            ${renderStageSectionHelp(stage, 'output', stage.output)}
-            ${codeBlock(stage.output)}
+            ${renderStageSectionHelp(stage, 'output', stageOutput)}
+            ${codeBlock(stageOutput)}
+            ${renderStageLlmCalls(stage)}
             <h3>阶段指标 / 错误 / 警告</h3>
-            ${renderStageSectionHelp(stage, 'metrics', { metrics: stage.metrics, errors: stage.errors, warnings: stage.warnings })}
-            ${codeBlock({ metrics: stage.metrics, errors: stage.errors, warnings: stage.warnings })}
+            ${renderStageSectionHelp(stage, 'metrics', { metrics: stageMetrics, errors: stage.errors, warnings: stage.warnings })}
+            ${codeBlock({ metrics: stageMetrics, errors: stage.errors, warnings: stage.warnings })}
           </details>
-        `,
-      )
+        `;
+      })
       .join('')}
+  `;
+}
+
+function renderLlmCallCard(call, index, fallbackTitle = 'LLM 调用') {
+  const stageTitle = call.stage_title_zh || cgaStageTitles[call.stage] || call.stage || `${fallbackTitle} ${index + 1}`;
+  const prompt = call.prompt || call.prompt_markdown || call.rendered_prompt || '未记录';
+  const rawOutput = call.raw_output || call.raw_response || call.raw_text || call.output || '未记录';
+  const parsedOutput = call.parsed_output || call.payload || null;
+  const error = call.error || (call.error_type ? { type: call.error_type, message: call.message } : null);
+  return `
+    <section class="llm-call-card">
+      <div class="task-card-head">
+        <strong>${escapeHtml(stageTitle)}</strong>
+        <span class="status-pill tone-${tone(call.status || (error ? 'failed' : 'success'))}">${escapeHtml(call.status || (error ? 'failed' : 'success'))}</span>
+      </div>
+      <div class="field-grid">
+        ${metricCard('Call ID', call.call_id || `llm-${index + 1}`)}
+        ${metricCard('Schema', call.schema_name || '未记录')}
+        ${metricCard('模型', call.model || '未记录')}
+        ${metricCard('Attempt', call.attempt ?? '未记录')}
+      </div>
+      <h3>发给 LLM 的提示词</h3>
+      ${codeBlock(prompt)}
+      <h3>LLM 原始返回</h3>
+      ${codeBlock(rawOutput)}
+      <h3>解析后输出 / 错误</h3>
+      ${codeBlock({ parsed_output: parsedOutput, error })}
+    </section>
+  `;
+}
+
+function renderStageLlmCalls(stage = {}) {
+  const calls = [
+    ...llmCallsFromPayload(stage.input),
+    ...llmCallsFromPayload(stage.output),
+    ...llmCallsFromPayload(stage.metrics),
+  ];
+  if (!calls.length) {
+    return '';
+  }
+  return `
+    <section class="stage-llm-calls">
+      <h3>本阶段 LLM 调用</h3>
+      ${calls.map((call, index) => renderLlmCallCard(call, index, stage.title_zh || cgaStageTitles[stage.key] || 'LLM 调用')).join('')}
+    </section>
   `;
 }
 
 function renderCgaLlmCalls(flow = {}) {
   const calls = Array.isArray(flow.llm_calls) ? flow.llm_calls : [];
+  const stages = Array.isArray(flow.stages) ? flow.stages : [];
+  const stageCalls = stages.flatMap((stage) => [
+    ...llmCallsFromPayload(stage.input),
+    ...llmCallsFromPayload(stage.output),
+    ...llmCallsFromPayload(stage.metrics),
+  ]);
+  if (stageCalls.length) {
+    return '';
+  }
   if (!calls.length) {
     return `
       <h3>LLM 调用明细</h3>
@@ -680,28 +796,7 @@ function renderCgaLlmCalls(flow = {}) {
   return `
     <h3>LLM 调用明细</h3>
     ${calls
-      .map(
-        (call, index) => `
-          <section class="llm-call-card">
-            <div class="task-card-head">
-              <strong>${escapeHtml(call.stage_title_zh || call.stage || `LLM 调用 ${index + 1}`)}</strong>
-              <span class="status-pill tone-${tone(call.status)}">${escapeHtml(call.status || 'unknown')}</span>
-            </div>
-            <div class="field-grid">
-              ${metricCard('Call ID', call.call_id || `llm-${index + 1}`)}
-              ${metricCard('Schema', call.schema_name || '未记录')}
-              ${metricCard('模型', call.model || '未记录')}
-              ${metricCard('Attempt', call.attempt ?? '未记录')}
-            </div>
-            <h3>发给 LLM 的提示词</h3>
-            ${codeBlock(call.prompt || '未记录')}
-            <h3>LLM 原始返回</h3>
-            ${codeBlock(call.raw_output || '未记录')}
-            <h3>解析后输出 / 错误</h3>
-            ${codeBlock({ parsed_output: call.parsed_output, error: call.error })}
-          </section>
-        `,
-      )
+      .map((call, index) => renderLlmCallCard(call, index))
       .join('')}
   `;
 }
