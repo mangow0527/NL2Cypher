@@ -223,12 +223,12 @@ def test_unsupported_output_preserves_coverage_gap_without_binder_payload() -> N
     result = GroundedUnderstandingSelector(client).select(
         question_decomposition={
             "schema_version": "question_decomposition_v1",
+            "result_type": "decomposition",
             "intent_type": "compare",
             "original_question": "收入增长情况",
             "target_concepts": ["收入"],
             "relation_phrases": ["增长"],
             "literal_candidates": [],
-            "filter_phrases": [],
             "substantive_terms": ["收入", "增长"],
             "stopword_terms": [],
             "modality_terms": [],
@@ -264,6 +264,7 @@ def _valid_minimal_payload() -> dict[str, Any]:
 
 def _gold_decomposition() -> QuestionDecomposition:
     return QuestionDecomposition(
+        result_type="decomposition",
         intent_type="list",
         original_question="Gold 服务使用了哪些隧道",
         target_concepts=["服务", "隧道"],
@@ -271,7 +272,6 @@ def _gold_decomposition() -> QuestionDecomposition:
         literal_candidates=[
             {"text": "Gold", "kind_hint": "enum_or_name", "attached_to": "服务"}
         ],
-        filter_phrases=["Gold 服务"],
         substantive_terms=["Gold", "服务", "使用", "隧道"],
         stopword_terms=[],
         modality_terms=[],

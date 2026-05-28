@@ -42,12 +42,16 @@ class QuestionDecomposer:
         self._max_schema_retries = max_schema_retries
 
     def decompose(self, question: str) -> QuestionDecompositionOutcome:
-        prompt = build_question_decomposition_prompt(question)
         schema = build_question_decomposition_schema()
         provider = _provider_name(self._llm_client)
         errors: list[DecompositionAttemptError] = []
 
         for attempt in range(1, self._max_schema_retries + 2):
+            prompt = build_question_decomposition_prompt(
+                question,
+                attempt_no=attempt,
+                json_schema=schema,
+            )
             try:
                 payload = self._llm_client.generate_structured(
                     prompt=prompt,

@@ -131,7 +131,6 @@ def _extract_search_terms(decomposition: Mapping[str, Any] | object) -> list[str
         "target_concepts",
         "relation_phrases",
         "literal_candidates",
-        "filter_phrases",
         "substantive_terms",
         "semantic_terms",
         "coverage_terms",

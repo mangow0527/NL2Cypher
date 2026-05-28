@@ -161,6 +161,8 @@ def _schema_bound_prompt(
     schema: Mapping[str, Any],
     attempt: int,
 ) -> str:
+    if _prompt_already_contains_schema_contract(prompt, schema_name=schema_name):
+        return prompt
     return "\n".join(
         [
             prompt,
@@ -172,6 +174,10 @@ def _schema_bound_prompt(
             _schema_output_contract(schema_name=schema_name, schema=schema),
         ]
     )
+
+
+def _prompt_already_contains_schema_contract(prompt: str, *, schema_name: str) -> bool:
+    return schema_name in prompt and "JSON Schema:" in prompt and "返回且只返回一个 JSON 对象" in prompt
 
 
 def _schema_output_contract(*, schema_name: str, schema: Mapping[str, Any]) -> str:
@@ -188,14 +194,14 @@ def _question_decomposition_contract() -> str:
             "正常拆解时返回以下字段；没有内容的数组也返回 []，不要省略字段：",
             "{",
             '  "schema_version": "question_decomposition_v1",',
+            '  "result_type": "decomposition",',
             '  "intent_type": "lookup|list|count|aggregate|top_n|path|compare|unknown",',
             '  "original_question": "原始用户问题",',
             '  "target_concepts": ["问题中的业务对象词，例如 服务、隧道、网元"],',
             '  "relation_phrases": ["连接两个业务对象的关系短语，例如 使用、经过、连接"],',
             '  "literal_candidates": [',
-            '    {"text": "表层字面值", "kind_hint": "id|enum|name|number|unknown", "attached_to": "附着对象词"}',
+            '    {"text": "表层字面值", "kind_hint": "enum_or_name|id|number|datetime|unknown", "attached_to": "附着对象词"}',
             "  ],",
-            '  "filter_phrases": ["过滤条件短语，例如 Gold 级别、状态为 down"],',
             '  "substantive_terms": ["会影响查询语义的实质词"],',
             '  "stopword_terms": ["礼貌、连接或填充词"],',
             '  "modality_terms": ["大概、可能、应该这类软约束词"],',

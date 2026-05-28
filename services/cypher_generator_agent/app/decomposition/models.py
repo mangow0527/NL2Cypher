@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Literal, Optional, TypeAlias
+from enum import Enum
+from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
@@ -20,12 +21,20 @@ IntentType = Literal["lookup", "list", "count", "aggregate", "top_n", "path", "c
 OutputShape = Literal["rows", "scalar", "grouped_rows", "path", "unknown"]
 
 
+class LiteralKindHint(str, Enum):
+    ENUM_OR_NAME = "enum_or_name"
+    ID = "id"
+    NUMBER = "number"
+    DATETIME = "datetime"
+    UNKNOWN = "unknown"
+
+
 class LiteralCandidate(DecompositionBaseModel):
     text: str
-    kind_hint: str
+    kind_hint: LiteralKindHint
     attached_to: str
 
-    @field_validator("text", "kind_hint")
+    @field_validator("text")
     @classmethod
     def require_non_empty_text(cls, value: str) -> str:
         text = value.strip()
@@ -44,12 +53,12 @@ class LiteralCandidate(DecompositionBaseModel):
 
 class QuestionDecomposition(DecompositionBaseModel):
     schema_version: Literal["question_decomposition_v1"] = QUESTION_DECOMPOSITION_SCHEMA_VERSION
+    result_type: Literal["decomposition"]
     intent_type: IntentType
     original_question: str
     target_concepts: list[str] = Field(default_factory=list)
     relation_phrases: list[str] = Field(default_factory=list)
     literal_candidates: list[LiteralCandidate] = Field(default_factory=list)
-    filter_phrases: list[str] = Field(default_factory=list)
     substantive_terms: list[str] = Field(default_factory=list)
     stopword_terms: list[str] = Field(default_factory=list)
     modality_terms: list[str] = Field(default_factory=list)
@@ -60,7 +69,6 @@ class QuestionDecomposition(DecompositionBaseModel):
     @field_validator(
         "target_concepts",
         "relation_phrases",
-        "filter_phrases",
         "substantive_terms",
         "stopword_terms",
         "modality_terms",
@@ -127,9 +135,11 @@ class QuestionDecompositionFailure(DecompositionBaseModel):
     errors: list[DecompositionAttemptError] = Field(default_factory=list)
 
 
-QuestionDecompositionLLMResponse: TypeAlias = (
-    QuestionDecomposition | QuestionDecompositionClarificationPayload
-)
+QuestionDecompositionLLMResponse: TypeAlias = Annotated[
+    QuestionDecomposition | QuestionDecompositionClarificationPayload,
+    Field(discriminator="result_type"),
+]
+QuestionDecompositionResult: TypeAlias = QuestionDecompositionLLMResponse
 QuestionDecompositionOutcome: TypeAlias = (
     QuestionDecomposition | QuestionDecompositionClarification | QuestionDecompositionFailure
 )

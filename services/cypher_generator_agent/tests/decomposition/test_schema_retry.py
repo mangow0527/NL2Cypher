@@ -66,10 +66,13 @@ def test_schema_violation_retries_then_returns_valid_decomposition() -> None:
     result = QuestionDecomposer(client).decompose(question)
 
     assert isinstance(result, QuestionDecomposition)
+    assert result.result_type == "decomposition"
     assert result.intent_type == "compare"
     assert result.output_shape == "unknown"
     assert result.substantive_terms == ["收入", "增长", "情况"]
     assert [call["attempt"] for call in client.calls] == [1, 2]
+    assert all("两条正交的分类轴" in call["prompt"] for call in client.calls)
+    assert all("示例 2：含字面值与过滤" in call["prompt"] for call in client.calls)
 
 
 def test_schema_violation_stops_after_initial_attempt_plus_two_retries() -> None:
@@ -98,6 +101,7 @@ def test_missing_intent_or_output_shape_is_schema_invalid() -> None:
         [
             {
                 "schema_version": "question_decomposition_v1",
+                "result_type": "decomposition",
                 "original_question": "Gold 服务",
                 "substantive_terms": ["Gold", "服务"],
             }
@@ -116,18 +120,88 @@ def test_literal_candidate_requires_text_kind_hint_and_attached_to_keys() -> Non
         [
             {
                 "schema_version": "question_decomposition_v1",
+                "result_type": "decomposition",
                 "intent_type": "list",
                 "original_question": "Gold 服务",
                 "target_concepts": ["服务"],
                 "relation_phrases": [],
                 "literal_candidates": [{"text": "Gold"}],
-                "filter_phrases": ["Gold 服务"],
                 "substantive_terms": ["Gold", "服务"],
                 "stopword_terms": [],
                 "modality_terms": [],
                 "time_terms": [],
                 "unparsed_terms": [],
                 "output_shape": "rows",
+            }
+        ]
+    )
+
+    result = QuestionDecomposer(client, max_schema_retries=0).decompose("Gold 服务")
+
+    assert isinstance(result, QuestionDecompositionFailure)
+    assert result.reason == "question_decomposer_schema_invalid"
+
+
+def test_normal_decomposition_requires_explicit_result_type() -> None:
+    client = FakeStructuredLLMClient(
+        [
+            {
+                "schema_version": "question_decomposition_v1",
+                "intent_type": "list",
+                "original_question": "Gold 服务",
+                "target_concepts": ["服务"],
+                "relation_phrases": [],
+                "literal_candidates": [],
+                "substantive_terms": ["Gold", "服务"],
+                "stopword_terms": [],
+                "modality_terms": [],
+                "time_terms": [],
+                "unparsed_terms": [],
+                "output_shape": "rows",
+            }
+        ]
+    )
+
+    result = QuestionDecomposer(client, max_schema_retries=0).decompose("Gold 服务")
+
+    assert isinstance(result, QuestionDecompositionFailure)
+    assert result.reason == "question_decomposer_schema_invalid"
+
+
+def test_filter_phrases_is_rejected_as_removed_field() -> None:
+    client = FakeStructuredLLMClient(
+        [
+            {
+                **_valid_payload(
+                    "Gold 服务",
+                    intent_type="list",
+                    substantive_terms=["Gold", "服务"],
+                    output_shape="rows",
+                ),
+                "filter_phrases": ["Gold 服务"],
+            }
+        ]
+    )
+
+    result = QuestionDecomposer(client, max_schema_retries=0).decompose("Gold 服务")
+
+    assert isinstance(result, QuestionDecompositionFailure)
+    assert result.reason == "question_decomposer_schema_invalid"
+
+
+def test_literal_kind_hint_rejects_values_outside_enum() -> None:
+    client = FakeStructuredLLMClient(
+        [
+            {
+                **_valid_payload(
+                    "Gold 服务",
+                    intent_type="list",
+                    substantive_terms=["Gold", "服务"],
+                    output_shape="rows",
+                ),
+                "literal_candidates": [
+                    {"text": "Gold", "kind_hint": "service", "attached_to": "服务"}
+                ],
             }
         ]
     )
@@ -184,12 +258,12 @@ def _valid_payload(
 ) -> dict[str, Any]:
     return {
         "schema_version": "question_decomposition_v1",
+        "result_type": "decomposition",
         "intent_type": intent_type,
         "original_question": question,
         "target_concepts": [],
         "relation_phrases": [],
         "literal_candidates": [],
-        "filter_phrases": [],
         "substantive_terms": substantive_terms,
         "stopword_terms": [],
         "modality_terms": [],

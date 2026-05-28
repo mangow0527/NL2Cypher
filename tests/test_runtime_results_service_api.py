@@ -107,21 +107,23 @@ def test_runtime_results_detail_script_puts_cypher_comparison_in_overview():
     assert "const stageOutput = stripLlmCallsFromPayload(stage.output)" in script
     assert "codeBlock(stageOutput)" in script
     assert "codeBlock(stage.output)" not in script
-    assert "filter_phrases" in script
-    assert "从问题中抽取出的过滤条件短语" in script
+    assert "filter_phrases" not in script
+    assert "从问题中抽取出的过滤条件短语" not in script
+    assert "result_type" in script
+    assert "拆解结果类型" in script
     assert "relation_phrases" in script
     assert "表示两个业务对象如何连接的关系短语" in script
     assert "例如“服务使用隧道”中的“使用”" in script
     assert "substantive_terms" in script
-    assert "对查询语义有实际影响的词" in script
+    assert "覆盖分类轴字段：驱动查询语义的实质词" in script
     assert "stopword_terms" in script
-    assert "礼貌用语、连接词或语气词" in script
+    assert "覆盖分类轴字段：礼貌语、连接词、助词或查询引导词" in script
     assert "modality_terms" in script
-    assert "表达不确定、推测或要求程度的词" in script
+    assert "表达近似、不确定或软约束的词" in script
     assert "time_terms" in script
     assert "时间或时间范围表达" in script
     assert "unparsed_terms" in script
-    assert "未被前面类别吸收的残留实质词" in script
+    assert "无法可靠分类但可能影响语义的残留词" in script
     assert "其他字段" not in script
     assert "保留原始 trace 字段名" not in script
     assert "关键指标" not in script
@@ -1437,6 +1439,7 @@ def test_runtime_results_generator_section_parses_cga_graph_trace_v1(monkeypatch
         "raw_output": "{\"schema_version\":\"question_decomposition_v1\",\"intent_type\":\"list\"}",
         "parsed_output": {
             "schema_version": "question_decomposition_v1",
+            "result_type": "decomposition",
             "intent_type": "list",
             "target_concepts": ["服务", "隧道"],
         },
@@ -1465,6 +1468,7 @@ def test_runtime_results_generator_section_parses_cga_graph_trace_v1(monkeypatch
                 input_payload={"question": "Gold 服务使用了哪些隧道？"},
                 output={
                     "schema_version": "question_decomposition_v1",
+                    "result_type": "decomposition",
                     "intent_type": "list",
                     "target_concepts": ["服务", "隧道"],
                     "literal_candidates": ["Gold"],
@@ -1564,6 +1568,7 @@ def test_runtime_results_generator_section_parses_cga_graph_trace_v1(monkeypatch
             "raw_output": "{\"schema_version\":\"question_decomposition_v1\",\"intent_type\":\"list\"}",
             "parsed_output": {
                 "schema_version": "question_decomposition_v1",
+                "result_type": "decomposition",
                 "intent_type": "list",
                 "target_concepts": ["服务", "隧道"],
             },

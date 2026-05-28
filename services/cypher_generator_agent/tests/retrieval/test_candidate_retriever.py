@@ -57,7 +57,6 @@ def test_question_decomposition_v1_terms_drive_candidate_retrieval(
             "target_concepts": ["隧道"],
             "relation_phrases": ["经过"],
             "literal_candidates": ["tun-mpls-001"],
-            "filter_phrases": [],
             "substantive_terms": ["隧道", "经过", "设备"],
         }
     )
@@ -80,7 +79,6 @@ def test_question_decomposition_v1_structured_literal_candidates_drive_retrieval
             "literal_candidates": [
                 {"text": "Gold", "kind_hint": "enum_or_name", "attached_to": "服务"}
             ],
-            "filter_phrases": ["Gold 服务"],
             "substantive_terms": ["Gold", "服务", "使用", "隧道"],
             "stopword_terms": [],
             "modality_terms": [],
@@ -115,7 +113,7 @@ def test_aspect_particle_phrase_recalls_service_uses_tunnel_edge_from_packaged_a
             "target_concepts": ["服务", "隧道"],
             "relation_phrases": ["使用了"],
             "literal_candidates": [
-                {"text": "Gold", "kind_hint": "service", "attached_to": "服务"}
+                {"text": "Gold", "kind_hint": "enum_or_name", "attached_to": "服务"}
             ],
             "substantive_terms": ["Gold", "服务", "使用", "隧道"],
         }
@@ -136,7 +134,7 @@ def test_retrieved_vertices_include_id_property_candidates_for_literal_binding()
             "target_concepts": ["设备"],
             "relation_phrases": ["经过"],
             "literal_candidates": [
-                {"text": "tun-mpls-001", "kind_hint": "identifier", "attached_to": "隧道"}
+                {"text": "tun-mpls-001", "kind_hint": "id", "attached_to": "隧道"}
             ],
             "substantive_terms": ["隧道", "tun-mpls-001", "经过", "设备"],
         }

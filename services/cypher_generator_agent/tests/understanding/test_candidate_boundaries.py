@@ -275,12 +275,12 @@ def test_selected_literal_mutating_resolver_confidence_or_evidence_is_rejected()
 
 def _decomposition() -> QuestionDecomposition:
     return QuestionDecomposition(
+        result_type="decomposition",
         intent_type="list",
         original_question="Gold 服务使用了哪些隧道",
         target_concepts=["服务", "隧道"],
         relation_phrases=["使用"],
         literal_candidates=[],
-        filter_phrases=[],
         substantive_terms=["Gold", "服务", "使用", "隧道"],
         stopword_terms=[],
         modality_terms=[],
@@ -292,12 +292,12 @@ def _decomposition() -> QuestionDecomposition:
 
 def _path_decomposition() -> QuestionDecomposition:
     return QuestionDecomposition(
+        result_type="decomposition",
         intent_type="path",
         original_question="隧道 tun-mpls-001 经过哪些设备",
         target_concepts=["隧道", "设备"],
         relation_phrases=["经过"],
         literal_candidates=[],
-        filter_phrases=[],
         substantive_terms=["隧道", "经过", "设备"],
         stopword_terms=[],
         modality_terms=[],

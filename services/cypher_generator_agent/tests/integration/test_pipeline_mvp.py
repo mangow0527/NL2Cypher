@@ -116,14 +116,14 @@ def test_pipeline_can_use_real_llm_mode_with_openai_compatible_client(
             self.responses = [
                 {
                     "schema_version": "question_decomposition_v1",
+                    "result_type": "decomposition",
                     "intent_type": "list",
                     "original_question": "Gold 服务使用了哪些隧道",
                     "target_concepts": ["服务", "隧道"],
                     "relation_phrases": ["使用隧道"],
                     "literal_candidates": [
-                        {"text": "Gold", "kind_hint": "enum", "attached_to": "服务"}
+                        {"text": "Gold", "kind_hint": "enum_or_name", "attached_to": "服务"}
                     ],
-                    "filter_phrases": ["Gold 服务"],
                     "substantive_terms": ["Gold", "服务", "使用", "隧道"],
                     "stopword_terms": [],
                     "modality_terms": [],
@@ -244,43 +244,20 @@ def test_pipeline_can_use_real_llm_mode_with_openai_compatible_client(
     llm_calls = decomposer_stage["output_ref"]["value"]["llm_calls"]
     assert llm_calls[0]["stage"] == "question_decomposer"
     assert llm_calls[0]["schema_name"] == "question_decomposition_v1"
-    assert "只返回一个 JSON 对象" in llm_calls[0]["prompt"]
-    assert "你是图原生 Cypher 生成流水线中的问题结构化拆解器" in llm_calls[0]["prompt"]
-    assert "输出契约（简化版，完整 schema 由工程侧校验）" in llm_calls[0]["prompt"]
-    assert "正常拆解时返回" in llm_calls[0]["prompt"]
+    assert "返回且只返回一个 JSON 对象" in llm_calls[0]["prompt"]
+    assert '图原生 Cypher 生成流水线中的"问题结构化拆解器"' in llm_calls[0]["prompt"]
+    assert "两条正交的分类轴" in llm_calls[0]["prompt"]
+    assert "示例 3：含时间、近似、聚合，中心名词不是 literal" in llm_calls[0]["prompt"]
     assert "Return exactly one JSON object" not in llm_calls[0]["prompt"]
-    assert "JSON Schema:" not in llm_calls[0]["prompt"]
-    assert '"$defs"' not in llm_calls[0]["prompt"]
+    assert "JSON Schema:" in llm_calls[0]["prompt"]
     assert '"intent_type": "list"' in llm_calls[0]["raw_output"]
 
 
-def test_llm_literal_kind_hint_outside_contract_is_normalized_before_resolution(
+def test_llm_literal_kind_hint_outside_contract_is_schema_invalid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeStructuredClient:
         provider = "openai_compatible"
-
-        def __init__(self) -> None:
-            self.responses = [
-                {
-                    "schema_version": "question_decomposition_v1",
-                    "intent_type": "list",
-                    "original_question": "Gold 服务使用了哪些隧道",
-                    "target_concepts": ["服务", "隧道"],
-                    "relation_phrases": ["使用了"],
-                    "literal_candidates": [
-                        {"text": "Gold", "kind_hint": "service", "attached_to": "服务"}
-                    ],
-                    "filter_phrases": [],
-                    "substantive_terms": ["Gold", "服务", "使用", "隧道"],
-                    "stopword_terms": ["了", "哪些"],
-                    "modality_terms": [],
-                    "time_terms": [],
-                    "unparsed_terms": [],
-                    "output_shape": "rows",
-                },
-                _grounded_service_tunnel_payload(direction="forward"),
-            ]
 
         def generate_structured(
             self,
@@ -290,7 +267,23 @@ def test_llm_literal_kind_hint_outside_contract_is_normalized_before_resolution(
             schema: dict[str, Any],
             attempt: int,
         ) -> dict[str, Any]:
-            return self.responses.pop(0)
+            return {
+                "schema_version": "question_decomposition_v1",
+                "result_type": "decomposition",
+                "intent_type": "list",
+                "original_question": "Gold 服务使用了哪些隧道",
+                "target_concepts": ["服务", "隧道"],
+                "relation_phrases": ["使用了"],
+                "literal_candidates": [
+                    {"text": "Gold", "kind_hint": "service", "attached_to": "服务"}
+                ],
+                "substantive_terms": ["Gold", "服务", "使用", "隧道"],
+                "stopword_terms": ["了", "哪些"],
+                "modality_terms": [],
+                "time_terms": [],
+                "unparsed_terms": [],
+                "output_shape": "rows",
+            }
 
     fake_client = FakeStructuredClient()
     monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_ENABLED", "true")
@@ -303,23 +296,18 @@ def test_llm_literal_kind_hint_outside_contract_is_normalized_before_resolution(
         "_structured_llm_client_from_settings",
         lambda settings: fake_client,
     )
-    monkeypatch.setattr(
-        pipeline_module,
-        "_deterministic_grounding_from_slots",
-        lambda **kwargs: None,
-    )
-
     try:
         output = run_pipeline(
             question="Gold 服务使用了哪些隧道",
-            qa_id="llm-kind-hint-normalized",
-            generation_run_id="run-llm-kind-hint-normalized",
+            qa_id="llm-kind-hint-schema-invalid",
+            generation_run_id="run-llm-kind-hint-schema-invalid",
         )
     finally:
         get_settings.cache_clear()
 
-    assert output.status == "generated"
-    assert _compiler_parameters(output.trace)["quality_of_service"] == "Gold"
+    assert output.status == "generation_failed"
+    assert output.failure is not None
+    assert output.failure.reason == "question_decomposer_schema_invalid"
 
 
 def test_llm_enum_literal_with_qualifier_prefers_enum_property_over_id(
@@ -338,14 +326,14 @@ def test_llm_enum_literal_with_qualifier_prefers_enum_property_over_id(
         ) -> dict[str, Any]:
             return {
                 "schema_version": "question_decomposition_v1",
+                "result_type": "decomposition",
                 "intent_type": "list",
                 "original_question": "Gold级别的服务都使用了哪些隧道",
                 "target_concepts": ["服务", "隧道"],
                 "relation_phrases": ["使用了"],
                 "literal_candidates": [
-                    {"text": "Gold级别", "kind_hint": "category", "attached_to": "服务"}
+                    {"text": "Gold级别", "kind_hint": "enum_or_name", "attached_to": "服务"}
                 ],
-                "filter_phrases": [],
                 "substantive_terms": ["Gold级别", "服务", "使用", "隧道"],
                 "stopword_terms": ["都", "哪些"],
                 "modality_terms": [],
@@ -447,16 +435,14 @@ def test_decomposition_slot_normalization_uses_attachment_and_classifier_without
         ) -> dict[str, Any]:
             return {
                 "schema_version": "question_decomposition_v1",
+                "result_type": "decomposition",
                 "intent_type": "count",
                 "original_question": "有多少台防火墙",
-                "target_concepts": [],
+                "target_concepts": ["防火墙"],
                 "relation_phrases": [],
-                "literal_candidates": [
-                    {"text": "防火墙", "kind_hint": "category", "attached_to": "设备"}
-                ],
-                "filter_phrases": [],
-                "substantive_terms": ["防火墙"],
-                "stopword_terms": [],
+                "literal_candidates": [],
+                "substantive_terms": ["多少", "台", "防火墙"],
+                "stopword_terms": ["有"],
                 "modality_terms": [],
                 "time_terms": [],
                 "unparsed_terms": [],
@@ -551,14 +537,14 @@ def test_value_synonym_candidate_becomes_literal_request_when_llm_omits_literal_
         ) -> dict[str, Any]:
             return {
                 "schema_version": "question_decomposition_v1",
+                "result_type": "decomposition",
                 "intent_type": "count",
                 "original_question": "有多少台防火墙",
                 "target_concepts": ["防火墙"],
                 "relation_phrases": [],
                 "literal_candidates": [],
-                "filter_phrases": [],
-                "substantive_terms": ["防火墙"],
-                "stopword_terms": ["有", "多少台"],
+                "substantive_terms": ["多少", "台", "防火墙"],
+                "stopword_terms": ["有"],
                 "modality_terms": [],
                 "time_terms": [],
                 "unparsed_terms": [],
@@ -601,14 +587,14 @@ def test_llm_vertex_lookup_without_filter_or_projection_uses_selected_literal_an
             self.responses = [
                 {
                     "schema_version": "question_decomposition_v1",
+                    "result_type": "decomposition",
                     "intent_type": "list",
                     "original_question": "当前 down 的端口有哪些",
                     "target_concepts": ["端口"],
                     "relation_phrases": [],
                     "literal_candidates": [
-                        {"text": "down", "kind_hint": "state", "attached_to": "端口"}
+                        {"text": "down", "kind_hint": "enum_or_name", "attached_to": "端口"}
                     ],
-                    "filter_phrases": [],
                     "substantive_terms": ["down", "端口"],
                     "stopword_terms": ["有哪些"],
                     "modality_terms": [],
@@ -707,14 +693,14 @@ def test_llm_repair_loop_regrounds_after_repairable_validator_error(
             self.responses = [
                 {
                     "schema_version": "question_decomposition_v1",
+                    "result_type": "decomposition",
                     "intent_type": "list",
                     "original_question": "Gold 服务使用了哪些隧道",
                     "target_concepts": ["服务", "隧道"],
                     "relation_phrases": ["使用隧道"],
                     "literal_candidates": [
-                        {"text": "Gold", "kind_hint": "enum", "attached_to": "服务"}
+                        {"text": "Gold", "kind_hint": "enum_or_name", "attached_to": "服务"}
                     ],
-                    "filter_phrases": ["Gold 服务"],
                     "substantive_terms": ["Gold", "服务", "使用", "隧道"],
                     "stopword_terms": [],
                     "modality_terms": [],

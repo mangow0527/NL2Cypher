@@ -48,6 +48,7 @@ def test_polite_words_are_classified_as_stopwords() -> None:
     result = QuestionDecomposer(client).decompose(question)
 
     assert result.schema_version == "question_decomposition_v1"
+    assert result.result_type == "decomposition"
     assert result.intent_type == "list"
     assert result.output_shape == "rows"
     assert "Gold" in result.substantive_terms
@@ -58,8 +59,10 @@ def test_polite_words_are_classified_as_stopwords() -> None:
     assert result.literal_candidates[0].attached_to == "服务"
     assert client.calls[0]["schema_name"] == "question_decomposition_v1"
     assert question in client.calls[0]["prompt"]
-    assert "你是图原生 Cypher 生成流水线中的问题结构化拆解器" in client.calls[0]["prompt"]
-    assert "只使用用户问题中的表层语言词语" in client.calls[0]["prompt"]
+    assert '你是图原生 Cypher 生成流水线中的"问题结构化拆解器"' in client.calls[0]["prompt"]
+    assert "只输出用户问题里的表层词语" in client.calls[0]["prompt"]
+    assert "两条正交的分类轴" in client.calls[0]["prompt"]
+    assert "示例 3：含时间、近似、聚合，中心名词不是 literal" in client.calls[0]["prompt"]
     assert "You are the Question Decomposer" not in client.calls[0]["prompt"]
 
 
@@ -69,8 +72,9 @@ def test_modality_word_is_classified_as_modality() -> None:
         _valid_payload(
             question,
             intent_type="count",
-            substantive_terms=["防火墙"],
+            substantive_terms=["多少", "防火墙"],
             modality_terms=["大概"],
+            target_concepts=["防火墙"],
             output_shape="scalar",
         )
     )
@@ -79,6 +83,81 @@ def test_modality_word_is_classified_as_modality() -> None:
 
     assert "大概" in result.modality_terms
     assert "防火墙" in result.substantive_terms
+    assert "防火墙" in result.target_concepts
+    assert result.literal_candidates == []
+
+
+def test_prompt_example_1_accepts_attribute_query_without_literal() -> None:
+    question = "查询服务及其使用的隧道的时延"
+    client = FakeStructuredLLMClient(
+        _valid_payload(
+            question,
+            intent_type="list",
+            output_shape="rows",
+            substantive_terms=["服务", "使用", "隧道", "时延"],
+            stopword_terms=["查询", "及其", "的"],
+            target_concepts=["服务", "隧道", "时延"],
+            relation_phrases=["使用"],
+            literal_candidates=[],
+        )
+    )
+
+    result = QuestionDecomposer(client).decompose(question)
+
+    assert result.result_type == "decomposition"
+    assert result.substantive_terms == ["服务", "使用", "隧道", "时延"]
+    assert result.stopword_terms == ["查询", "及其", "的"]
+    assert result.target_concepts == ["服务", "隧道", "时延"]
+    assert result.relation_phrases == ["使用"]
+    assert result.literal_candidates == []
+
+
+def test_prompt_example_2_accepts_literal_filter() -> None:
+    question = "Gold 级别的服务使用了哪些隧道"
+    client = FakeStructuredLLMClient(
+        _valid_payload(
+            question,
+            intent_type="list",
+            output_shape="rows",
+            substantive_terms=["Gold", "级别", "服务", "使用", "隧道"],
+            stopword_terms=["的", "了", "哪些"],
+            target_concepts=["服务", "隧道"],
+            relation_phrases=["使用"],
+            literal_candidates=[{"text": "Gold", "kind_hint": "enum_or_name", "attached_to": "服务"}],
+        )
+    )
+
+    result = QuestionDecomposer(client).decompose(question)
+
+    assert result.target_concepts == ["服务", "隧道"]
+    assert result.relation_phrases == ["使用"]
+    assert result.literal_candidates[0].text == "Gold"
+    assert result.literal_candidates[0].kind_hint == "enum_or_name"
+    assert "Gold" in result.substantive_terms
+
+
+def test_prompt_example_3_treats_firewall_as_concept_not_literal() -> None:
+    question = "最近大概有多少台防火墙"
+    client = FakeStructuredLLMClient(
+        _valid_payload(
+            question,
+            intent_type="count",
+            output_shape="scalar",
+            substantive_terms=["多少", "台", "防火墙"],
+            stopword_terms=["有"],
+            modality_terms=["大概"],
+            time_terms=["最近"],
+            target_concepts=["防火墙"],
+            literal_candidates=[],
+        )
+    )
+
+    result = QuestionDecomposer(client).decompose(question)
+
+    assert result.target_concepts == ["防火墙"]
+    assert result.literal_candidates == []
+    assert result.time_terms == ["最近"]
+    assert result.modality_terms == ["大概"]
 
 
 def test_recent_is_classified_as_time() -> None:
@@ -155,6 +234,8 @@ def _valid_payload(
     intent_type: str = "unknown",
     substantive_terms: list[str],
     literal_candidates: list[dict[str, str]] | None = None,
+    target_concepts: list[str] | None = None,
+    relation_phrases: list[str] | None = None,
     stopword_terms: list[str] | None = None,
     modality_terms: list[str] | None = None,
     time_terms: list[str] | None = None,
@@ -163,12 +244,12 @@ def _valid_payload(
 ) -> dict[str, Any]:
     return {
         "schema_version": "question_decomposition_v1",
+        "result_type": "decomposition",
         "intent_type": intent_type,
         "original_question": question,
-        "target_concepts": [],
-        "relation_phrases": [],
+        "target_concepts": target_concepts or [],
+        "relation_phrases": relation_phrases or [],
         "literal_candidates": literal_candidates or [],
-        "filter_phrases": [],
         "substantive_terms": substantive_terms,
         "stopword_terms": stopword_terms or [],
         "modality_terms": modality_terms or [],
