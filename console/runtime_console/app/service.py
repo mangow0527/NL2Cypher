@@ -775,6 +775,7 @@ class RuntimeResultsService:
             llm_calls.extend(self._graph_stage_llm_calls(stage))
         final_outputs = self._trace_object(snapshot.get("final_outputs"))
         semantic_model = self._trace_object(snapshot.get("semantic_model"))
+        current_stage = self._graph_current_stage(stages, str(snapshot.get("final_status") or ""))
         return {
             "schema_version": "cga_graph_trace_v1",
             "trace_id": snapshot.get("trace_id"),
@@ -788,6 +789,8 @@ class RuntimeResultsService:
             "summary": {
                 "final_status": snapshot.get("final_status"),
                 "stage_count": len(stages),
+                "current_stage": current_stage.get("key"),
+                "current_stage_title_zh": current_stage.get("title_zh"),
                 "llm_call_count": len(llm_calls),
                 "semantic_model": semantic_model.get("name") or "未记录",
                 "model_checksum": semantic_model.get("checksum"),
@@ -804,6 +807,20 @@ class RuntimeResultsService:
                 "self_validation": self._graph_stage_output(snapshot, "cypher_self_validation"),
             },
         }
+
+    def _graph_current_stage(self, stages: list[dict[str, Any]], final_status: str) -> dict[str, str]:
+        by_key = {str(stage.get("key") or ""): stage for stage in stages}
+        if final_status == "clarification_required" and "repair_controller" in by_key:
+            stage = by_key["repair_controller"]
+            return {"key": "repair_controller", "title_zh": str(stage.get("title_zh") or "修复与澄清决策")}
+        if final_status == "generated" and "cypher_self_validation" in by_key:
+            stage = by_key["cypher_self_validation"]
+            return {"key": "cypher_self_validation", "title_zh": str(stage.get("title_zh") or "Cypher 自校验")}
+        for stage in reversed(stages):
+            key = str(stage.get("key") or "")
+            if key and key != "output":
+                return {"key": key, "title_zh": str(stage.get("title_zh") or key)}
+        return {"key": "", "title_zh": "未记录"}
 
     def _graph_stage_display(self, stage: dict[str, Any]) -> dict[str, Any]:
         key = str(stage.get("stage") or "")

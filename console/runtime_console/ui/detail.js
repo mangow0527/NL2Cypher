@@ -358,7 +358,7 @@ function renderCgaFlowSummary(flow = {}, section = {}) {
       ${metricCard('Trace Schema', flow.schema_version || section.trace_schema_version || '未记录')}
       ${metricCard('最终状态', flow.final_status || section.generation_status || '未记录', flow.final_status || section.generation_status)}
       ${metricCard('语义模型', summary.semantic_model || '未记录')}
-      ${metricCard('阶段数', summary.stage_count ?? 0)}
+      ${metricCard('当前阶段', summary.current_stage_title_zh || summary.current_stage || '未记录')}
       ${metricCard('LLM 调用数', summary.llm_call_count ?? 0)}
       ${metricCard('开始时间', flow.started_at || '未记录')}
       ${metricCard('结束时间', flow.finished_at || '未记录')}

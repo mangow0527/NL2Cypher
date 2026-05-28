@@ -96,6 +96,8 @@ def test_runtime_results_detail_script_puts_cypher_comparison_in_overview():
     assert "澄清选项" in script
     assert "未解析项" in script
     assert "校验错误" in script
+    assert "metricCard('当前阶段'" in script
+    assert "metricCard('阶段数'" not in script
     assert "系统决策" in script
     assert "触发原因" in script
     assert "触发阶段" in script
@@ -1492,6 +1494,9 @@ def test_runtime_results_generator_section_parses_cga_graph_trace_v1(monkeypatch
     flow = generator["cga_flow"]
     assert flow["trace_id"] == "run-graph-trace"
     assert flow["summary"]["semantic_model"] == "network_schema_v10"
+    assert flow["summary"]["current_stage"] == "cypher_self_validation"
+    assert flow["summary"]["current_stage_title_zh"] == "Cypher 自校验"
+    assert flow["summary"]["stage_count"] == 13
     assert [stage["key"] for stage in flow["stages"]][:4] == [
         "graph_model_loader",
         "input_clarification_gate",
@@ -1643,6 +1648,8 @@ def test_runtime_results_graph_clarification_uses_repair_and_literal_trace(monke
     assert clarification["reason_code"] == "literal_unresolved"
     assert clarification["source_stage"] == "semantic_validator"
     assert clarification["source_stage_label_zh"] == "语义正确性校验"
+    assert generator["cga_flow"]["summary"]["current_stage"] == "repair_controller"
+    assert generator["cga_flow"]["summary"]["current_stage_title_zh"] == "修复与澄清决策"
     assert clarification["expected_answer_type"] == "free_text"
     assert clarification["no_option_reason"] == "当前澄清需要用户补充文本，不是固定选项选择。"
     assert clarification["unresolved_items"] == [
