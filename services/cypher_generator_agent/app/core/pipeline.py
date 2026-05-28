@@ -36,8 +36,8 @@ from services.cypher_generator_agent.app.validation.semantic_validator import Se
 
 
 _FIXTURE_DIR = Path(__file__).resolve().parents[2] / "tests" / "fixtures"
-_MODEL_PATH = _FIXTURE_DIR / "network_topology_graph_model.yaml"
-_VALUE_INDEX_PATH = _FIXTURE_DIR / "value_index.json"
+_MODEL_PATH = _FIXTURE_DIR / "tugraph_network_graph_model.yaml"
+_VALUE_INDEX_PATH = _FIXTURE_DIR / "tugraph_value_index.json"
 
 
 def run_pipeline(

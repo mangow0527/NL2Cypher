@@ -33,7 +33,7 @@
       "operator": "eq",
       "value": {
         "raw": "Gold",
-        "normalized": "GOLD",
+        "normalized": "Gold",
         "resolver_match_type": "exact"
       }
     }

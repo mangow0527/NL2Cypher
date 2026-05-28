@@ -278,7 +278,7 @@ async def test_semantic_parse_returns_pipeline_clarification_without_empty_succe
     assert trace["generation_run_id"] == "run-osi-2"
     assert trace["source_question"] == "2024 年收入增长情况"
     assert trace["final_status"] == "clarification_required"
-    assert trace["semantic_model"]["name"] == "network_topology"
+    assert trace["semantic_model"]["name"] == "network_schema_v10"
     assert [stage["stage"] for stage in trace["stages"]][-3:] == [
         "semantic_validator",
         "repair_controller",

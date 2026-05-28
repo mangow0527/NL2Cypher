@@ -42,7 +42,8 @@ def test_gold_service_question_generates_single_hop_cypher() -> None:
     assert "MATCH (svc:Service)-[:SERVICE_USES_TUNNEL]->(tun:Tunnel)" in output.cypher
     assert "svc.quality_of_service = $quality_of_service" in output.cypher
     assert "RETURN tun.id AS tunnel_id" in output.cypher
-    assert _compiler_parameters(output.trace)["quality_of_service"] == "GOLD"
+    assert output.trace["semantic_model"]["name"] == "network_schema_v10"
+    assert _compiler_parameters(output.trace)["quality_of_service"] == "Gold"
     assert _stage_names(output.trace) == EXPECTED_STAGES
     assert "db_connection" not in _all_keys(output.trace)
     assert "execution_result" not in _all_keys(output.trace)

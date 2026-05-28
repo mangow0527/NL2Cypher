@@ -79,7 +79,7 @@ async def test_semantic_parse_returns_pipeline_clarification_without_cypher() ->
     assert trace["generation_run_id"] == "run-osi-2"
     assert trace["source_question"] == "2024 年收入增长情况"
     assert trace["final_status"] == "clarification_required"
-    assert trace["semantic_model"]["name"] == "network_topology"
+    assert trace["semantic_model"]["name"] == "network_schema_v10"
     assert [stage["stage"] for stage in trace["stages"]][-3:] == [
         "semantic_validator",
         "repair_controller",
@@ -145,6 +145,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "loader.py",
         "model.py",
         "registry.py",
+        "tugraph_schema.py",
         "validator.py",
     }
     assert _source_names(SERVICE_ROOT / "app" / "semantic_model") <= allowed_semantic_model_files
@@ -247,7 +248,12 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
     }
     assert _source_names(SERVICE_ROOT / "tests" / "integration") <= allowed_integration_files
 
-    allowed_semantic_model_tests = {"__init__.py", "test_loader.py", "test_registry.py"}
+    allowed_semantic_model_tests = {
+        "__init__.py",
+        "test_loader.py",
+        "test_registry.py",
+        "test_tugraph_schema_converter.py",
+    }
     assert _source_names(SERVICE_ROOT / "tests" / "semantic_model") <= allowed_semantic_model_tests
 
     allowed_cypher_validation_tests = {
@@ -311,6 +317,9 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "performance_baseline_cases.yaml",
         "questions.yaml",
         "test_fixture_consistency.py",
+        "test_tugraph_semantic_corpus.py",
+        "tugraph_network_graph_model.yaml",
+        "tugraph_value_index.json",
         "value_index.json",
     }
     assert _source_names(SERVICE_ROOT / "tests" / "fixtures") <= allowed_fixture_files

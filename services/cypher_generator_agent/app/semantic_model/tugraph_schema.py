@@ -187,7 +187,7 @@ def _vertex(entry: Mapping[str, Any]) -> dict[str, Any]:
         "name": label,
         "id_property": str(entry.get("primary") or "id"),
         "description": entry.get("description"),
-        "ai_context": {"synonyms": _VERTEX_SYNONYMS.get(label, [])},
+        "ai_context": {"synonyms": _synonyms(_VERTEX_SYNONYMS.get(label, []))},
         "properties": [_property(prop) for prop in entry.get("properties", [])],
     }
 
@@ -206,7 +206,7 @@ def _edge(entry: Mapping[str, Any]) -> dict[str, Any]:
             "direction",
             f"Storage direction: {endpoint[0]} -> {endpoint[1]}.",
         ),
-        "ai_context": {"synonyms": context.get("synonyms", [])},
+        "ai_context": {"synonyms": _synonyms(context.get("synonyms", []))},
         "properties": [_property(prop) for prop in entry.get("properties", [])],
     }
     if context.get("anti_patterns"):
@@ -232,12 +232,12 @@ def _property(entry: Mapping[str, Any]) -> dict[str, Any]:
         "type": _TYPE_MAP.get(str(entry["type"]).upper(), "string"),
         "required": not bool(entry.get("optional", True)),
         "description": entry.get("description"),
-        "ai_context": {"synonyms": _PROPERTY_SYNONYMS.get(name, [])},
+        "ai_context": {"synonyms": _synonyms(_PROPERTY_SYNONYMS.get(name, []))},
     }
     if valid_values:
         prop["valid_values"] = valid_values
         value_synonyms = {
-            value: _VALUE_SYNONYMS[value]
+            value: _synonyms(_VALUE_SYNONYMS[value])
             for value in valid_values
             if value in _VALUE_SYNONYMS
         }
@@ -255,6 +255,10 @@ def _parse_valid_values(description: Any) -> list[str]:
     if len(values) < 2 or any(not value for value in values):
         return []
     return values
+
+
+def _synonyms(values: Sequence[str]) -> list[str]:
+    return list(values)
 
 
 def _tunnel_full_path_pattern() -> dict[str, Any]:
