@@ -168,10 +168,104 @@ def _schema_bound_prompt(
             "只返回一个 JSON 对象。不要返回 Markdown，不要返回解释性文字。",
             f"Schema 名称：{schema_name}",
             f"第 {attempt} 次尝试。",
-            "JSON Schema:",
-            json.dumps(schema, ensure_ascii=False, sort_keys=True),
+            "输出契约（简化版，完整 schema 由工程侧校验）：",
+            _schema_output_contract(schema_name=schema_name, schema=schema),
         ]
     )
+
+
+def _schema_output_contract(*, schema_name: str, schema: Mapping[str, Any]) -> str:
+    if schema_name == "question_decomposition_v1":
+        return _question_decomposition_contract()
+    if schema_name == "grounded_understanding_v1":
+        return _grounded_understanding_contract()
+    return _generic_schema_contract(schema)
+
+
+def _question_decomposition_contract() -> str:
+    return "\n".join(
+        [
+            "正常拆解时返回以下字段；没有内容的数组也返回 []，不要省略字段：",
+            "{",
+            '  "schema_version": "question_decomposition_v1",',
+            '  "intent_type": "lookup|list|count|aggregate|top_n|path|compare|unknown",',
+            '  "original_question": "原始用户问题",',
+            '  "target_concepts": ["问题中的业务对象词，例如 服务、隧道、网元"],',
+            '  "relation_phrases": ["连接两个业务对象的关系短语，例如 使用、经过、连接"],',
+            '  "literal_candidates": [',
+            '    {"text": "表层字面值", "kind_hint": "id|enum|name|number|unknown", "attached_to": "附着对象词"}',
+            "  ],",
+            '  "filter_phrases": ["过滤条件短语，例如 Gold 级别、状态为 down"],',
+            '  "substantive_terms": ["会影响查询语义的实质词"],',
+            '  "stopword_terms": ["礼貌、连接或填充词"],',
+            '  "modality_terms": ["大概、可能、应该这类软约束词"],',
+            '  "time_terms": ["最近、2024 年、过去 7 天这类时间词"],',
+            '  "unparsed_terms": ["无法可靠分类但可能影响语义的词"],',
+            '  "output_shape": "rows|scalar|grouped_rows|path|unknown"',
+            "}",
+            "如果代词或指示词缺少明确指代对象，改为返回：",
+            "{",
+            '  "schema_version": "question_decomposition_v1",',
+            '  "result_type": "clarification_required",',
+            '  "original_question": "原始用户问题",',
+            '  "clarification_question": "需要向用户确认的问题",',
+            '  "missing_referents": ["缺少指代对象的词，例如 它、这个"]',
+            "}",
+        ]
+    )
+
+
+def _grounded_understanding_contract() -> str:
+    return "\n".join(
+        [
+            "在候选集合内选择绑定，只能复制输入候选中的 candidate_id、semantic_id 和名称；不要发明新对象。",
+            "返回以下字段；没有内容的数组也返回 []，没有值的可空字段返回 null：",
+            "{",
+            '  "schema_version": "grounded_understanding_v1",',
+            '  "status": "grounded|clarification_required|unsupported_query_shape|failed",',
+            '  "query_shape": "vertex_lookup|single_hop|single_hop_traversal|named_path_pattern|variable_path|variable_path_traversal|metric_aggregate|ad_hoc_aggregate|top_n|two_step_aggregate|lookup|unsupported",',
+            '  "selected_bindings": [',
+            "    {",
+            '      "role": "source|target|relation|filter_property|projection|metric|path_pattern",',
+            '      "semantic_type": "vertex|edge|property|metric|path_pattern",',
+            '      "candidate_id": "从候选中原样复制",',
+            '      "semantic_id": "从候选中原样复制",',
+            '      "semantic_name": "从候选中原样复制",',
+            '      "owner": "属性所属对象；没有则为 null",',
+            '      "direction": "forward|backward|null",',
+            '      "confidence": 0.0,',
+            '      "rationale": "简短选择理由"',
+            "    }",
+            "  ],",
+            '  "selected_literals": ["从 literal_resolver_results 中复制已解析字面值对象"],',
+            '  "filters": ["字段过滤条件；必须引用已选择的绑定和字面值"],',
+            '  "projection": ["返回列描述"],',
+            '  "group_by": ["分组字段描述"],',
+            '  "measures": ["聚合指标描述"],',
+            '  "sort": ["排序描述"],',
+            '  "limit": 50,',
+            '  "assumptions": ["高置信但非精确匹配的假设"],',
+            '  "ambiguities": [{"role": "歧义角色", "reason": "歧义原因", "candidate_ids": ["候选 id 1", "候选 id 2"]}],',
+            '  "coverage": "沿用输入 coverage 结构并标注覆盖/未覆盖项",',
+            '  "unsupported": null,',
+            '  "confidence": 0.0',
+            "}",
+            '当 status 为 "unsupported_query_shape" 时，query_shape 必须是 "unsupported"，unsupported 必须包含 reason_code、message 和 suggested_rewrites。',
+        ]
+    )
+
+
+def _generic_schema_contract(schema: Mapping[str, Any]) -> str:
+    title = schema.get("title") or schema.get("$id") or "unknown_schema"
+    required = schema.get("required")
+    properties = schema.get("properties")
+    lines = [f"返回一个符合 {title} 的 JSON 对象。"]
+    if isinstance(required, list) and required:
+        lines.append("必须包含字段：" + "、".join(str(item) for item in required))
+    if isinstance(properties, Mapping) and properties:
+        lines.append("允许字段：" + "、".join(str(key) for key in properties))
+    lines.append("完整 schema 由工程侧校验；如果校验失败，系统会带错误原因重试。")
+    return "\n".join(lines)
 
 
 def _response_content(payload: Mapping[str, Any]) -> str:

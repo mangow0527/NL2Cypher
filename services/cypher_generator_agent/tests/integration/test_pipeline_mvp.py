@@ -246,7 +246,11 @@ def test_pipeline_can_use_real_llm_mode_with_openai_compatible_client(
     assert llm_calls[0]["schema_name"] == "question_decomposition_v1"
     assert "只返回一个 JSON 对象" in llm_calls[0]["prompt"]
     assert "你是图原生 Cypher 生成流水线中的问题结构化拆解器" in llm_calls[0]["prompt"]
+    assert "输出契约（简化版，完整 schema 由工程侧校验）" in llm_calls[0]["prompt"]
+    assert "正常拆解时返回" in llm_calls[0]["prompt"]
     assert "Return exactly one JSON object" not in llm_calls[0]["prompt"]
+    assert "JSON Schema:" not in llm_calls[0]["prompt"]
+    assert '"$defs"' not in llm_calls[0]["prompt"]
     assert '"intent_type": "list"' in llm_calls[0]["raw_output"]
 
 

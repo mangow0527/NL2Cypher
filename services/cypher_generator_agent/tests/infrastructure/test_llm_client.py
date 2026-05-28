@@ -81,8 +81,13 @@ def test_openai_compatible_client_posts_schema_bound_json_request(
     assert "不要返回 Markdown" in request["json"]["messages"][0]["content"]
     assert "Schema 名称" in request["json"]["messages"][0]["content"]
     assert "第 2 次尝试" in request["json"]["messages"][0]["content"]
+    assert "输出契约（简化版，完整 schema 由工程侧校验）" in request["json"]["messages"][0]["content"]
+    assert "正常拆解时返回" in request["json"]["messages"][0]["content"]
+    assert "literal_candidates" in request["json"]["messages"][0]["content"]
     assert "Return exactly one JSON object" not in request["json"]["messages"][0]["content"]
-    assert '"required": ["schema_version"]' in request["json"]["messages"][0]["content"]
+    assert "JSON Schema:" not in request["json"]["messages"][0]["content"]
+    assert '"$defs"' not in request["json"]["messages"][0]["content"]
+    assert '"required": ["schema_version"]' not in request["json"]["messages"][0]["content"]
     assert request["timeout"] == 12.0
 
 
