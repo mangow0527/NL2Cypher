@@ -51,6 +51,7 @@ class CandidateRetriever:
                 )
             )
 
+        candidates = self._with_vertex_id_properties(candidates, semantic_types=semantic_types)
         candidates.sort(key=_candidate_sort_key)
         if limit is not None:
             candidates = candidates[:limit]
@@ -59,6 +60,54 @@ class CandidateRetriever:
     @property
     def embedding_provider(self) -> object | None:
         return self._embedding_provider
+
+    def _with_vertex_id_properties(
+        self,
+        candidates: list[SemanticCandidate],
+        *,
+        semantic_types: set[SemanticType] | None,
+    ) -> list[SemanticCandidate]:
+        if semantic_types is not None and "property" not in semantic_types:
+            return candidates
+
+        existing = {(candidate.semantic_type, candidate.semantic_id) for candidate in candidates}
+        documents_by_id = {
+            (document.semantic_type, document.semantic_id): document for document in self._documents
+        }
+        additions: list[SemanticCandidate] = []
+        for vertex_candidate in candidates:
+            if vertex_candidate.semantic_type != "vertex":
+                continue
+            id_property = str(vertex_candidate.metadata.get("id_property") or "")
+            if not id_property:
+                continue
+            property_id = f"{vertex_candidate.semantic_id}.{id_property}"
+            key = ("property", property_id)
+            if key in existing:
+                continue
+            document = documents_by_id.get(key)
+            if document is None:
+                continue
+            additions.append(
+                SemanticCandidate(
+                    semantic_type=document.semantic_type,
+                    semantic_id=document.semantic_id,
+                    semantic_name=document.semantic_name,
+                    owner=document.owner,
+                    score=min(vertex_candidate.score, 0.90),
+                    match_type="text",
+                    evidence=[
+                        {
+                            "term": vertex_candidate.semantic_name,
+                            "source": "vertex.id_property",
+                            "matched_text": property_id,
+                        }
+                    ],
+                    metadata=dict(document.metadata),
+                )
+            )
+            existing.add(key)
+        return [*candidates, *additions]
 
 
 def _candidate_sort_key(candidate: SemanticCandidate) -> tuple[float, int, str]:

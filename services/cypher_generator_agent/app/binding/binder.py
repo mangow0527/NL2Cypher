@@ -84,9 +84,11 @@ class SemanticBinder:
     ) -> BindingPlan:
         candidate_index = _CandidateIndex(_coerce_candidates(candidates))
         literal_bindings = self._bind_literals(grounded_understanding)
-        filter_bindings = self._bind_filters(grounded_understanding, candidate_index, literal_bindings)
-
         property_bindings = self._bind_properties(grounded_understanding, candidate_index)
+        filter_bindings = self._bind_filters(grounded_understanding, candidate_index, literal_bindings)
+        if not filter_bindings:
+            filter_bindings = _filters_from_selected_literals(literal_bindings, property_bindings)
+
         for filter_binding in filter_bindings:
             property_binding = self._bind_property(
                 {"owner": filter_binding.owner, "name": filter_binding.property},
@@ -101,14 +103,24 @@ class SemanticBinder:
         group_by = self._bind_group_by(grounded_understanding, candidate_index)
         measures = self._bind_measures(grounded_understanding, candidate_index)
 
+        vertex_bindings = self._bind_vertices(grounded_understanding, candidate_index)
+        edge_bindings = self._bind_edges(grounded_understanding, candidate_index)
+        metric_bindings = self._bind_metrics(grounded_understanding, candidate_index)
+        path_pattern_bindings = self._bind_path_patterns(grounded_understanding, candidate_index)
+        query_shape = _normalize_query_shape(grounded_understanding.get("query_shape"))
+        if query_shape == "vertex_lookup" and edge_bindings and len(vertex_bindings) >= 2:
+            query_shape = "single_hop_traversal"
+        if query_shape == "metric_aggregate" and not metric_bindings and measures:
+            query_shape = "ad_hoc_aggregate"
+
         return BindingPlan(
-            query_shape=_normalize_query_shape(grounded_understanding.get("query_shape")),
-            vertex_bindings=self._bind_vertices(grounded_understanding, candidate_index),
-            edge_bindings=self._bind_edges(grounded_understanding, candidate_index),
+            query_shape=query_shape,
+            vertex_bindings=vertex_bindings,
+            edge_bindings=edge_bindings,
             property_bindings=property_bindings,
             literal_bindings=literal_bindings,
-            metric_bindings=self._bind_metrics(grounded_understanding, candidate_index),
-            path_pattern_bindings=self._bind_path_patterns(grounded_understanding, candidate_index),
+            metric_bindings=metric_bindings,
+            path_pattern_bindings=path_pattern_bindings,
             filters=filter_bindings,
             group_by=group_by,
             measures=measures,
@@ -277,10 +289,14 @@ class SemanticBinder:
         grounded: Mapping[str, Any],
         candidate_index: "_CandidateIndex",
     ) -> list[dict[str, Any]]:
-        projection = _coerce_dict_list(grounded.get("projection", []), "projection")
+        projection = [
+            _normalize_reference_item(item, field_name="projection")
+            for item in _coerce_dict_list(grounded.get("projection", []), "projection")
+        ]
         for item in projection:
             self._validate_semantic_reference(item, candidate_index, field_name="projection")
         return projection
+
 
     def _bind_sort(
         self,
@@ -312,7 +328,10 @@ class SemanticBinder:
         grounded: Mapping[str, Any],
         candidate_index: "_CandidateIndex",
     ) -> list[dict[str, Any]]:
-        measures = _coerce_dict_list(grounded.get("measures", []), "measures")
+        measures = [
+            self._normalize_measure_item(item)
+            for item in _coerce_dict_list(grounded.get("measures", []), "measures")
+        ]
         for item in measures:
             _validate_measure_reference(item, field_name="measures")
             self._validate_semantic_reference(
@@ -321,6 +340,21 @@ class SemanticBinder:
                 field_name="measures",
             )
         return measures
+
+    def _normalize_measure_item(self, item: Mapping[str, Any]) -> dict[str, Any]:
+        normalized = dict(item)
+        if isinstance(normalized.get("property"), Mapping):
+            return normalized
+
+        vertex_name = normalized.get("vertex") or normalized.get("owner")
+        if vertex_name is None:
+            return normalized
+
+        vertex = self.registry.get_vertex(str(vertex_name))
+        normalized["alias"] = normalized.get("alias") or f"{_snake_case(vertex.name)}_count"
+        normalized["target"] = normalized.get("target") or _snake_case(vertex.name)
+        normalized["property"] = {"owner": vertex.name, "name": vertex.id_property}
+        return normalized
 
     def _validate_semantic_reference(
         self,
@@ -393,6 +427,73 @@ class SemanticBinder:
             raise BindingValidationError(
                 f"cannot bind {object_type} {name}: not found in semantic registry"
             ) from exc
+
+
+def _filters_from_selected_literals(
+    literal_bindings: list[LiteralBinding],
+    property_bindings: list[PropertyBinding],
+) -> list[FilterBinding]:
+    selected_properties = {(binding.owner, binding.name) for binding in property_bindings}
+    filters: list[FilterBinding] = []
+    for literal in literal_bindings:
+        if not literal.resolved:
+            continue
+        if selected_properties and (literal.owner, literal.property) not in selected_properties:
+            continue
+        filters.append(
+            FilterBinding(
+                owner=literal.owner,
+                property=literal.property,
+                operator="eq",
+                raw_literal=literal.raw_literal,
+                value=literal.value,
+                literal=literal,
+            )
+        )
+    return filters
+
+
+def _normalize_reference_item(item: Mapping[str, Any], *, field_name: str) -> dict[str, Any]:
+    shorthand = _single_semantic_reference(item)
+    if shorthand is not None:
+        semantic_type, semantic_id = shorthand
+        if semantic_type == "vertex":
+            return {"semantic_type": "vertex", "name": semantic_id}
+        if semantic_type == "property" and "." in semantic_id:
+            owner, name = semantic_id.split(".", 1)
+            return {"semantic_type": "property", "owner": owner, "name": name}
+
+    binding = item.get("binding")
+    if isinstance(binding, Mapping):
+        normalized = _normalize_reference_item(binding, field_name=field_name)
+        if item.get("alias") is not None:
+            normalized["alias"] = item["alias"]
+        return normalized
+
+    normalized = dict(item)
+    property_ref = normalized.get("property")
+    if isinstance(property_ref, str) and "." in property_ref:
+        owner, name = property_ref.split(".", 1)
+        normalized["property"] = {"owner": owner, "name": name}
+    semantic_type = normalized.get("semantic_type")
+    if semantic_type == "vertex":
+        return {"semantic_type": "vertex", "name": _extract_name(normalized, "vertex")}
+    if semantic_type == "property":
+        owner, name = _extract_owner_name(normalized)
+        return {"semantic_type": "property", "owner": owner, "name": name}
+    return normalized
+
+
+def _single_semantic_reference(item: Mapping[str, Any]) -> tuple[str, str] | None:
+    if len(item) != 1:
+        return None
+    key = next(iter(item))
+    if not isinstance(key, str) or ":" not in key:
+        return None
+    semantic_type, semantic_id = key.split(":", 1)
+    if semantic_type not in {"vertex", "property", "edge", "metric", "path_pattern"} or not semantic_id:
+        return None
+    return semantic_type, semantic_id
 
 
 class _CandidateIndex:
@@ -486,6 +587,15 @@ def _extract_owner_name(item: Any) -> tuple[str, str]:
             raise BindingValidationError(f"property candidate is missing owner: {item.semantic_id}")
         return item.owner, item.semantic_name
     if isinstance(item, Mapping):
+        shorthand = _single_semantic_reference(item)
+        if shorthand is not None:
+            semantic_type, semantic_id = shorthand
+            if semantic_type == "property" and "." in semantic_id:
+                owner, name = semantic_id.split(".", 1)
+                return owner, name
+        binding = item.get("binding")
+        if isinstance(binding, Mapping):
+            return _extract_owner_name(binding)
         nested_property = item.get("property")
         if isinstance(nested_property, Mapping):
             owner = nested_property.get("owner")
@@ -494,6 +604,8 @@ def _extract_owner_name(item: Any) -> tuple[str, str]:
                 return str(owner), str(name)
         owner = item.get("owner") or item.get("expected_vertex") or item.get("expected_edge")
         name = item.get("name") or item.get("property") or item.get("property_name")
+        if isinstance(name, str) and "." in name and owner is None:
+            owner, name = name.split(".", 1)
         semantic_id = item.get("semantic_id")
         if (owner is None or name is None) and isinstance(semantic_id, str) and "." in semantic_id:
             owner, name = semantic_id.split(".", 1)
@@ -519,6 +631,8 @@ def _resolved_literal_value(result: LiteralResolverResult) -> Any | None:
 def _literal_from_filter(item: Mapping[str, Any]) -> LiteralBinding | None:
     literal_payload = item.get("literal") or item.get("literal_result")
     if literal_payload is None:
+        return None
+    if not isinstance(literal_payload, Mapping) or "expected_property" not in literal_payload:
         return None
     result = _coerce_literal_result(literal_payload)
     owner = result.expected_vertex or result.expected_edge
@@ -558,6 +672,14 @@ def _extract_raw_literal(item: Mapping[str, Any], inline_literal: LiteralBinding
         return str(raw_literal)
     if inline_literal is not None:
         return inline_literal.raw_literal
+    literal_payload = item.get("literal")
+    if isinstance(literal_payload, Mapping) and literal_payload.get("raw_literal") is not None:
+        return str(literal_payload["raw_literal"])
+    shorthand = _single_semantic_reference(item)
+    if shorthand is not None:
+        value = item[next(iter(item))]
+        if isinstance(value, str | int | float | bool):
+            return str(value)
     return None
 
 
@@ -569,7 +691,12 @@ def _find_literal_binding(
 ) -> LiteralBinding | None:
     for literal in literal_bindings:
         if literal.owner == owner and literal.property == property_name:
-            if raw_literal is None or literal.raw_literal == raw_literal:
+            literal_values = {
+                literal.raw_literal,
+                None if literal.value is None else str(literal.value),
+                None if literal.normalized_value is None else str(literal.normalized_value),
+            }
+            if raw_literal is None or raw_literal in literal_values:
                 return literal
     return None
 
@@ -663,6 +790,12 @@ def _normalize_operator(value: Any) -> str:
     if normalized is None:
         raise BindingValidationError(f"unsupported filter operator {raw}")
     return normalized
+
+
+def _snake_case(value: str) -> str:
+    text = value.replace("-", "_")
+    text = "".join(f"_{char.lower()}" if char.isupper() else char for char in text)
+    return text.strip("_")
 
 
 def _append_unique_named(bindings: list[Any], binding: Any) -> list[Any]:

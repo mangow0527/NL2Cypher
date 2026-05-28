@@ -88,6 +88,46 @@ def test_hyphenated_enum_is_not_forced_through_id_value_index() -> None:
     assert result.value_index_miss is False
 
 
+def test_ascii_enum_with_chinese_qualifier_resolves_single_contained_value(
+    resolver: LiteralResolver,
+) -> None:
+    result = resolver.resolve(
+        LiteralResolverRequest(
+            raw_literal="Gold级别",
+            expected_vertex="Service",
+            expected_property="quality_of_service",
+            literal_kind_hint="enum",
+        )
+    )
+
+    assert result.resolved is True
+    assert result.resolved_value == "GOLD"
+    assert result.normalized_value == "GOLD"
+    assert result.match_type == "exact"
+    assert result.confidence == pytest.approx(0.99)
+    assert result.requires_user_choice is False
+
+
+def test_ascii_state_with_chinese_qualifier_resolves_single_contained_value(
+    resolver: LiteralResolver,
+) -> None:
+    result = resolver.resolve(
+        LiteralResolverRequest(
+            raw_literal="down状态",
+            expected_vertex="Port",
+            expected_property="status",
+            literal_kind_hint="enum",
+        )
+    )
+
+    assert result.resolved is True
+    assert result.resolved_value == "down"
+    assert result.normalized_value == "down"
+    assert result.match_type == "exact"
+    assert result.confidence == pytest.approx(0.99)
+    assert result.requires_user_choice is False
+
+
 def test_hyphenated_enum_still_resolves_when_kind_hint_is_mislabeled_as_id() -> None:
     registry = load_graph_semantic_model(
         {

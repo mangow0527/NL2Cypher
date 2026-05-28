@@ -68,6 +68,10 @@ class LiteralResolver:
         if synonym_result is not None:
             return synonym_result
 
+        contained_result = self._resolve_contained_valid_value(request, prop)
+        if contained_result is not None:
+            return contained_result
+
         parsed = parse_typed_literal(
             raw_literal,
             prop.type,
@@ -148,6 +152,39 @@ class LiteralResolver:
                     ],
                 )
         return None
+
+    def _resolve_contained_valid_value(
+        self,
+        request: LiteralResolverRequest,
+        prop: PropertyDefinition,
+    ) -> LiteralResolverResult | None:
+        matches: list[tuple[Any, str, str]] = []
+        for value in prop.valid_values:
+            for display in [value, *prop.value_synonyms.get(value, [])]:
+                if _literal_contains_display(request.raw_literal, display):
+                    source = "property.valid_values" if display == value else "property.value_synonyms"
+                    matches.append((value, str(display), source))
+                    break
+
+        unique_values = {value for value, _, _ in matches}
+        if len(unique_values) != 1:
+            return None
+
+        value, display, source = matches[0]
+        return self._resolved_result(
+            request,
+            resolved_value=value,
+            normalized_value=value,
+            match_type="exact" if source == "property.valid_values" else "value_synonym",
+            confidence=0.99,
+            evidence=[
+                LiteralEvidence(
+                    source=source,
+                    matched=request.raw_literal.strip(),
+                    target=display,
+                )
+            ],
+        )
 
     def _resolve_value_synonym(
         self,
@@ -365,3 +402,27 @@ def _fuzzy_score(raw_literal: str, candidate: str) -> float:
     if normalized_candidate in normalized_raw or normalized_raw in normalized_candidate:
         score = max(score, 0.85)
     return min(score, 1.0)
+
+
+def _literal_contains_display(raw_literal: str, display: Any) -> bool:
+    normalized_raw = normalize_literal_text(raw_literal)
+    normalized_display = normalize_literal_text(display)
+    if not normalized_raw or not normalized_display:
+        return False
+    if not any(char.isascii() and char.isalnum() for char in normalized_display):
+        return False
+    if normalized_raw == normalized_display:
+        return False
+    start = normalized_raw.find(normalized_display)
+    while start != -1:
+        end = start + len(normalized_display)
+        before = normalized_raw[start - 1] if start > 0 else ""
+        after = normalized_raw[end] if end < len(normalized_raw) else ""
+        if not _is_ascii_word_char(before) and not _is_ascii_word_char(after):
+            return True
+        start = normalized_raw.find(normalized_display, start + 1)
+    return False
+
+
+def _is_ascii_word_char(value: str) -> bool:
+    return bool(value) and value.isascii() and (value.isalnum() or value == "_")

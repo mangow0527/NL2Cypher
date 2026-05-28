@@ -190,6 +190,147 @@ def test_ad_hoc_measures_are_preserved_for_dsl_builder(
     ]
 
 
+def test_llm_nested_filter_payload_is_normalized_to_selected_literal(
+    binder: SemanticBinder,
+) -> None:
+    literal_result = LiteralResolverResult(
+        raw_literal="Gold级别",
+        resolved=True,
+        resolved_value="GOLD",
+        normalized_value="GOLD",
+        match_type="exact",
+        confidence=0.99,
+        expected_vertex="Service",
+        expected_property="quality_of_service",
+    )
+
+    plan = binder.bind(
+        {
+            "query_shape": "single_hop",
+            "selected_vertices": ["Service", "Tunnel"],
+            "selected_edges": ["SERVICE_USES_TUNNEL"],
+            "selected_properties": ["Service.quality_of_service"],
+            "selected_literals": [literal_result.model_dump()],
+            "filters": [
+                {
+                    "role": "filter",
+                    "binding": {
+                        "candidate_id": "property:Service.quality_of_service",
+                        "semantic_type": "property",
+                        "semantic_id": "Service.quality_of_service",
+                        "semantic_name": "quality_of_service",
+                        "owner": "Service",
+                    },
+                    "literal": {"raw_literal": "Gold级别", "resolved_value": "GOLD"},
+                }
+            ],
+            "projection": [
+                {
+                    "role": "vertex",
+                    "binding": {
+                        "candidate_id": "vertex:Tunnel",
+                        "semantic_type": "vertex",
+                        "semantic_id": "Tunnel",
+                        "semantic_name": "Tunnel",
+                        "owner": None,
+                    },
+                }
+            ],
+        },
+        candidates=_gold_candidates(),
+    )
+
+    assert plan.filters[0].owner == "Service"
+    assert plan.filters[0].property == "quality_of_service"
+    assert plan.filters[0].raw_literal == "Gold级别"
+    assert plan.filters[0].value == "GOLD"
+    assert plan.projection == [{"semantic_type": "vertex", "name": "Tunnel"}]
+
+
+def test_llm_shorthand_filter_and_projection_are_normalized(
+    binder: SemanticBinder,
+) -> None:
+    literal_result = LiteralResolverResult(
+        raw_literal="down",
+        resolved=True,
+        resolved_value="down",
+        normalized_value="down",
+        match_type="exact",
+        confidence=1.0,
+        expected_vertex="Port",
+        expected_property="status",
+    )
+
+    plan = binder.bind(
+        {
+            "query_shape": "vertex_lookup",
+            "selected_vertices": ["Port"],
+            "selected_properties": ["Port.status"],
+            "selected_literals": [literal_result.model_dump()],
+            "filters": [{"property:Port.status": "down"}],
+            "projection": [{"vertex:Port": {}}],
+        },
+        candidates=[
+            _candidate("vertex", "Port"),
+            _candidate("property", "Port.status", owner="Port", semantic_name="status"),
+        ],
+    )
+
+    assert plan.filters[0].owner == "Port"
+    assert plan.filters[0].property == "status"
+    assert plan.filters[0].value == "down"
+    assert plan.projection == [{"semantic_type": "vertex", "name": "Port"}]
+
+
+def test_metric_aggregate_without_metric_binding_falls_back_to_ad_hoc_count(
+    binder: SemanticBinder,
+) -> None:
+    literal_result = LiteralResolverResult(
+        raw_literal="防火墙",
+        resolved=True,
+        resolved_value="firewall",
+        normalized_value="firewall",
+        match_type="value_synonym",
+        confidence=0.98,
+        expected_vertex="NetworkElement",
+        expected_property="elem_type",
+    )
+
+    plan = binder.bind(
+        {
+            "query_shape": "metric_aggregate",
+            "selected_vertices": ["NetworkElement"],
+            "selected_properties": ["NetworkElement.elem_type"],
+            "selected_literals": [literal_result.model_dump()],
+            "filters": [{"property": "NetworkElement.elem_type", "value": "firewall"}],
+            "measures": [{"function": "count", "vertex": "NetworkElement"}],
+        },
+        candidates=[
+            _candidate("vertex", "NetworkElement"),
+            _candidate(
+                "property",
+                "NetworkElement.elem_type",
+                owner="NetworkElement",
+                semantic_name="elem_type",
+            ),
+            _candidate("property", "NetworkElement.id", owner="NetworkElement", semantic_name="id"),
+        ],
+    )
+
+    assert plan.query_shape == "ad_hoc_aggregate"
+    assert plan.filters[0].owner == "NetworkElement"
+    assert plan.filters[0].value == "firewall"
+    assert plan.measures == [
+        {
+            "function": "count",
+            "vertex": "NetworkElement",
+            "alias": "network_element_count",
+            "target": "network_element",
+            "property": {"owner": "NetworkElement", "name": "id"},
+        }
+    ]
+
+
 def test_ad_hoc_measure_property_must_be_in_candidate_set(
     binder: SemanticBinder,
 ) -> None:

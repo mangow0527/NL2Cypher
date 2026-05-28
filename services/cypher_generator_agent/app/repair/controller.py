@@ -163,8 +163,25 @@ def _clarification_question(issue: RepairIssue) -> str:
 
 def _candidate_options(issue: RepairIssue) -> list[dict[str, Any]]:
     candidates = issue.details.get("candidates") or issue.details.get("alternatives") or []
-    options = [dict(candidate) for candidate in candidates if isinstance(candidate, dict)]
+    options = [_clarification_option_payload(candidate) for candidate in candidates if isinstance(candidate, dict)]
     return sorted(options, key=_confidence, reverse=True)
+
+
+def _clarification_option_payload(candidate: dict[str, Any]) -> dict[str, Any]:
+    if "id" in candidate and "label" in candidate:
+        return {
+            key: value
+            for key, value in candidate.items()
+            if key in {"id", "label", "vertex_name", "confidence", "value"}
+        }
+    value = candidate.get("value")
+    display = candidate.get("display") or value
+    return {
+        "id": str(value if value is not None else display),
+        "label": str(display),
+        "value": value,
+        "confidence": candidate.get("confidence"),
+    }
 
 
 def _confidence(candidate: dict[str, Any]) -> float:

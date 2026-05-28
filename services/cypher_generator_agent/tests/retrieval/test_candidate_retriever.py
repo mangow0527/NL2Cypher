@@ -14,6 +14,13 @@ FIXTURE_PATH = (
     / "fixtures"
     / "network_topology_graph_model.yaml"
 )
+TUGRAPH_ARTIFACT_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "app"
+    / "semantic_model"
+    / "artifacts"
+    / "tugraph_network_semantic_model.yaml"
+)
 
 
 @pytest.fixture
@@ -96,6 +103,49 @@ def test_used_phrase_recalls_service_uses_tunnel_edge(retriever: CandidateRetrie
     assert candidate.score > 0.6
     assert candidate.evidence[0].source == "ai_context.examples"
     assert "使用了" in candidate.evidence[0].matched_text
+
+
+def test_aspect_particle_phrase_recalls_service_uses_tunnel_edge_from_packaged_artifact() -> None:
+    retriever = CandidateRetriever(load_graph_semantic_model(TUGRAPH_ARTIFACT_PATH).registry)
+
+    result = retriever.retrieve(
+        {
+            "schema_version": "question_decomposition_v1",
+            "original_question": "Gold 服务使用了哪些隧道",
+            "target_concepts": ["服务", "隧道"],
+            "relation_phrases": ["使用了"],
+            "literal_candidates": [
+                {"text": "Gold", "kind_hint": "service", "attached_to": "服务"}
+            ],
+            "substantive_terms": ["Gold", "服务", "使用", "隧道"],
+        }
+    )
+
+    candidate = _candidate(result.candidates, "edge", "SERVICE_USES_TUNNEL")
+    assert candidate.score > 0.6
+    assert candidate.evidence[0].matched_text == "使用隧道"
+
+
+def test_retrieved_vertices_include_id_property_candidates_for_literal_binding() -> None:
+    retriever = CandidateRetriever(load_graph_semantic_model(TUGRAPH_ARTIFACT_PATH).registry)
+
+    result = retriever.retrieve(
+        {
+            "schema_version": "question_decomposition_v1",
+            "original_question": "隧道 tun-mpls-001 经过哪些设备",
+            "target_concepts": ["设备"],
+            "relation_phrases": ["经过"],
+            "literal_candidates": [
+                {"text": "tun-mpls-001", "kind_hint": "identifier", "attached_to": "隧道"}
+            ],
+            "substantive_terms": ["隧道", "tun-mpls-001", "经过", "设备"],
+        }
+    )
+
+    assert _candidate(result.candidates, "vertex", "Tunnel")
+    id_property = _candidate(result.candidates, "property", "Tunnel.id")
+    assert id_property.owner == "Tunnel"
+    assert id_property.evidence[0].source == "vertex.id_property"
 
 
 def test_through_phrase_recalls_edge_and_named_path_pattern_with_distinct_evidence(

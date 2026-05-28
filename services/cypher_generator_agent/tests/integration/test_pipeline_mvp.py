@@ -234,13 +234,452 @@ def test_pipeline_can_use_real_llm_mode_with_openai_compatible_client(
         get_settings.cache_clear()
 
     assert output.status == "generated"
-    assert len(fake_client.calls) == 2
-    assert [call["schema_name"] for call in fake_client.calls] == [
-        "question_decomposition_v1",
-        "grounded_understanding_v1",
-    ]
+    assert len(fake_client.calls) == 1
+    assert [call["schema_name"] for call in fake_client.calls] == ["question_decomposition_v1"]
     assert output.trace["semantic_model"]["name"] == "network_schema_v10"
     assert _compiler_parameters(output.trace)["quality_of_service"] == "Gold"
+
+
+def test_llm_literal_kind_hint_outside_contract_is_normalized_before_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeStructuredClient:
+        provider = "openai_compatible"
+
+        def __init__(self) -> None:
+            self.responses = [
+                {
+                    "schema_version": "question_decomposition_v1",
+                    "intent_type": "list",
+                    "original_question": "Gold 服务使用了哪些隧道",
+                    "target_concepts": ["服务", "隧道"],
+                    "relation_phrases": ["使用了"],
+                    "literal_candidates": [
+                        {"text": "Gold", "kind_hint": "service", "attached_to": "服务"}
+                    ],
+                    "filter_phrases": [],
+                    "substantive_terms": ["Gold", "服务", "使用", "隧道"],
+                    "stopword_terms": ["了", "哪些"],
+                    "modality_terms": [],
+                    "time_terms": [],
+                    "unparsed_terms": [],
+                    "output_shape": "rows",
+                },
+                _grounded_service_tunnel_payload(direction="forward"),
+            ]
+
+        def generate_structured(
+            self,
+            *,
+            prompt: str,
+            schema_name: str,
+            schema: dict[str, Any],
+            attempt: int,
+        ) -> dict[str, Any]:
+            return self.responses.pop(0)
+
+    fake_client = FakeStructuredClient()
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_ENABLED", "true")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_API_KEY", "test-key")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        pipeline_module,
+        "_structured_llm_client_from_settings",
+        lambda settings: fake_client,
+    )
+    monkeypatch.setattr(
+        pipeline_module,
+        "_deterministic_grounding_from_slots",
+        lambda **kwargs: None,
+    )
+
+    try:
+        output = run_pipeline(
+            question="Gold 服务使用了哪些隧道",
+            qa_id="llm-kind-hint-normalized",
+            generation_run_id="run-llm-kind-hint-normalized",
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert output.status == "generated"
+    assert _compiler_parameters(output.trace)["quality_of_service"] == "Gold"
+
+
+def test_llm_enum_literal_with_qualifier_prefers_enum_property_over_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeStructuredClient:
+        provider = "openai_compatible"
+
+        def generate_structured(
+            self,
+            *,
+            prompt: str,
+            schema_name: str,
+            schema: dict[str, Any],
+            attempt: int,
+        ) -> dict[str, Any]:
+            return {
+                "schema_version": "question_decomposition_v1",
+                "intent_type": "list",
+                "original_question": "Gold级别的服务都使用了哪些隧道",
+                "target_concepts": ["服务", "隧道"],
+                "relation_phrases": ["使用了"],
+                "literal_candidates": [
+                    {"text": "Gold级别", "kind_hint": "category", "attached_to": "服务"}
+                ],
+                "filter_phrases": [],
+                "substantive_terms": ["Gold级别", "服务", "使用", "隧道"],
+                "stopword_terms": ["都", "哪些"],
+                "modality_terms": [],
+                "time_terms": [],
+                "unparsed_terms": [],
+                "output_shape": "rows",
+            }
+
+    def fake_grounded_stage(
+        trace: object,
+        *,
+        decomposition: dict[str, Any],
+        retrieval_result: object,
+        literal_results: list[object],
+        settings: object,
+        llm_client: object | None,
+        attempt_no: int,
+        repair_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        literal = literal_results[0].model_dump(mode="json")
+        assert literal["raw_literal"] == "Gold级别"
+        assert literal["resolved_value"] == "Gold"
+        assert literal["expected_property"] == "quality_of_service"
+        return {
+            "schema_version": "grounded_understanding_v1",
+            "status": "grounded",
+            "query_shape": "single_hop",
+            "selected_bindings": [
+                _grounded_binding("source", "vertex", "Service"),
+                _grounded_binding("target", "vertex", "Tunnel"),
+                _grounded_binding("relation", "edge", "SERVICE_USES_TUNNEL", direction="forward"),
+                _grounded_binding(
+                    "filter_property",
+                    "property",
+                    "Service.quality_of_service",
+                    semantic_name="quality_of_service",
+                    owner="Service",
+                ),
+            ],
+            "selected_literals": [literal],
+            "filters": [
+                {
+                    "owner": "Service",
+                    "property": "quality_of_service",
+                    "operator": "=",
+                    "raw_literal": "Gold级别",
+                }
+            ],
+            "projection": [{"semantic_type": "vertex", "name": "Tunnel"}],
+            "coverage": {
+                "substantive_terms": {"total": 4, "covered": 4, "uncovered": []},
+                "stopword_terms": {"ignored": ["都", "哪些"]},
+                "modality_terms": {"warning_only": []},
+                "time_terms": {"covered": [], "unresolved": []},
+                "unparsed_terms": {"unresolved": []},
+            },
+            "unsupported": None,
+            "confidence": 0.93,
+        }
+
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_ENABLED", "true")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_API_KEY", "test-key")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        pipeline_module,
+        "_structured_llm_client_from_settings",
+        lambda settings: FakeStructuredClient(),
+    )
+    monkeypatch.setattr(pipeline_module, "_run_grounded_understanding_stage", fake_grounded_stage)
+
+    try:
+        output = run_pipeline(
+            question="Gold级别的服务都使用了哪些隧道",
+            qa_id="llm-gold-qualifier",
+            generation_run_id="run-llm-gold-qualifier",
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert output.status == "generated"
+    assert _compiler_parameters(output.trace)["quality_of_service"] == "Gold"
+
+
+def test_decomposition_slot_normalization_uses_attachment_and_classifier_without_prompt_inference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeStructuredClient:
+        provider = "openai_compatible"
+
+        def generate_structured(
+            self,
+            *,
+            prompt: str,
+            schema_name: str,
+            schema: dict[str, Any],
+            attempt: int,
+        ) -> dict[str, Any]:
+            return {
+                "schema_version": "question_decomposition_v1",
+                "intent_type": "count",
+                "original_question": "有多少台防火墙",
+                "target_concepts": [],
+                "relation_phrases": [],
+                "literal_candidates": [
+                    {"text": "防火墙", "kind_hint": "category", "attached_to": "设备"}
+                ],
+                "filter_phrases": [],
+                "substantive_terms": ["防火墙"],
+                "stopword_terms": [],
+                "modality_terms": [],
+                "time_terms": [],
+                "unparsed_terms": [],
+                "output_shape": "scalar",
+            }
+
+    def fake_grounded_stage(
+        trace: object,
+        *,
+        decomposition: dict[str, Any],
+        retrieval_result: object,
+        literal_results: list[object],
+        settings: object,
+        llm_client: object | None,
+        attempt_no: int,
+        repair_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        candidate_ids = {f"{item.semantic_type}:{item.semantic_id}" for item in retrieval_result.candidates}
+        assert "vertex:NetworkElement" in candidate_ids
+        literal = literal_results[0].model_dump(mode="json")
+        assert literal["resolved_value"] == "firewall"
+        assert literal["expected_vertex"] == "NetworkElement"
+        return {
+            "schema_version": "grounded_understanding_v1",
+            "status": "grounded",
+            "query_shape": "metric_aggregate",
+            "selected_bindings": [
+                _grounded_binding("target_vertex", "vertex", "NetworkElement"),
+                _grounded_binding(
+                    "filter_property",
+                    "property",
+                    "NetworkElement.elem_type",
+                    semantic_name="elem_type",
+                    owner="NetworkElement",
+                ),
+            ],
+            "selected_literals": [literal],
+            "filters": [{"property": "NetworkElement.elem_type", "value": "firewall"}],
+            "projection": [],
+            "group_by": [],
+            "measures": [{"function": "count", "vertex": "NetworkElement"}],
+            "coverage": {
+                "substantive_terms": {"total": 3, "covered": 3, "uncovered": []},
+                "stopword_terms": {"ignored": []},
+                "modality_terms": {"warning_only": []},
+                "time_terms": {"covered": [], "unresolved": []},
+                "unparsed_terms": {"unresolved": []},
+            },
+            "unsupported": None,
+            "confidence": 0.93,
+        }
+
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_ENABLED", "true")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_API_KEY", "test-key")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        pipeline_module,
+        "_structured_llm_client_from_settings",
+        lambda settings: FakeStructuredClient(),
+    )
+    monkeypatch.setattr(pipeline_module, "_run_grounded_understanding_stage", fake_grounded_stage)
+
+    try:
+        output = run_pipeline(
+            question="有多少台防火墙",
+            qa_id="slot-normalization",
+            generation_run_id="run-slot-normalization",
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert output.status == "generated"
+    assert "count(ne.id)" in output.cypher
+    assert _compiler_parameters(output.trace)["elem_type"] == "firewall"
+
+
+def test_value_synonym_candidate_becomes_literal_request_when_llm_omits_literal_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeStructuredClient:
+        provider = "openai_compatible"
+
+        def generate_structured(
+            self,
+            *,
+            prompt: str,
+            schema_name: str,
+            schema: dict[str, Any],
+            attempt: int,
+        ) -> dict[str, Any]:
+            return {
+                "schema_version": "question_decomposition_v1",
+                "intent_type": "count",
+                "original_question": "有多少台防火墙",
+                "target_concepts": ["防火墙"],
+                "relation_phrases": [],
+                "literal_candidates": [],
+                "filter_phrases": [],
+                "substantive_terms": ["防火墙"],
+                "stopword_terms": ["有", "多少台"],
+                "modality_terms": [],
+                "time_terms": [],
+                "unparsed_terms": [],
+                "output_shape": "scalar",
+            }
+
+    fake_client = FakeStructuredClient()
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_ENABLED", "true")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_API_KEY", "test-key")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        pipeline_module,
+        "_structured_llm_client_from_settings",
+        lambda settings: fake_client,
+    )
+
+    try:
+        output = run_pipeline(
+            question="有多少台防火墙",
+            qa_id="value-candidate-literal",
+            generation_run_id="run-value-candidate-literal",
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert output.status == "generated"
+    assert "WHERE ne.elem_type = $elem_type" in output.cypher
+    assert _compiler_parameters(output.trace)["elem_type"] == "firewall"
+
+
+def test_llm_vertex_lookup_without_filter_or_projection_uses_selected_literal_and_default_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeStructuredClient:
+        provider = "openai_compatible"
+
+        def __init__(self) -> None:
+            self.responses = [
+                {
+                    "schema_version": "question_decomposition_v1",
+                    "intent_type": "list",
+                    "original_question": "当前 down 的端口有哪些",
+                    "target_concepts": ["端口"],
+                    "relation_phrases": [],
+                    "literal_candidates": [
+                        {"text": "down", "kind_hint": "state", "attached_to": "端口"}
+                    ],
+                    "filter_phrases": [],
+                    "substantive_terms": ["down", "端口"],
+                    "stopword_terms": ["有哪些"],
+                    "modality_terms": [],
+                    "time_terms": ["当前"],
+                    "unparsed_terms": [],
+                    "output_shape": "rows",
+                },
+                {
+                    "schema_version": "grounded_understanding_v1",
+                    "status": "grounded",
+                    "query_shape": "vertex_lookup",
+                    "selected_bindings": [
+                        _grounded_binding("target_vertex", "vertex", "Port"),
+                        _grounded_binding(
+                            "filter_property",
+                            "property",
+                            "Port.status",
+                            semantic_name="status",
+                            owner="Port",
+                        ),
+                    ],
+                    "selected_literals": [],
+                    "filters": [],
+                    "projection": [],
+                    "coverage": {
+                        "substantive_terms": {"total": 2, "covered": 2, "uncovered": []},
+                        "stopword_terms": {"ignored": ["有哪些"]},
+                        "modality_terms": {"warning_only": []},
+                        "time_terms": {"covered": [], "unresolved": []},
+                        "unparsed_terms": {"unresolved": []},
+                    },
+                    "unsupported": None,
+                    "confidence": 0.92,
+                },
+            ]
+
+        def generate_structured(
+            self,
+            *,
+            prompt: str,
+            schema_name: str,
+            schema: dict[str, Any],
+            attempt: int,
+        ) -> dict[str, Any]:
+            if schema_name == "grounded_understanding_v1":
+                self.responses[0]["selected_literals"] = [
+                    result
+                    for result in _latest_literal_resolver_results
+                ]
+            return self.responses.pop(0)
+
+    _latest_literal_resolver_results: list[dict[str, Any]] = []
+    original_run_grounded = pipeline_module._run_grounded_understanding_stage
+
+    def capture_literals(*args: Any, **kwargs: Any) -> Any:
+        _latest_literal_resolver_results[:] = [
+            result.model_dump(mode="json")
+            for result in kwargs["literal_results"]
+        ]
+        return original_run_grounded(*args, **kwargs)
+
+    fake_client = FakeStructuredClient()
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_ENABLED", "true")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_API_KEY", "test-key")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        pipeline_module,
+        "_structured_llm_client_from_settings",
+        lambda settings: fake_client,
+    )
+    monkeypatch.setattr(pipeline_module, "_run_grounded_understanding_stage", capture_literals)
+
+    try:
+        output = run_pipeline(
+            question="当前 down 的端口有哪些",
+            qa_id="llm-vertex-lookup-defaults",
+            generation_run_id="run-llm-vertex-lookup-defaults",
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert output.status == "generated"
+    assert output.cypher == "MATCH (port:Port)\nWHERE port.status = $status\nRETURN port.id AS port_id"
 
 
 def test_llm_repair_loop_regrounds_after_repairable_validator_error(
@@ -301,6 +740,11 @@ def test_llm_repair_loop_regrounds_after_repairable_validator_error(
         pipeline_module,
         "_structured_llm_client_from_settings",
         lambda settings: fake_client,
+    )
+    monkeypatch.setattr(
+        pipeline_module,
+        "_deterministic_grounding_from_slots",
+        lambda **kwargs: None,
     )
 
     try:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from pathlib import Path
+import re
 from time import perf_counter
 from typing import Any
 
@@ -411,6 +412,13 @@ def _select_grounded_understanding(
 ) -> Any:
     if llm_client is None:
         return _mock_understand(decomposition, literal_results)
+    deterministic = _deterministic_grounding_from_slots(
+        decomposition=decomposition,
+        retrieval_result=retrieval_result,
+        literal_results=literal_results,
+    )
+    if deterministic is not None:
+        return deterministic
     return GroundedUnderstandingSelector(
         llm_client,
         max_schema_retries=settings.llm_max_schema_retries,
@@ -420,6 +428,193 @@ def _select_grounded_understanding(
         literal_results=literal_results,
         repair_context=repair_context,
     )
+
+
+def _deterministic_grounding_from_slots(
+    *,
+    decomposition: Mapping[str, Any],
+    retrieval_result: CandidateRetrievalResult,
+    literal_results: list[LiteralResolverResult],
+) -> dict[str, Any] | None:
+    candidates = list(retrieval_result.candidates)
+    vertex_ids = _candidate_ids(candidates, "vertex")
+    edge_candidates = [candidate for candidate in candidates if candidate.semantic_type == "edge"]
+    literal_payloads = [result.model_dump(mode="json") for result in literal_results]
+    filters = _filters_from_literal_results(literal_results)
+    selected_properties = _property_refs_from_filters(filters)
+    coverage = decomposition.get("coverage") or _coverage(covered=_string_list(decomposition.get("substantive_terms")))
+
+    if _is_count_slot(decomposition):
+        target_vertex = _count_target_vertex(decomposition, vertex_ids, literal_results)
+        if target_vertex is None:
+            return None
+        id_property = _vertex_id_property(target_vertex, candidates)
+        selected_properties = _append_unique_property_ref(
+            selected_properties,
+            {"owner": target_vertex, "name": id_property},
+        )
+        return {
+            "query_shape": "ad_hoc_aggregate",
+            "selected_vertices": [target_vertex],
+            "selected_properties": selected_properties,
+            "selected_literals": literal_payloads,
+            "filters": filters,
+            "group_by": [],
+            "measures": [
+                {
+                    "alias": f"{_snake_case(target_vertex)}_count",
+                    "function": "count",
+                    "target": _snake_case(target_vertex),
+                    "property": {"owner": target_vertex, "name": id_property},
+                }
+            ],
+            "projection": [],
+            "coverage": coverage,
+        }
+
+    connecting_edge = _best_connecting_edge(vertex_ids, edge_candidates)
+    if connecting_edge is not None:
+        from_vertex = str(connecting_edge.metadata["from_vertex"])
+        to_vertex = str(connecting_edge.metadata["to_vertex"])
+        projection_vertex = _projection_vertex_for_traversal([from_vertex, to_vertex], literal_results)
+        return {
+            "query_shape": "single_hop",
+            "selected_vertices": [from_vertex, to_vertex],
+            "selected_edges": [{"name": connecting_edge.semantic_id, "direction": "forward"}],
+            "selected_properties": selected_properties,
+            "selected_literals": literal_payloads,
+            "filters": filters,
+            "projection": [{"semantic_type": "vertex", "name": projection_vertex}],
+            "coverage": coverage,
+        }
+
+    if len(vertex_ids) == 1:
+        return {
+            "query_shape": "vertex_lookup",
+            "selected_vertices": [vertex_ids[0]],
+            "selected_properties": selected_properties,
+            "selected_literals": literal_payloads,
+            "filters": filters,
+            "projection": [{"semantic_type": "vertex", "name": vertex_ids[0]}],
+            "coverage": coverage,
+        }
+
+    return None
+
+
+def _candidate_ids(candidates: list[SemanticCandidate], semantic_type: str) -> list[str]:
+    ids: list[str] = []
+    for candidate in candidates:
+        if candidate.semantic_type == semantic_type and candidate.semantic_id not in ids:
+            ids.append(candidate.semantic_id)
+    return ids
+
+
+def _filters_from_literal_results(results: list[LiteralResolverResult]) -> list[dict[str, Any]]:
+    filters: list[dict[str, Any]] = []
+    for result in results:
+        if not result.resolved or result.expected_property is None:
+            continue
+        owner = result.expected_vertex or result.expected_edge
+        if owner is None:
+            continue
+        filters.append(
+            {
+                "owner": owner,
+                "property": result.expected_property,
+                "operator": "=",
+                "raw_literal": result.raw_literal,
+            }
+        )
+    return filters
+
+
+def _property_refs_from_filters(filters: list[dict[str, Any]]) -> list[dict[str, str]]:
+    refs: list[dict[str, str]] = []
+    for item in filters:
+        refs = _append_unique_property_ref(
+            refs,
+            {"owner": str(item["owner"]), "name": str(item["property"])},
+        )
+    return refs
+
+
+def _append_unique_property_ref(
+    refs: list[dict[str, str]],
+    item: dict[str, str],
+) -> list[dict[str, str]]:
+    if item not in refs:
+        refs.append(item)
+    return refs
+
+
+def _is_count_slot(decomposition: Mapping[str, Any]) -> bool:
+    return str(decomposition.get("intent_type") or "").strip() == "count" or str(
+        decomposition.get("output_shape") or ""
+    ).strip() == "scalar"
+
+
+def _count_target_vertex(
+    decomposition: Mapping[str, Any],
+    vertex_ids: list[str],
+    literal_results: list[LiteralResolverResult],
+) -> str | None:
+    for result in literal_results:
+        if result.expected_vertex in vertex_ids:
+            return result.expected_vertex
+    question = str(decomposition.get("original_question") or decomposition.get("question") or "")
+    if "台" in question and "NetworkElement" in vertex_ids:
+        return "NetworkElement"
+    return vertex_ids[0] if vertex_ids else None
+
+
+def _vertex_id_property(vertex_name: str, candidates: list[SemanticCandidate]) -> str:
+    for candidate in candidates:
+        if candidate.semantic_type == "vertex" and candidate.semantic_id == vertex_name:
+            return str(candidate.metadata.get("id_property") or "id")
+    return "id"
+
+
+def _best_connecting_edge(
+    vertex_ids: list[str],
+    edges: list[SemanticCandidate],
+) -> SemanticCandidate | None:
+    vertices = set(vertex_ids)
+    connecting = [
+        edge
+        for edge in edges
+        if edge.metadata.get("from_vertex") in vertices and edge.metadata.get("to_vertex") in vertices
+    ]
+    if not connecting:
+        return None
+    return max(connecting, key=lambda edge: (edge.score, _edge_match_priority(edge), edge.semantic_id))
+
+
+def _edge_match_priority(edge: SemanticCandidate) -> int:
+    if edge.match_type == "exact":
+        return 3
+    if edge.match_type == "synonym":
+        return 2
+    if edge.match_type == "text":
+        return 1
+    return 0
+
+
+def _projection_vertex_for_traversal(
+    vertices: list[str],
+    literal_results: list[LiteralResolverResult],
+) -> str:
+    filtered_owners = {result.expected_vertex or result.expected_edge for result in literal_results}
+    for vertex in reversed(vertices):
+        if vertex not in filtered_owners:
+            return vertex
+    return vertices[-1]
+
+
+def _snake_case(value: str) -> str:
+    text = value.replace("-", "_")
+    text = "".join(f"_{char.lower()}" if char.isupper() else char for char in text)
+    return text.strip("_")
 
 
 def _run_grounded_understanding_stage(
@@ -463,9 +658,6 @@ def _with_literal_requests_from_candidates(
         return decomposition
 
     literal_candidates = _literal_candidate_payloads(decomposition)
-    if not literal_candidates:
-        return decomposition
-
     requests = [
         request
         for request in (
@@ -474,6 +666,8 @@ def _with_literal_requests_from_candidates(
         )
         if request is not None
     ]
+    if not requests:
+        requests = _literal_requests_from_value_candidates(decomposition, retrieval_result.candidates)
     if not requests:
         return decomposition
 
@@ -495,7 +689,9 @@ def _literal_candidate_payloads(decomposition: Mapping[str, Any]) -> list[dict[s
             payloads.append(
                 {
                     "text": str(text),
-                    "kind_hint": str(item.get("kind_hint") or item.get("literal_kind_hint") or "unknown"),
+                    "kind_hint": _normalize_literal_kind_hint(
+                        item.get("kind_hint") or item.get("literal_kind_hint")
+                    ),
                     "attached_to": str(item.get("attached_to") or item.get("owner") or ""),
                 }
             )
@@ -512,6 +708,11 @@ def _literal_request_from_candidate(
     if not raw_literal:
         return None
 
+    attached_owners = _attached_vertex_names(str(literal.get("attached_to") or ""), candidates)
+    id_request = _id_literal_request(raw_literal, literal, attached_owners, candidates)
+    if id_request is not None:
+        return id_request
+
     property_candidate = _best_literal_property_candidate(literal, candidates)
     if property_candidate is None or property_candidate.owner is None:
         return None
@@ -524,7 +725,104 @@ def _literal_request_from_candidate(
         "raw_literal": raw_literal,
         owner_kind: property_candidate.owner,
         "expected_property": property_candidate.semantic_name,
-        "literal_kind_hint": str(literal.get("kind_hint") or "unknown"),
+        "literal_kind_hint": _normalize_literal_kind_hint(literal.get("kind_hint")),
+    }
+
+
+def _literal_requests_from_value_candidates(
+    decomposition: Mapping[str, Any],
+    candidates: list[SemanticCandidate],
+) -> list[dict[str, Any]]:
+    vertex_ids = {
+        candidate.semantic_id
+        for candidate in candidates
+        if candidate.semantic_type == "vertex"
+    }
+    requests: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for candidate in candidates:
+        if candidate.semantic_type != "property" or candidate.owner not in vertex_ids:
+            continue
+        if not candidate.metadata.get("valid_values"):
+            continue
+        for evidence in candidate.evidence:
+            if evidence.source not in {"valid_values", "value_synonyms"}:
+                continue
+            raw_literal = str(evidence.term).strip()
+            if not raw_literal or raw_literal not in str(
+                decomposition.get("original_question") or decomposition.get("question") or ""
+            ):
+                continue
+            if not _evidence_supports_literal_value(raw_literal, evidence.source, evidence.matched_text):
+                continue
+            if _is_vertex_surface_term(raw_literal, candidates):
+                continue
+            key = (candidate.owner or "", candidate.semantic_name, raw_literal)
+            if key in seen:
+                continue
+            seen.add(key)
+            requests.append(
+                {
+                    "raw_literal": raw_literal,
+                    "expected_vertex": candidate.owner,
+                    "expected_property": candidate.semantic_name,
+                    "literal_kind_hint": "enum",
+                }
+            )
+    return requests
+
+
+def _evidence_supports_literal_value(raw_literal: str, source: str, matched_text: str) -> bool:
+    if source == "value_synonyms":
+        return _norm(raw_literal) == _norm(matched_text)
+    if source == "valid_values":
+        return _literal_value_matches(raw_literal, matched_text)
+    return False
+
+
+def _is_vertex_surface_term(raw_literal: str, candidates: list[SemanticCandidate]) -> bool:
+    normalized = _norm(raw_literal)
+    for candidate in candidates:
+        if candidate.semantic_type != "vertex":
+            continue
+        if _norm(candidate.semantic_name) == normalized:
+            return True
+        for evidence in candidate.evidence:
+            if _norm(evidence.term) == normalized or _norm(evidence.matched_text) == normalized:
+                return True
+    return False
+
+
+def _id_literal_request(
+    raw_literal: str,
+    literal: Mapping[str, Any],
+    attached_owners: set[str],
+    candidates: list[SemanticCandidate],
+) -> dict[str, Any] | None:
+    if _normalize_literal_kind_hint(literal.get("kind_hint")) != "id" and not _looks_like_id_literal(raw_literal):
+        return None
+
+    vertex_candidates = [
+        candidate
+        for candidate in candidates
+        if candidate.semantic_type == "vertex" and candidate.semantic_id in attached_owners
+    ]
+    if not vertex_candidates:
+        vertex_candidates = [
+            candidate
+            for candidate in candidates
+            if candidate.semantic_type == "vertex" and _id_prefix_matches(raw_literal, candidate.semantic_id)
+        ]
+    if not vertex_candidates:
+        return None
+
+    vertex = max(vertex_candidates, key=lambda candidate: (candidate.score, candidate.semantic_id))
+    id_property = str(vertex.metadata.get("id_property") or "id")
+    return {
+        "raw_literal": raw_literal,
+        "expected_vertex": vertex.semantic_id,
+        "expected_property": id_property,
+        "literal_kind_hint": "id",
     }
 
 
@@ -533,6 +831,7 @@ def _best_literal_property_candidate(
     candidates: list[SemanticCandidate],
 ) -> SemanticCandidate | None:
     raw_literal = str(literal.get("text") or "")
+    kind_hint = _normalize_literal_kind_hint(literal.get("kind_hint"))
     attached_to = str(literal.get("attached_to") or "")
     attached_owners = _attached_vertex_names(attached_to, candidates)
     property_candidates = [
@@ -544,24 +843,53 @@ def _best_literal_property_candidate(
         return None
     return max(
         property_candidates,
-        key=lambda candidate: _literal_property_score(raw_literal, attached_owners, candidate),
+        key=lambda candidate: _literal_property_score(raw_literal, kind_hint, attached_owners, candidate),
     )
 
 
 def _literal_property_score(
     raw_literal: str,
+    kind_hint: str,
     attached_owners: set[str],
     candidate: SemanticCandidate,
 ) -> tuple[int, float, str]:
     score = 0
     valid_values = candidate.metadata.get("valid_values", [])
-    if any(_norm(value) == _norm(raw_literal) for value in valid_values):
+    if any(_literal_value_matches(raw_literal, value) for value in valid_values):
         score += 100
+    if valid_values and kind_hint in {"enum", "enum_or_name", "unknown"}:
+        score += 30
     if candidate.owner in attached_owners:
         score += 25
-    if candidate.semantic_name == "id":
+    if candidate.semantic_name == "id" and (kind_hint == "id" or _looks_like_id_literal(raw_literal)):
         score += 5
+    if candidate.semantic_name == "id" and kind_hint != "id" and not _looks_like_id_literal(raw_literal):
+        score -= 50
     return (score, candidate.score, candidate.semantic_id)
+
+
+def _literal_value_matches(raw_literal: str, candidate_value: Any) -> bool:
+    raw = _norm(raw_literal)
+    candidate = _norm(candidate_value)
+    if not raw or not candidate:
+        return False
+    return raw == candidate or _contains_with_ascii_boundaries(raw, candidate) or _contains_with_ascii_boundaries(candidate, raw)
+
+
+def _contains_with_ascii_boundaries(haystack: str, needle: str) -> bool:
+    start = haystack.find(needle)
+    while start != -1:
+        end = start + len(needle)
+        before = haystack[start - 1] if start > 0 else ""
+        after = haystack[end] if end < len(haystack) else ""
+        if not _is_ascii_word_char(before) and not _is_ascii_word_char(after):
+            return True
+        start = haystack.find(needle, start + 1)
+    return False
+
+
+def _is_ascii_word_char(value: str) -> bool:
+    return bool(value) and (value.isascii() and (value.isalnum() or value == "_"))
 
 
 def _attached_vertex_names(attached_to: str, candidates: list[SemanticCandidate]) -> set[str]:
@@ -592,6 +920,38 @@ def _candidate_owner_kind(owner: str, candidates: list[SemanticCandidate]) -> st
 
 def _norm(value: Any) -> str:
     return str(value).casefold().strip().replace("_", " ").replace("-", " ")
+
+
+def _normalize_literal_kind_hint(value: Any) -> str:
+    normalized = str(value or "unknown").casefold().strip().replace("-", "_").replace(" ", "_")
+    if normalized in {"enum", "enum_or_name", "id", "name", "time", "numeric", "unknown"}:
+        return normalized
+    if normalized in {"identifier", "identity", "key", "primary_key"}:
+        return "id"
+    if normalized in {"number", "integer", "float", "decimal", "amount", "capacity", "bandwidth", "latency"}:
+        return "numeric"
+    if normalized in {"date", "datetime", "timestamp", "recent", "latest"}:
+        return "time"
+    if normalized in {"enum_value", "status", "type", "category", "level", "tier", "qos"}:
+        return "enum"
+    if normalized in {"entity_name", "label", "display_name"}:
+        return "name"
+    return "unknown"
+
+
+def _looks_like_id_literal(value: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z]+-[A-Za-z0-9-]+", value.strip()))
+
+
+def _id_prefix_matches(raw_literal: str, semantic_id: str) -> bool:
+    prefix = raw_literal.split("-", 1)[0].casefold()
+    aliases = {
+        "ne": {"networkelement", "network_element"},
+        "tun": {"tunnel"},
+        "svc": {"service"},
+        "port": {"port"},
+    }
+    return semantic_id.casefold() in aliases.get(prefix, set())
 
 
 def _duration_ms(started: float) -> int:
@@ -706,10 +1066,60 @@ def _decomposition_payload(result: Any) -> dict[str, Any]:
         ]
         payload.setdefault("literal_requests", [])
         payload.setdefault("coverage", _coverage(covered=payload.get("substantive_terms", [])))
-        return payload
+        return _normalize_decomposition_slots(payload)
     if isinstance(result, Mapping):
-        return dict(result)
+        return _normalize_decomposition_slots(dict(result))
     raise TypeError(f"question decomposer returned unsupported payload: {result!r}")
+
+
+def _normalize_decomposition_slots(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(payload)
+    literal_objects = list(
+        normalized.get("literal_candidate_objects") or normalized.get("literal_candidates") or []
+    )
+    target_concepts = _string_list(normalized.get("target_concepts"))
+    substantive_terms = _string_list(normalized.get("substantive_terms"))
+
+    for literal in literal_objects:
+        if not isinstance(literal, Mapping):
+            continue
+        attached_to = str(literal.get("attached_to") or "").strip()
+        if attached_to:
+            target_concepts = _append_unique_term(target_concepts, attached_to)
+            substantive_terms = _append_unique_term(substantive_terms, attached_to)
+        text = str(literal.get("text") or literal.get("raw_literal") or literal.get("value") or "").strip()
+        if text:
+            substantive_terms = _append_unique_term(substantive_terms, text)
+
+    question = str(normalized.get("original_question") or normalized.get("question") or "")
+    for classifier, concept in _classifier_surface_concepts(question).items():
+        target_concepts = _append_unique_term(target_concepts, concept)
+        substantive_terms = _append_unique_term(substantive_terms, classifier)
+        substantive_terms = _append_unique_term(substantive_terms, concept)
+
+    normalized["target_concepts"] = target_concepts
+    normalized["substantive_terms"] = substantive_terms
+    normalized.setdefault("coverage", _coverage(covered=substantive_terms))
+    return normalized
+
+
+def _classifier_surface_concepts(question: str) -> dict[str, str]:
+    concepts: dict[str, str] = {}
+    if "台" in question:
+        concepts["台"] = "设备"
+    return concepts
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list | tuple):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _append_unique_term(values: list[str], term: str) -> list[str]:
+    if term not in values:
+        values.append(term)
+    return values
 
 
 def _output_from_grounded_outcome(
@@ -1016,6 +1426,10 @@ def _resolve_literals(
 ) -> list[LiteralResolverResult]:
     results: list[LiteralResolverResult] = []
     for payload in literal_requests:
+        payload = {
+            **payload,
+            "literal_kind_hint": _normalize_literal_kind_hint(payload.get("literal_kind_hint")),
+        }
         request = LiteralResolverRequest(
             **payload,
             question_context=question,

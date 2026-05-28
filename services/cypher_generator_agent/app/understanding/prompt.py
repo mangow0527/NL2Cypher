@@ -33,6 +33,8 @@ def build_grounded_understanding_prompt(
             f"Return only structured output for schema {GROUNDED_UNDERSTANDING_SCHEMA_VERSION}.",
             "You must choose only from top_candidates by candidate_id.",
             "Every selected binding must copy semantic_type, semantic_id, semantic_name, and owner exactly from its candidate payload.",
+            "Resolved literal_resolver_results are authoritative for filters: copy selected_literals from them exactly, and choose the matching property candidate for expected_vertex/expected_edge + expected_property when it exists.",
+            "Do not select a different property for a resolved literal just because another candidate has the same enum value.",
             "If two or more candidates are close and you cannot safely choose, put their candidate_ids in ambiguities and do not invent a selected binding for that role.",
             "If repair_context is present, fix the previous semantic error without inventing semantics outside top_candidates.",
             "Do not generate Cypher, do not connect to a database, do not explain, and do not return markdown.",

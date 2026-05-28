@@ -142,6 +142,37 @@ def test_ambiguous_top2_gap_below_threshold_asks_one_question_with_three_options
     ]
 
 
+def test_literal_resolver_alternatives_render_as_clarification_options() -> None:
+    decision = RepairController().decide(
+        _controller_input(
+            validator_errors=[
+                {
+                    "code": "literal_ambiguous",
+                    "message": "literal has close alternatives",
+                    "severity": "error",
+                    "details": {
+                        "literal": "tun-mpls-001",
+                        "alternatives": [
+                            {
+                                "value": "MPLS-TE",
+                                "display": "MPLS-TE",
+                                "confidence": 0.5263,
+                                "source": "property.valid_values",
+                                "why": "closest local literal candidate",
+                            }
+                        ],
+                    },
+                }
+            ]
+        )
+    )
+
+    assert decision.decision == "ask_user"
+    assert decision.clarification is not None
+    assert decision.clarification.options[0].id == "MPLS-TE"
+    assert decision.clarification.options[0].label == "MPLS-TE"
+
+
 def test_literal_unresolved_asks_user_instead_of_silently_continuing() -> None:
     decision = RepairController().decide(
         _controller_input(

@@ -19,6 +19,7 @@ def build_question_decomposition_prompt(question: str) -> str:
             "- modality_terms: approximations, uncertainty, or soft constraints.",
             "- time_terms: temporal expressions.",
             "- unparsed_terms: text you cannot confidently classify.",
+            "Preserve classifiers and attachment words from the user's question as surface terms; downstream code will normalize them.",
             "If the question is missing the referent for a pronoun or deictic expression, return result_type=clarification_required with a concise clarification_question.",
             "Do not generate Cypher, do not explain, and do not return markdown.",
             f"Question: {question}",

@@ -6,9 +6,9 @@
 
 ## Summary
 
-The v1 IR implementation is functionally closed for the local cypher-generator-agent pipeline. The agent now consumes a packaged TuGraph Graph Semantic Model YAML, resolves literals from a static value index, builds grounded bindings, validates semantics, emits a restricted DSL, compiles read-only TuGraph-oriented Cypher, runs static self-validation, and returns full trace payloads without connecting to TuGraph.
+The v1 IR implementation is functionally closed for the local cypher-generator-agent pipeline. The agent now consumes a packaged TuGraph Graph Semantic Model YAML, resolves literals from a static value index, builds grounded bindings with deterministic slot grounding, validates semantics, emits a restricted DSL, compiles read-only TuGraph-oriented Cypher, runs static self-validation, and returns full trace payloads without connecting to TuGraph.
 
-The remaining non-code operational item is a live LLM smoke test against the configured provider after secrets are injected via environment variables or deployment secrets. API keys must not be committed or recorded in trace/log fixtures.
+The live LLM smoke test has been executed against the configured OpenAI-compatible provider. API keys were environment-only inputs and must not be committed or recorded in trace/log fixtures. The architectural conclusion is that v1 should treat the LLM as a surface-slot filler; semantic grounding remains an engineering-owned step.
 
 ## Current Completion Matrix
 
@@ -24,13 +24,13 @@ The remaining non-code operational item is a live LLM smoke test against the con
 | IR-06 Observability Skeleton | Done | trace/stage/metric tests | `cga_graph_trace_v1` used for final outputs. |
 | IR-07 LiteralResolver MVP | Done | enum, ID, time/numeric tests | Uses packaged static `tugraph_value_index.json`; no live DB lookup. |
 | IR-08 Candidate Retriever MVP | Done | retrieval tests | Candidates include confidence, match type, and evidence. |
-| IR-09 Semantic Binder MVP | Done | binder tests | Binder converts grounded LLM output into stable binding plan. |
+| IR-09 Semantic Binder MVP | Done | binder tests | Binder converts deterministic or fallback grounded output into stable binding plan. |
 | IR-10 Semantic Validator MVP | Done | coverage, endpoint, DSL support, aggregate tests | Coverage failures cannot silently generate Cypher. |
 | IR-11 DSL Builder MVP | Done | builder tests across supported query shapes | Builds restricted DSL from validated binding plans. |
 | IR-12 Pipeline Orchestrator MVP | Done | pipeline integration tests | End-to-end deterministic path works. |
-| SP-01 LLM Feasibility Spike | Done (offline) | spike report and structured LLM client tests | Live provider smoke remains operational follow-up after deployment secrets are injected. |
+| SP-01 LLM Feasibility Spike | Done (live smoke) | spike report, structured LLM client tests, 5-question provider smoke | v1 regular path uses LLM decomposition only; deterministic grounding prevents dependence on Grounded JSON shape. |
 | IR-13 Question Decomposer | Done | schema retry and term classification tests | Real LLM path uses structured output. |
-| IR-14 Grounded LLM Understanding | Done | grounded schema and candidate boundary tests | LLM must choose only from candidates. |
+| IR-14 Grounded LLM Understanding | Done | grounded schema and candidate boundary tests | Kept as fallback/repair capability; regular path prefers deterministic grounding from semantic candidates and literal results. |
 | IR-15 Repair / Clarification Controller | Done | decision matrix, fingerprint, assumption notice, pipeline repair-loop test | Multi-round LLM re-grounding is now connected for repairable semantic validator failures. |
 | IR-16 Full Trace and Testing-Agent Contract | Done | API contract and testing-agent submission tests | Generated and non-success outputs carry trace snapshots. |
 | IR-16.5 Performance Baseline | Done | baseline collector/writer tests | CI does not yet publish baseline artifacts; local artifact writer exists. |
@@ -68,13 +68,14 @@ Current golden matrix details:
 
 ## Operational Follow-Ups
 
-1. Run a live LLM smoke test after setting `CYPHER_GENERATOR_AGENT_LLM_*` secrets outside git.
-2. Decide whether CI should upload `reports/baseline_YYYYMMDD.json` artifacts, or keep performance baseline generation manual until v1.1.
-3. Keep static value-index freshness documented: new TuGraph entities are visible only after the next semantic artifact release.
+1. Decide whether CI should upload `reports/baseline_YYYYMMDD.json` artifacts, or keep performance baseline generation manual until v1.1.
+2. Keep static value-index freshness documented: new TuGraph entities are visible only after the next semantic artifact release.
+3. Keep provider smoke artifacts redacted: no API keys, Authorization headers, or full environment dumps.
 
 ## Explicit Boundaries
 
 - CGA does not connect to TuGraph.
 - CGA does not run `EXPLAIN`, dry-run, probe query, or execution query.
 - DSL unsupported cases do not fallback to raw LLM-generated Cypher.
+- LLM regular path only fills question decomposition slots; candidate selection, literal binding, traversal selection, aggregation, DSL, compiler, and self-validation are deterministic.
 - API keys and provider secrets are environment-only inputs.

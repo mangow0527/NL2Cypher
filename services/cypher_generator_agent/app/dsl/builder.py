@@ -60,6 +60,15 @@ class RestrictedDslBuilder:
 
         dsl = self._base_payload(plan, source_question=source_question, query_id=query_id)
         dsl["bindings"] = {"target": {"vertex_name": target.name}}
+        if not plan.projection:
+            vertex = self.registry.get_vertex(target.name)
+            plan.projection.append(
+                {
+                    "semantic_type": "vertex",
+                    "name": target.name,
+                    "alias": f"{_snake_case(target.name)}_{vertex.id_property}",
+                }
+            )
         self._add_filters_projection_sort_limit(dsl, plan, role_by_owner=role_by_owner, include_filters=True)
         return dsl
 
@@ -84,6 +93,8 @@ class RestrictedDslBuilder:
         end = plan.vertex_bindings[1]
         edge = plan.edge_bindings[0]
         role_by_owner = {start.name: "start", end.name: "end"}
+        if not plan.projection:
+            plan.projection.append({"semantic_type": "vertex", "name": end.name})
 
         dsl = self._base_payload(plan, source_question=source_question, query_id=query_id)
         dsl["bindings"] = {

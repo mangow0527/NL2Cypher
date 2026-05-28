@@ -790,7 +790,7 @@ RETURN tun.id AS tunnel_id
 
 ### SP-01 LLM Feasibility Spike
 
-目标：在完整 LLM 接入前，用 2-3 天验证 Question Decomposer 和 Grounded Understanding 的 prompt 可行性，避免 Sprint 3 才暴露 prompt/schema 风险。
+目标：在完整 LLM 接入前，用 2-3 天验证 Question Decomposer 的 prompt 可行性，并验证 deterministic grounding 能否基于 surface slots、语义候选和 LiteralResolver 结果完成主路径生成，避免 Sprint 3 才暴露 prompt/schema 风险。
 
 依赖：IR-01，可与 IR-08 后续验证对齐。
 估算：S，time-box 2-3 天。
@@ -800,15 +800,16 @@ RETURN tun.id AS tunnel_id
 
 - 选定 v1 LLM provider 候选，例如 OpenAI、Anthropic 或自建模型。
 - 用 Golden Test Set v1 中 5 个真实问题跑 Question Decomposer prompt。
-- 用同一批问题和手工编排的候选集合跑 Grounded Understanding prompt；不要求真实 Candidate Retriever 已完成。
-- 记录 schema failure rate、term classification accuracy、candidate invention rate、平均 token usage。
+- 用同一批问题验证 deterministic grounding：LLM 只填 surface slots，候选召回、literal request 补全、binding、聚合和 traversal selection 由工程规则完成。
+- Grounded Understanding prompt 只作为 fallback/repair spike，不作为常规主路径验收条件。
+- 记录 schema failure rate、term classification accuracy、critical filter preservation、deterministic grounding generated rate、平均 token usage。
 - 输出 spike report，不接入主 pipeline，不阻塞确定性底座开发。
 
 验收：
 
 - 5 个问题都有原始 prompt、模型输出、schema 校验结果。
-- schema failure rate、classification miss、candidate invention 都有记录。
-- 如果 candidate invention 或 schema failure 明显偏高，Sprint 3 前必须调整 prompt 或降级策略。
+- schema failure rate、classification miss、critical filter preservation、deterministic grounding generated rate 都有记录。
+- 如果 schema failure 或 classification miss 明显偏高，Sprint 3 前必须调整 prompt 或降级策略；如果 deterministic grounding 无法覆盖核心 query shape，优先补工程规则，不把自由 Grounded JSON 作为默认兜底。
 
 ### IR-13 Question Decomposer
 
