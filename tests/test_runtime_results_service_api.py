@@ -95,6 +95,9 @@ def test_runtime_results_detail_script_puts_cypher_comparison_in_overview():
     assert "点类型数量" in script
     assert "filter_phrases" in script
     assert "从问题中抽取出的过滤条件短语" in script
+    assert "relation_phrases" in script
+    assert "表示两个业务对象如何连接的关系短语" in script
+    assert "例如“服务使用隧道”中的“使用”" in script
     assert "substantive_terms" in script
     assert "对查询语义有实际影响的词" in script
     assert "stopword_terms" in script
