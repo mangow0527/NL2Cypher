@@ -613,6 +613,47 @@ tbody tr.is-selected {
   padding: 8px 12px;
 }
 
+.field-help {
+  margin: 8px 0 12px;
+  padding: 12px 14px;
+  border: 1px solid rgba(64, 51, 41, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.48);
+}
+
+.field-help h4 {
+  margin: 0 0 8px;
+}
+
+.field-help p {
+  margin-bottom: 10px;
+  color: var(--muted);
+}
+
+.field-help dl {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.field-help dl div {
+  display: grid;
+  grid-template-columns: minmax(160px, 240px) 1fr;
+  gap: 12px;
+}
+
+.field-help dt {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 800;
+  word-break: break-word;
+}
+
+.field-help dd {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
 pre {
   margin: 0;
   min-height: 180px;

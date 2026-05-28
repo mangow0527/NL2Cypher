@@ -84,6 +84,15 @@ def test_runtime_results_detail_script_puts_cypher_comparison_in_overview():
     assert "阶段指标" in script
     assert "formatStageMetrics" in script
     assert "无阶段指标" in script
+    assert "字段说明" in script
+    assert "renderStageSectionHelp" in script
+    assert "stageFieldHints" in script
+    assert "model_path" in script
+    assert "语义模型 YAML 文件路径" in script
+    assert "model_checksum" in script
+    assert "模型内容校验值" in script
+    assert "vertices" in script
+    assert "点类型数量" in script
     assert "关键指标" not in script
     assert "metrics_summary: inlineValue(stage.metrics)" not in script
     assert "renderOntologyLayerPrompts" not in script

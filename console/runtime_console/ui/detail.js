@@ -173,6 +173,211 @@ function formatStageMetrics(metrics) {
   return parts.length ? parts.join(' · ') : '无阶段指标';
 }
 
+const stageFieldHints = {
+  __default: {
+    input: {
+      _summary: '这里展示该阶段收到的上游结构化数据。',
+    },
+    output: {
+      _summary: '这里展示该阶段处理完成后传给下游的结构化结果。',
+    },
+    metrics: {
+      _summary: '这里展示该阶段的计数指标、错误和警告。',
+      metrics: '阶段内部记录的计数或统计值。',
+      errors: '阶段执行时产生的错误列表。为空表示没有错误。',
+      warnings: '阶段执行时产生的警告列表。为空表示没有警告。',
+    },
+  },
+  graph_model_loader: {
+    input: {
+      _summary: '这里记录本次 CGA 读取哪一份图语义模型。',
+      model_path: '语义模型 YAML 文件路径。CGA 会基于这份模型做对象召回、语义校验和 Cypher 编译。',
+    },
+    output: {
+      _summary: '这里记录语义模型加载后的模型版本和规模。',
+      model_name: '语义模型名称，用来标识本次使用的是哪套业务语义层。',
+      model_checksum: '模型内容校验值，用来确认语义模型版本是否一致。',
+      vertices: '点类型数量，也就是模型里定义了多少类图节点。',
+      edges: '边/关系类型数量，也就是模型里定义了多少类图关系。',
+      path_patterns: '命名路径模板数量，用来复用常见多跳图查询路径。',
+    },
+  },
+  input_clarification_gate: {
+    input: {
+      _summary: '这里展示进入流水线前的原始问题和输入检查信息。',
+      question: '用户提交的自然语言问题。',
+    },
+    output: {
+      _summary: '这里展示问题是否足够清楚、是否可以进入后续语义生成流程。',
+      status: '输入检查结果。pass 表示可以继续，clarification_required 表示问题本身需要先澄清。',
+      reason_code: '触发拦截或澄清的原因代码。',
+      clarification: '需要向用户提出的澄清问题。',
+    },
+  },
+  question_decomposer: {
+    input: {
+      _summary: '这里展示发给问题拆解阶段的自然语言问题。',
+      question: '用户提交的自然语言问题。',
+    },
+    output: {
+      _summary: '这里展示 LLM 对问题的结构化拆解结果。',
+      intent_type: '问题意图类型，例如查询列表、统计、Top-N 或路径查询。',
+      target_concepts: '问题中提到的业务对象，例如服务、隧道、网元。',
+      literal_candidates: '问题中可能需要解析成字段值的词，例如 Gold、down、某个设备 ID。',
+      relation_mentions: '问题中提到的关系动词或关系短语。',
+      filters: '问题中表达的过滤条件。',
+      output_shape: '用户期望的返回形态，例如列表、计数或表格。',
+      llm_calls: '本阶段的 LLM 调用记录，包含提示词和原始返回。',
+    },
+  },
+  candidate_retrieval: {
+    output: {
+      _summary: '这里展示语义层召回到的候选对象，供后续 LLM 在候选集合内选择。',
+      candidates: '召回的语义候选列表，可能包含点、边、属性、指标或路径模板。',
+      semantic_id: '语义对象的稳定标识。',
+      score: '召回相似度或匹配分数。',
+    },
+  },
+  literal_resolver: {
+    output: {
+      _summary: '这里展示字面值解析结果，例如把 “Gold” 解析成某个枚举值。',
+      raw_literal: '用户问题里的原始字面值。',
+      resolved: '是否成功解析到语义层或 value-index 中的确定值。',
+      resolved_value: '解析后的标准值。',
+      expected: '期望匹配的语义字段。',
+      error_code: '解析失败原因。',
+      alternatives: '可供用户选择的候选值。',
+      value_index_miss: '是否因为 value-index 没有命中而失败。',
+    },
+  },
+  grounded_understanding: {
+    output: {
+      _summary: '这里展示 LLM 在候选集合内做出的语义选择。',
+      query_shape: '被识别出的查询形态。',
+      selected_vertices: '最终选择的点类型。',
+      selected_edges: '最终选择的边/关系类型。',
+      selected_properties: '最终选择的属性字段。',
+      assumptions: '系统在高置信场景下做出的假设。',
+    },
+  },
+  semantic_binder: {
+    output: {
+      _summary: '这里展示稳定的语义绑定计划，供校验器和 DSL 构建器使用。',
+      query_shape: '查询形态。',
+      bindings: '自然语言片段到语义对象的绑定结果。',
+      filters: '已绑定到具体字段和值的过滤条件。',
+      projections: '准备返回给用户的字段或对象。',
+    },
+  },
+  semantic_validator: {
+    output: {
+      _summary: '这里展示语义正确性校验结果。',
+      is_valid: '语义绑定是否通过校验。',
+      errors: '语义错误，例如类型不匹配、字面值无法解析或覆盖缺失。',
+      warnings: '不阻断生成的风险提示。',
+      assumptions: '系统继续执行时采用的假设。',
+    },
+  },
+  repair_controller: {
+    input: {
+      _summary: '这里展示校验失败或不确定时，修复决策器收到的上下文。',
+      validator_errors: '语义校验器产生的错误列表。',
+      repair_history: '此前修复尝试的历史，用来避免震荡。',
+    },
+    output: {
+      _summary: '这里展示系统决定继续修复、反问用户还是终止。',
+      decision: '系统决策，例如 ask_user、retry_llm 或 generation_failed。',
+      reason_code: '做出该决策的主要原因。',
+      clarification: '需要展示给用户的澄清反问。',
+      assumptions: '如果继续执行，需要向用户说明的假设。',
+    },
+  },
+  dsl_builder: {
+    output: {
+      _summary: '这里展示由语义绑定计划构建出的受限 DSL。',
+      schema_version: 'DSL schema 版本。',
+      query_shape: 'DSL 表达的查询形态。',
+      operations: 'DSL 操作序列，例如匹配、过滤、聚合、排序。',
+      projection: 'DSL 要返回的字段或对象。',
+    },
+  },
+  dsl_parser: {
+    output: {
+      _summary: '这里展示 DSL 解析结果，确认 DSL 结构可以被编译器消费。',
+      query_shape: '解析后的查询形态。',
+      operation_count: '解析出的 DSL 操作数量。',
+      errors: 'DSL 结构错误。',
+    },
+  },
+  cypher_compiler: {
+    output: {
+      _summary: '这里展示 DSL 编译成 Cypher 后的结果。',
+      cypher: '最终生成的 Cypher 查询文本。',
+      parameters: 'Cypher 参数字典，用于承载过滤值。',
+      expected_return_aliases: '编译器期望 RETURN 中出现的字段别名。',
+    },
+  },
+  cypher_self_validation: {
+    output: {
+      _summary: '这里展示不连接数据库前的 Cypher 静态自校验结果。',
+      valid: 'Cypher 是否通过自校验。',
+      errors: '阻断提交的静态错误，例如写操作、未知 label 或 RETURN 形态不一致。',
+      warnings: '不阻断提交的风险提示。',
+      checked_rules: '本次执行过的校验规则。',
+    },
+  },
+  output: {
+    output: {
+      _summary: '这里展示 CGA 最终对外输出的状态。',
+      status: '最终状态，例如 generated、clarification_required 或 generation_failed。',
+      has_dsl: '是否已经生成 DSL。',
+      has_cypher: '是否已经生成可提交的 Cypher。',
+      clarification: '如果需要反问用户，这里记录澄清内容。',
+    },
+  },
+};
+
+function stageFieldHint(stageKey, section) {
+  return {
+    ...(stageFieldHints.__default?.[section] || {}),
+    ...(stageFieldHints[stageKey]?.[section] || {}),
+  };
+}
+
+function payloadFieldKeys(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return [];
+  }
+  return Object.keys(payload).filter((key) => key !== '_summary');
+}
+
+function renderStageSectionHelp(stage, section, payload) {
+  const hints = stageFieldHint(stage.key, section);
+  const keys = payloadFieldKeys(payload);
+  const knownKeys = keys.slice(0, 12);
+  const items = knownKeys.map((key) => {
+    const description = hints[key] || `该字段由 ${stage.title_zh || cgaStageTitles[stage.key] || stage.key || '当前'} 阶段记录，保留原始 trace 字段名。`;
+    return `<div><dt>${escapeHtml(key)}</dt><dd>${escapeHtml(description)}</dd></div>`;
+  });
+  if (!items.length && !hints._summary) {
+    return '';
+  }
+  const extraCount = Math.max(0, keys.length - knownKeys.length);
+  return `
+    <aside class="field-help">
+      <h4>字段说明</h4>
+      ${hints._summary ? `<p>${escapeHtml(hints._summary)}</p>` : ''}
+      ${
+        items.length
+          ? `<dl>${items.join('')}${
+              extraCount ? `<div><dt>其他字段</dt><dd>${escapeHtml(`还有 ${extraCount} 个字段，请参考下方原始 JSON。`)}</dd></div>` : ''
+            }</dl>`
+          : `<p>下方没有结构化字段，或本阶段没有额外记录。</p>`
+      }
+    </aside>
+  `;
+}
+
 function humanAnswerType(value) {
   const labels = {
     free_text: '自由文本回答',
@@ -445,10 +650,13 @@ function renderCgaFlowStages(flow = {}) {
               <span class="status-pill tone-${tone(stage.status)}">${escapeHtml(stage.status || 'unknown')}</span>
             </summary>
             <h3>阶段输入</h3>
+            ${renderStageSectionHelp(stage, 'input', stage.input)}
             ${codeBlock(stage.input)}
             <h3>阶段输出</h3>
+            ${renderStageSectionHelp(stage, 'output', stage.output)}
             ${codeBlock(stage.output)}
             <h3>阶段指标 / 错误 / 警告</h3>
+            ${renderStageSectionHelp(stage, 'metrics', { metrics: stage.metrics, errors: stage.errors, warnings: stage.warnings })}
             ${codeBlock({ metrics: stage.metrics, errors: stage.errors, warnings: stage.warnings })}
           </details>
         `,
