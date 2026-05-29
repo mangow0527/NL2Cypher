@@ -15,7 +15,7 @@ The live LLM smoke test has been executed against the configured OpenAI-compatib
 | IR | Status | Evidence | Notes |
 | --- | --- | --- | --- |
 | IR-00 Project Contract Baseline | Done | API/output contract tests; no DB execution keys in CGA config | CGA remains generation-only and self-validation-only. |
-| IR-01 Graph Model Fixture | Done | `tests/fixtures/golden_questions.yaml`; packaged TuGraph semantic artifact | Golden set has 30 questions. |
+| IR-01 Graph Model Fixture | Done | `tests/fixtures/golden_questions.yaml`; packaged TuGraph semantic artifact | Golden set has 33 questions, including MIR-001 projection-slot regression cases. |
 | IR-02 Graph Model Loader / Registry | Done | `app/semantic_model/loader.py`, `registry.py`, validation tests | Supports OSI-style `semantic_model` wrapper. |
 | IR-03a Cypher Self-Validation MVP | Done | syntax / readonly / schema reference tests | No database connection. |
 | IR-03b Cypher Self-Validation Full | Done | shape, dialect, model artifact, variable-path bounds tests | Uses a conservative v1 parser adapter, not an ANTLR runtime dependency; path pattern and metric Cypher are load-time validated. |
@@ -37,7 +37,7 @@ The live LLM smoke test has been executed against the configured OpenAI-compatib
 | IR-17 Variable Path Traversal | Done | DSL/compiler/integration tests | Covers tunnels through devices. |
 | IR-18 Metric / Ad Hoc Aggregate | Done | aggregate builder/compiler/integration tests | Covers metric and ad hoc group-by patterns. |
 | IR-19 Top-N and Two-Step Aggregate | Done | top-n/two-step builder/compiler/integration tests | Covers nested aggregate path. |
-| IR-20 Golden Test Regression Matrix | Done | `test_golden_questions.py`; `.github/workflows/cypher-generator-agent.yml` | All 30 questions are tracked; runtime fixtures cover every generated query shape, and non-runtime failure cases are backed by RepairController contracts. |
+| IR-20 Golden Test Regression Matrix | Done | `test_golden_questions.py`; `.github/workflows/cypher-generator-agent.yml` | All 33 questions are tracked; runtime fixtures cover every generated query shape plus MIR-001 projection-slot slice, and non-runtime failure cases are backed by RepairController contracts. |
 
 ## Acceptance Evidence
 
@@ -47,10 +47,10 @@ Fresh local verification command:
 PYTHONPATH=. pytest services/cypher_generator_agent/tests -q
 ```
 
-Expected result after this closeout:
+Latest verified result:
 
 ```text
-all cypher-generator-agent tests pass
+484 passed in 3.99s
 ```
 
 Golden regression entrypoints:
@@ -62,8 +62,8 @@ PYTHONPATH=. pytest services/cypher_generator_agent/tests/integration/test_golde
 
 Current golden matrix details:
 
-- 30 declared questions (`gq-001` through `gq-030`).
-- Runtime fixture coverage now includes `vertex_lookup`, `single_hop_traversal`, `named_path_pattern`, `variable_path_traversal`, `metric_aggregate`, `ad_hoc_aggregate`, `top_n`, and `two_step_aggregate`.
+- 33 declared questions (`gq-001` through `gq-033`).
+- Runtime fixture coverage now includes `vertex_lookup`, `single_hop_traversal`, `named_path_pattern`, `variable_path_traversal`, `metric_aggregate`, `ad_hoc_aggregate`, `top_n`, `two_step_aggregate`, and the MIR-001 projection-slot slice (`gq-031` through `gq-033`).
 - Non-runtime negative cases are checked through RepairController contract tests for ambiguity, unsupported shape, readonly, oscillation, compiler shape mismatch, missing path parameters, and duplicate literal ambiguity.
 
 ## Operational Follow-Ups

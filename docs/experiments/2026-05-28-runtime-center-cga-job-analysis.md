@@ -22,18 +22,93 @@
 - 新问题：多跳路径降级为局部单跳（1）：`qa_a5f4b0253af3`。期望 `Service -> Tunnel -> dst NetworkElement -> Port`，实际生成 `Tunnel -[:TUNNEL_SRC]-> NetworkElement`。
 - 新问题：运行中心状态与落盘 repair 数据关联不完整（4）：`qa_c2508f2c0bac`、`qa_9cfa692813d5`、`qa_c80a82efe561`、`qa_a5f4b0253af3`。存在 testing 执行错误但 verdict 仍 pending、repair analysis 文件存在但详情页显示未读取到诊断记录的情况。
 
-## 2026-05-28 待修问题明细
+## 2026-05-29 MIR-001 后重跑进度
+
+- 本轮修复范围：MIR-001 投影槽位覆盖，包括 `slot_terms`、property projection 落地、projection coverage 校验、裸 vertex projection 拒绝、`vertex_full` 显式表达。
+- 远端部署版本：`b9a9d8a`。
+- 重跑时间：2026-05-28 20:43 左右（Asia/Shanghai）。
+- 重跑发送记录：`/home/mabingjie/apps/qa-agent/artifacts/experiment_runs/send_current8_to_cga8000_testing8003_after_mir001_20260528T124349Z.jsonl`。
+- 本轮运行服务：CGA `118.196.92.128:8000`，运行中心 `118.196.92.128:8001`，testing-agent `8003`。
+- 健康检查：CGA、运行中心、testing-agent 均为 `ok`。
+- 运行中心任务数：`8`。
+- 首次 MIR-001 远端重跑结果：`passed=3`，`failed=3`，`clarification_required/pending=2`。后续严格闭环重跑见下一小节。
+
+### 最新进展总览
+
+| QA ID | 旧问题类型 | 最新状态 | 进展判断 |
+| --- | --- | --- | --- |
+| `qa_9cfa692813d5` | 单点 vertex lookup 多字段投影丢失 | `generated / state=passed / strict_check=fail` | projection 已修复。最新 Cypher 返回 `id/name/elem_type/quality_of_service/bandwidth/latency` 六个字段；strict 仍提示“返回字段或字段值不一致”，后续要核对 golden 字段名、别名和值口径。 |
+| `qa_c80a82efe561` | 单跳 traversal 终点多字段投影丢失 | `generated / state=passed / strict_check=fail` | projection 已修复。最新 Cypher 返回 `Tunnel.id/name/bandwidth`；strict 仍提示字段或字段值不一致。 |
+| `qa_76e37da317b4` | 基础 count 聚合基准样本 | `generated / state=passed / strict_check=pass` | 保持严格通过。 |
+| `qa_c2508f2c0bac` | 枚举 literal + 多字段投影 + 参数传递 | `generated / state=tugraph_execution_failed` | projection 已补齐，但仍因 testing-agent/TuGraph 未接收 `$quality_of_service` 参数而执行失败。 |
+| `qa_526d49332ed1` | `所有` 被误送入 literal resolver | `generated / state=passed / strict_check=fail` | 不再因为“所有”直接澄清，但生成路径仍只覆盖 `Tunnel -> NetworkElement`，未完整覆盖“服务经过隧道穿过网元”。 |
+| `qa_c3e83dd7ad32` | `前3` 被误送入 literal resolver | `generation_failed / clarification_required` | 仍待修。Top-N/排序/limit 语义仍被 literal resolver 当成取值处理。 |
+| `qa_6494b2085699` | `IP地址` 到 `NetworkElement.ip_address` owner/property 绑定错误 | `generation_failed / clarification_required` | 仍待修。仍无法把 `10.0.0.4` 绑定到 `NetworkElement.ip_address`。 |
+| `qa_a5f4b0253af3` | 服务-隧道-目的网元-端口多跳路径降级 | `generated / state=issue_ticket_created / strict_check=fail` | 仍待修。最新生成仍选错方向/路径，未覆盖 `Service -> Tunnel -> TUNNEL_DST -> NetworkElement -> HAS_PORT -> Port`。 |
+
+### MIR-001 修复结论
+
+MIR-001 对“用户要求多个返回字段但最终 Cypher 只返回 ID”的问题已经生效。首次远端重跑时两个最典型的投影回归样本 `qa_9cfa692813d5`、`qa_c80a82efe561` 均已通过；严格闭环重跑后，二者仍能生成完整 projection，但 testing-agent 的 `strict_check` 对字段或字段值仍报 fail。后续分析应把“CGA projection 是否完整”和“testing strict 是否完全一致”分开记录，避免把运行中心的 `state=passed` 误读成严格比对通过。
+
+### 2026-05-29 本地严格闭环补充
+
+- 本地 golden matrix 已新增 projection-slot 切片：`gq-031`、`gq-032`、`gq-033`，对应单点多字段投影、单跳终点多字段投影、filter + projection 区分。
+- `grounded_understanding_v1` 已拒绝裸 `semantic_type=vertex` projection，并拒绝 edge/metric 等非 projection 类型；显式 `property` 与 `vertex_full` 保留。
+- 运行中心字段说明已补充 `slot_terms` 和 `projection_coverage_missing`，用于解释返回字段覆盖缺失。
+- 本地验证：
+  - `PYTHONPATH=. pytest services/cypher_generator_agent/tests -q` -> `484 passed in 3.99s`
+  - `PYTHONPATH=. pytest tests/test_runtime_results_service_api.py -q` -> `32 passed in 0.29s`
+
+### 2026-05-29 远端严格闭环重跑
+
+- 远端部署标识：`DEPLOYED_REVISION=b9a9d8a+mir001-strict-20260529`。
+- 重跑时间：2026-05-29 11:07 左右（Asia/Shanghai）。
+- 重跑前清理：已清空本轮 8 条样本在 testing/CGA/repair 数据目录下的旧记录，共删除 40 个落盘文件。
+- 重跑发送记录：`/home/mabingjie/apps/qa-agent/artifacts/experiment_runs/send_current8_to_cga8000_testing8003_after_mir001_strict_20260529.jsonl`。
+- 发送 run：`dispatch_20260529T030743Z`，8 条样本全部 dispatch 成功。
+- 本轮运行服务：CGA `118.196.92.128:8000`，运行中心 `118.196.92.128:8001`，testing-agent `8003`。
+- 健康检查：CGA 与运行中心均为 `ok`。
+- 生成状态汇总：`generated=6`，`generation_failed/clarification_required=2`。
+- testing-agent 状态汇总：`state=passed` 4 条，`issue_ticket_created` 1 条，`tugraph_execution_failed` 1 条，未进入 execution/evaluation 2 条。
+- 严格比对状态：只有 `qa_76e37da317b4` 的 `strict_check=pass`；`qa_9cfa692813d5`、`qa_526d49332ed1`、`qa_c80a82efe561` 虽然 `evaluation.verdict=pass/state=passed`，但 `strict_check=fail`，运行中心和 testing-agent 的“通过”口径需要后续单独澄清。
+
+| QA ID | 当前远端状态 | 生成结果 / 失败信息 | 判断 |
+| --- | --- | --- | --- |
+| `qa_9cfa692813d5` | `generated / state=passed / strict_check=fail` | `MATCH (svc:Service) RETURN svc.id, svc.name, svc.elem_type, svc.quality_of_service, svc.bandwidth, svc.latency` | MIR-001 的 projection 行为已生效，六个字段都已进入 Cypher；但 testing-agent strict check 仍提示“返回字段或字段值不一致”，需要继续核对 golden 字段别名/值口径。 |
+| `qa_c80a82efe561` | `generated / state=passed / strict_check=fail` | `MATCH (svc:Service)-[:SERVICE_USES_TUNNEL]->(tun:Tunnel) RETURN tun.id, tun.name, tun.bandwidth` | projection 已补齐；strict check 仍提示字段或字段值不一致，属于 testing/golden 口径或字段值对齐问题。 |
+| `qa_76e37da317b4` | `generated / state=passed / strict_check=pass` | `MATCH (svc:Service) RETURN count(svc.id) AS service_count` | 保持通过，是本轮唯一 strict fully pass 样本。 |
+| `qa_c2508f2c0bac` | `generated / state=tugraph_execution_failed` | `WHERE svc.quality_of_service = $quality_of_service`，执行错误 `Undefined parameter: $quality_of_service` | projection 已补齐，但参数化 Cypher 与 testing-agent 执行契约仍未闭环。 |
+| `qa_526d49332ed1` | `generated / state=passed / strict_check=fail` | `MATCH (tun:Tunnel)-[:PATH_THROUGH]->(ne:NetworkElement) RETURN ne.name, ne.vendor` | 不再因“所有”误澄清；但生成路径仍未显式覆盖 `Service -> Tunnel -> NetworkElement`，strict check 失败，后续应归入路径/关系覆盖 MIR。 |
+| `qa_c3e83dd7ad32` | `generation_failed / clarification_required` | 澄清问题：`我没有确定“前3”对应的值，请选择或补充。` | Top-N/limit 仍被当成 literal 解析，仍待后续 MIR。 |
+| `qa_6494b2085699` | `generation_failed / clarification_required` | 澄清问题：`我没有确定“10.0.0.4”对应的值，请选择或补充。` | `IP地址 -> NetworkElement.ip_address` owner/property 绑定仍待后续 MIR。 |
+| `qa_a5f4b0253af3` | `generated / state=issue_ticket_created / strict_check=fail` | `MATCH (tun:Tunnel)-[:TUNNEL_SRC]->(ne:NetworkElement) RETURN tun.id, tun.name`，expected rows 54 / actual rows 20 | 仍是多跳路径与方向绑定问题，且 testing-agent 已创建 issue ticket。 |
+
+远端严格闭环后的结论：
+
+- `MIR-001` 的核心行为已经部署到远端：多字段 projection 不再被塌缩成单个 `id`。
+- 运行中心本轮数据不能简单写成“4 条通过”，因为 `evaluation.verdict/state` 与 `strict_check` 出现不一致；后续实验报告应同时记录二者。
+- 剩余失败已经从“projection 被吞”转移到四类后续问题：参数执行契约、Top-N/limit 槽位、IP 字段 owner 绑定、多跳路径/方向覆盖。
+
+本轮没有解决的主要问题已经从“projection coverage”收敛到以下几类：
+
+- testing-agent 执行参数契约：CGA 生成参数化 Cypher 时，testing-agent/TuGraph 执行阶段没有接收参数，导致 `Undefined parameter`。
+- 控制词和查询结构槽位：`前3`、排序、limit 仍可能进入 literal resolver，而不是 DSL 的 `limit/order_by`。
+- 字段短语到 owner/property 绑定：`IP地址` 仍未稳定绑定到 `NetworkElement.ip_address`。
+- 多跳路径覆盖与方向词：`目的网元`、端口 hop、服务使用隧道关系仍可能被压缩成局部单跳。
+- repair-agent 展示闭环：testing-agent 日志显示失败样本投递 repair-agent 时 8002 返回 500，会影响运行中心 repair 诊断展示。
+
+## 问题明细与当前进度
 
 | QA ID | 具体问题 | 修复方案 |
 | --- | --- | --- |
-| `qa_9cfa692813d5`（待修） | `查询所有服务的ID、名称、元素类型、服务质量等级、带宽和时延。` 的 golden 需要返回 `id/name/elem_type/quality_of_service/bandwidth/latency` 六个字段；CGA trace 中 decomposer 已抽到这些字段词，但 grounded understanding 的 `selected_properties=[]`，DSL projection 最终只有 `service_id`，生成 `MATCH (svc:Service) RETURN svc.id AS service_id`。coverage 却显示 substantive terms 全覆盖，说明当前覆盖校验没有约束“字段词必须进入最终 projection”。 | 在 grounded understanding 或 DSL builder 前增加投影收集器：题干中的字段型 `target_concepts` 必须解析成同 owner 的 property projection；若字段词未进入 DSL `projection.items`，semantic validator 应报 projection coverage 缺失，不能继续编译。coverage 统计要从“词被候选命中”升级为“词被最终 DSL 使用”。 |
-| `qa_c80a82efe561`（待修） | `查询所有服务使用的隧道，返回隧道的 ID、名称和带宽。` 正确选中了 `Service -[:SERVICE_USES_TUNNEL]-> Tunnel`，但只返回 `tun.id AS tunnel_id`，漏掉 `tun.name` 和 `tun.bandwidth`。testing-agent 执行成功但 strict check 失败，原因是返回字段和值不一致。 | 对 single-hop traversal 增加终点对象字段投影规则：当题干中出现“返回隧道的 ID、名称和带宽”时，应把字段绑定到路径终点 `Tunnel`，生成 `Tunnel.id/name/bandwidth` 三个 projection。DSL builder 不能在 projection 为空或只含 vertex 时默认只补 ID。 |
-| `qa_c2508f2c0bac`（待修） | `查询服务质量等级为金牌的所有服务的ID、名称和带宽。` 中 literal resolver 正确把 `金牌` 解析为 `Gold`，compiler 输出 `WHERE svc.quality_of_service = $quality_of_service` 和参数 `{"quality_of_service":"Gold"}`；testing-agent 执行时报 `Undefined parameter: $quality_of_service`。同时 projection 只返回 `service_id`，漏掉 `name/bandwidth`。运行中心 summary 仍显示 `final_verdict=pending`，没有形成 issue ticket。 | 分两层修：1）CGA 到 testing-agent 的 submission contract 必须携带 `parameters`，testing-agent 执行 TuGraph 时传入参数；如果 testing 暂不支持参数，则 CGA 的 testing submission 需要提供已内联的只读执行版本。2）投影修复同上，`ID/名称/带宽` 必须全部进入 DSL projection。3）testing execution error 应进入明确 failed/ticket 状态，不能长期 pending。 |
-| `qa_526d49332ed1`（待修） | `查询所有服务经过隧道穿过的网元的名称和厂商。` 中 decomposer 把 `所有` 放进 `literal_candidates=[{"text":"所有","attached_to":"服务"}]`，literal resolver 尝试解析为 `Service.elem_type`，最终返回澄清：`我没有确定“所有”对应的值，请选择或补充。` 这是误澄清，因为“所有”不是数据取值。 | 在 decomposer 后增加确定性清洗：`所有/全部/任意/每个` 等全称量词不得进入 literal resolver，应作为 stop/control term 或查询范围修饰。即使 LLM 误填 literal_candidates，工程代码也要剔除这类候选。该题随后应进入 path query 生成，至少不能因 `所有` 澄清。 |
+| `qa_9cfa692813d5`（projection 已修复，strict 待核） | `查询所有服务的ID、名称、元素类型、服务质量等级、带宽和时延。` 的 golden 需要返回 `id/name/elem_type/quality_of_service/bandwidth/latency` 六个字段；旧版本只生成 `MATCH (svc:Service) RETURN svc.id AS service_id`。最新版本已经返回六个字段，但 testing-agent 的 `strict_check` 仍提示字段或字段值不一致。 | MIR-001 已修复 projection 丢失问题。下一步不应再按“缺 projection”处理，而应核对 testing/golden 的字段别名、返回值格式、列顺序或字段命名口径。该样本继续保留为 projection coverage 回归用例，同时新增 strict mismatch 观察。 |
+| `qa_c80a82efe561`（projection 已修复，strict 待核） | `查询所有服务使用的隧道，返回隧道的 ID、名称和带宽。` 正确选中了 `Service -[:SERVICE_USES_TUNNEL]-> Tunnel`，旧版本只返回 `tun.id AS tunnel_id`。最新版本已返回 `tun.id/tun.name/tun.bandwidth`，但 testing-agent 的 `strict_check` 仍提示字段或字段值不一致。 | MIR-001 已修复终点多字段 projection 丢失问题。下一步应核对 golden 与 TuGraph 实际返回字段/值口径，而不是继续修改 projection resolver。 |
+| `qa_c2508f2c0bac`（部分修复） | `查询服务质量等级为金牌的所有服务的ID、名称和带宽。` 中 literal resolver 正确把 `金牌` 解析为 `Gold`，compiler 输出 `WHERE svc.quality_of_service = $quality_of_service` 和参数 `{"quality_of_service":"Gold"}`；testing-agent 执行时报 `Undefined parameter: $quality_of_service`。同时 projection 只返回 `service_id`，漏掉 `name/bandwidth`。运行中心 summary 仍显示 `final_verdict=pending`，没有形成 issue ticket。 | MIR-001 已补齐 projection；仍待修参数传递契约。下一步需要让 CGA submission 携带 parameters，或提供已内联的 testing 版本 Cypher。testing execution error 也应有明确 failed/ticket 状态。 |
+| `qa_526d49332ed1`（部分修复） | `查询所有服务经过隧道穿过的网元的名称和厂商。` 中 decomposer 把 `所有` 放进 `literal_candidates=[{"text":"所有","attached_to":"服务"}]`，literal resolver 尝试解析为 `Service.elem_type`，最终返回澄清：`我没有确定“所有”对应的值，请选择或补充。` 这是误澄清，因为“所有”不是数据取值。 | 最新重跑已不再因“所有”澄清，进入 generated，但 Cypher 只覆盖 `Tunnel -[:PATH_THROUGH]-> NetworkElement`，未覆盖“服务经过隧道穿过网元”的完整路径。后续归入路径/关系覆盖修复。 |
 | `qa_c3e83dd7ad32`（待修） | `统计服务使用的隧道源节点所在位置的网元数量，按数量降序排列，返回前3名。` 中 decomposer 把 `前3` 作为 literal candidate，resolver 试图解析为 `NetworkElement.location` 的取值，导致澄清：`我没有确定“前3”对应的值，请选择或补充。` 实际上 `前3` 是 Top-N/limit 结构。 | 在 decomposer schema 或后处理层显式表达排序与 limit：`前3/前 3 名/top 3/最多 3 个` 应转换为 `limit=3`，`按数量降序排列` 应转换为 `ORDER BY count DESC`。literal resolver 只处理字段过滤值，不处理排序/limit 控制词。该类问题需要进入 aggregate/group/order/limit DSL，而不是 clarification。 |
 | `qa_6494b2085699`（待修） | `查询经过IP地址为10.0.0.4的网元的服务的ID、类型、隧道总数及匹配网元数量。` 中 decomposer 输出 `literal_candidates=[{"text":"10.0.0.4","kind_hint":"id","attached_to":"IP地址"}]`，但 resolver 期望字段变成 `Tunnel.id`，最后澄清 `10.0.0.4` 未解析。golden 明确应为 `NetworkElement.ip_address = '10.0.0.4'`。 | owner/property 绑定要优先消费字段短语：`IP地址` 应强匹配 `NetworkElement.ip_address`，且“的网元”提供 owner 约束。literal resolver 输入不应只根据当前主路径候选猜 owner；需要把 `attached_to=IP地址` 先解析成 property，再由 property owner 反推 vertex。若 value index miss，也应提示“未在 NetworkElement.ip_address 中找到 10.0.0.4”，而不是泛化为“对应的值”。 |
 | `qa_a5f4b0253af3`（待修） | `查询所有服务使用的隧道目的网元上的端口ID、名称和状态。` 的 golden 路径是 `Service -[:SERVICE_USES_TUNNEL]-> Tunnel -[:TUNNEL_DST]-> NetworkElement -[:HAS_PORT]-> Port`；实际 generated Cypher 为 `MATCH (tun:Tunnel)-[:TUNNEL_SRC]->(ne:NetworkElement) RETURN ne.id AS network_element_id`。服务、使用关系、目的网元、端口 hop、端口字段全部丢失。 | path binding 需要做“题干概念覆盖到最终路径”的强校验：最终 DSL path 必须包含 `Service/Tunnel/NetworkElement/Port` 和 `SERVICE_USES_TUNNEL/TUNNEL_DST/HAS_PORT`，否则应回到 repair/unsupported，而不是生成局部单跳。方向词“目的网元”必须绑定 `TUNNEL_DST`，不能选 `TUNNEL_SRC`。投影应返回 `Port.id/name/status`。 |
-| `qa_9cfa692813d5`, `qa_c80a82efe561`, `qa_a5f4b0253af3`（待修） | 三条 failed 样本均有 issue ticket，并且远端 `/home/mabingjie/nl2cypher/data/repair_service/analyses` 下存在对应 `analysis-ticket-...json`，状态为 `apply_failed`；但运行中心详情页仍显示 `未读取到 repair-agent 诊断记录`。 | 运行中心读取 repair 数据时需要按 `ticket_id` 或 `question_id + attempt` 关联 `analysis-ticket-*.json`，并展示 `apply_failed`、repair prompt/raw output、knowledge apply 状态。否则操作员看到的是“未记录”，无法判断 repair-agent 是否已经处理过。 |
+| `qa_a5f4b0253af3` 及后续失败 ticket（待修） | 严格闭环重跑中，`qa_a5f4b0253af3` 生成后被 testing-agent 判定失败并创建 `ticket-qa_a5f4b0253af3-attempt-1`。早前重跑中也观察到 repair analysis 文件存在但运行中心详情页显示 `未读取到 repair-agent 诊断记录` 的情况。 | 运行中心读取 repair 数据时需要按 `ticket_id` 或 `question_id + attempt` 关联 `analysis-ticket-*.json`，并展示 `apply_failed`、repair prompt/raw output、knowledge apply 状态。否则操作员看到的是“未记录”，无法判断 repair-agent 是否已经处理过。 |
 | `qa_c2508f2c0bac`（待确认） | testing-agent 已经返回执行错误 `Undefined parameter: $quality_of_service`，但运行中心 summary 中 `final_verdict=pending`，stage 仍停在 evaluation/knowledge_repair pending，没有 issue ticket。 | testing execution error 应有明确状态机出口：语法/执行错误类 failure 应进入 failed 并生成 ticket，或至少在运行中心标成 evaluation failed。pending 只适合异步任务尚未完成，不应表示已经有确定错误的样本。 |
 
 ## 2026-05-28 本轮可沉淀的回归集合

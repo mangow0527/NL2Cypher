@@ -91,3 +91,12 @@ questions:
   - id: gq-030
     question: 先按状态统计端口，再取最多的 5 个状态
     coverage: aggregate
+  - id: gq-031
+    question: 查询所有服务的 ID、名称、元素类型、服务质量等级、带宽和时延
+    coverage: projection_slot
+  - id: gq-032
+    question: 查询所有服务使用的隧道，返回隧道的 ID、名称和带宽
+    coverage: projection_slot
+  - id: gq-033
+    question: 查询服务质量等级为金牌的所有服务的 ID、名称和带宽
+    coverage: projection_slot

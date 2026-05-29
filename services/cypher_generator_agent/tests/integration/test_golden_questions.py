@@ -15,7 +15,13 @@ from services.cypher_generator_agent.app.semantic_model.loader import load_graph
 
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures"
 GOLDEN_QUESTIONS_PATH = FIXTURE_DIR / "golden_questions.yaml"
-MODEL_PATH = FIXTURE_DIR / "network_topology_graph_model.yaml"
+MODEL_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "app"
+    / "semantic_model"
+    / "artifacts"
+    / "tugraph_network_semantic_model.yaml"
+)
 
 FULL_REGRESSION_QUERY_SHAPES = {
     "vertex_lookup",
@@ -28,6 +34,7 @@ FULL_REGRESSION_QUERY_SHAPES = {
     "two_step_aggregate",
 }
 REGRESSION_SCOPES = {"smoke", "full"}
+PROJECTION_REGRESSION_CASE_IDS = {"gq-031", "gq-032", "gq-033"}
 
 
 def _all_cases() -> list[dict[str, Any]]:
@@ -83,8 +90,8 @@ def test_full_golden_regression_matrix_covers_generated_query_shapes() -> None:
 def test_golden_matrix_tracks_every_declared_question() -> None:
     cases = _all_cases()
 
-    assert len(cases) == 30
-    assert [case["id"] for case in cases] == [f"gq-{index:03d}" for index in range(1, 31)]
+    assert len(cases) == 33
+    assert [case["id"] for case in cases] == [f"gq-{index:03d}" for index in range(1, 34)]
     assert {case["id"] for case in _regression_cases()} >= {
         "gq-001",
         "gq-002",
@@ -99,7 +106,23 @@ def test_golden_matrix_tracks_every_declared_question() -> None:
         "gq-019",
         "gq-029",
         "gq-030",
+        "gq-031",
+        "gq-032",
+        "gq-033",
     }
+
+
+def test_projection_regression_slice_is_declared_in_golden_matrix() -> None:
+    cases_by_id = {case["id"]: case for case in _all_cases()}
+
+    assert PROJECTION_REGRESSION_CASE_IDS <= set(cases_by_id)
+    for case_id in sorted(PROJECTION_REGRESSION_CASE_IDS):
+        case = cases_by_id[case_id]
+        assert case["expected_status"] == "generated"
+        assert case["coverage"] == "projection_slot"
+        assert case["regression_scope"] in REGRESSION_SCOPES
+        assert case["expected_dsl_fixture"]
+        assert case["expected_cypher_fixture"]
 
 
 def test_golden_regression_has_ci_workflow_entrypoint() -> None:

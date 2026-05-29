@@ -1,0 +1,55 @@
+{
+  "schema_version": "restricted_query_dsl_v1",
+  "query_id": "gq-033",
+  "query_shape": "vertex_lookup",
+  "source_question": "查询服务质量等级为金牌的所有服务的 ID、名称和带宽",
+  "bindings": {
+    "target": {
+      "vertex_name": "Service"
+    }
+  },
+  "operations": [],
+  "filters": [
+    {
+      "property": {
+        "owner": "Service",
+        "name": "quality_of_service"
+      },
+      "operator": "eq",
+      "value": {
+        "raw": "金牌",
+        "normalized": "Gold",
+        "resolver_match_type": "value_synonym"
+      },
+      "target": "target"
+    }
+  ],
+  "projection": {
+    "items": [
+      {
+        "alias": "service_id",
+        "target": "target",
+        "property": {
+          "owner": "Service",
+          "name": "id"
+        }
+      },
+      {
+        "alias": "service_name",
+        "target": "target",
+        "property": {
+          "owner": "Service",
+          "name": "name"
+        }
+      },
+      {
+        "alias": "service_bandwidth",
+        "target": "target",
+        "property": {
+          "owner": "Service",
+          "name": "bandwidth"
+        }
+      }
+    ]
+  }
+}

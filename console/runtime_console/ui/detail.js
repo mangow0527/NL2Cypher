@@ -36,6 +36,7 @@ const questionDecompositionFieldHints = {
   modality_terms: '覆盖分类轴字段：表达近似、不确定或软约束的词，例如“大概”“应该”“可能”。',
   time_terms: '覆盖分类轴字段：时间或时间范围表达，例如“最近”“2024 年”“过去 7 天”。',
   unparsed_terms: '覆盖分类轴字段：无法可靠分类但可能影响语义的残留词；如果非空，通常意味着需要澄清或生成失败。',
+  slot_terms: '语义槽位轴字段：说明表层词应该进入 projection、filter、group_by 或 order_by 等查询槽位。例如“查询服务的名称”里“名称”是 projection，“名称为 Service_002”里“名称”是 filter。',
   output_shape: '回答结果的形态，例如 rows 表示多行结果、scalar 表示单个值、grouped_rows 表示分组统计结果。',
   coverage: '覆盖率报告，记录 substantive_terms 中哪些词已覆盖、哪些仍缺失，是后续是否澄清或失败的重要依据。',
   filters: '后续阶段可能补充的过滤条件结构；Question Decomposer 本身不再输出旧的过滤短语字段。',
@@ -293,6 +294,9 @@ const stageFieldHints = {
       errors: '语义错误，例如类型不匹配、字面值无法解析或覆盖缺失。',
       warnings: '不阻断生成的风险提示。',
       assumptions: '系统继续执行时采用的假设。',
+      coverage: '语义覆盖报告，包含实质词覆盖和 slot_terms 覆盖。slot_terms.projection.uncovered 非空时，表示返回字段覆盖缺失。',
+      slot_terms: '槽位覆盖明细。projection.required 是用户要求返回的字段词，projection.covered 是已进入 DSL projection 的字段词，projection.uncovered 是遗漏字段词。',
+      projection_coverage_missing: '返回字段覆盖缺失错误码。出现该错误说明用户要求返回的字段没有全部进入 projection，应进入修复而不是静默生成。',
     },
   },
   repair_controller: {

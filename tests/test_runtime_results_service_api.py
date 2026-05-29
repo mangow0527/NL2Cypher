@@ -119,6 +119,9 @@ def test_runtime_results_detail_script_puts_cypher_comparison_in_overview():
     assert "由工程代码生成的字面值解析请求" in script
     assert "coverage" in script
     assert "覆盖率报告，记录 substantive_terms 中哪些词已覆盖、哪些仍缺失" in script
+    assert "slot_terms" in script
+    assert "projection_coverage_missing" in script
+    assert "返回字段覆盖缺失" in script
     assert "relation_phrases" in script
     assert "表示两个业务对象如何连接的关系短语" in script
     assert "例如“服务使用隧道”中的“使用”" in script

@@ -769,6 +769,12 @@ def _resolve_projection_property(
 
     attached_to = str(slot_term.get("attached_to") or "").strip()
     attached_owners = _attached_vertex_names(attached_to, candidates)
+    if attached_to and not attached_owners:
+        attached_owners = _attached_vertex_names_from_registry(
+            attached_to,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
     owners = [owner for owner in selected_vertices if not attached_owners or owner in attached_owners]
     if not owners:
         owners = selected_vertices
@@ -819,6 +825,35 @@ def _property_surface_match_score(term: str, owner: str, prop: Any) -> int:
         ):
             return 70
     return 0
+
+
+def _attached_vertex_names_from_registry(
+    attached_to: str,
+    *,
+    registry: Any,
+    selected_vertices: list[str],
+) -> set[str]:
+    attached = _norm(attached_to)
+    if not attached:
+        return set()
+    owners: set[str] = set()
+    for owner in selected_vertices:
+        try:
+            vertex = registry.get_vertex(owner)
+        except RegistryLookupError:
+            continue
+        surfaces = [
+            owner,
+            vertex.name,
+            *(
+                item
+                for item in vertex.ai_context.get("synonyms", [])
+                if isinstance(item, str)
+            ),
+        ]
+        if any(_norm(surface) == attached for surface in surfaces):
+            owners.add(owner)
+    return owners
 
 
 def _slot_terms(decomposition: Mapping[str, Any], *, slot: str) -> list[dict[str, Any]]:
@@ -1700,6 +1735,95 @@ def _mock_decompose(question: str) -> dict[str, Any]:
             "literal_requests": [],
             "coverage": _coverage(covered=["按状态", "统计", "端口数量"]),
             "mock_intent": "port_count_by_status",
+        }
+
+    if "所有服务" in question and "元素类型" in question and "服务质量等级" in question and "时延" in question:
+        return {
+            "schema_version": "question_decomposition_v1",
+            "result_type": "decomposition",
+            "original_question": question,
+            "intent_type": "list",
+            "output_shape": "rows",
+            "target_concepts": ["服务", "ID", "名称", "元素类型", "服务质量等级", "带宽", "时延"],
+            "relation_phrases": [],
+            "literal_candidates": [],
+            "semantic_terms": ["Service"],
+            "substantive_terms": ["服务", "ID", "名称", "元素类型", "服务质量等级", "带宽", "时延"],
+            "stopword_terms": ["查询", "所有", "的", "和"],
+            "modality_terms": [],
+            "time_terms": [],
+            "unparsed_terms": [],
+            "literal_requests": [],
+            "slot_terms": [
+                {"text": "ID", "slot": "projection", "attached_to": "服务"},
+                {"text": "名称", "slot": "projection", "attached_to": "服务"},
+                {"text": "元素类型", "slot": "projection", "attached_to": "服务"},
+                {"text": "服务质量等级", "slot": "projection", "attached_to": "服务"},
+                {"text": "带宽", "slot": "projection", "attached_to": "服务"},
+                {"text": "时延", "slot": "projection", "attached_to": "服务"},
+            ],
+            "coverage": _coverage(covered=["服务", "ID", "名称", "元素类型", "服务质量等级", "带宽", "时延"]),
+        }
+
+    if "所有服务" in question and "隧道" in question and "返回隧道" in question and "带宽" in question:
+        return {
+            "schema_version": "question_decomposition_v1",
+            "result_type": "decomposition",
+            "original_question": question,
+            "intent_type": "list",
+            "output_shape": "rows",
+            "target_concepts": ["服务", "隧道", "ID", "名称", "带宽"],
+            "relation_phrases": ["使用"],
+            "literal_candidates": [],
+            "semantic_terms": ["Service", "Tunnel", "SERVICE_USES_TUNNEL"],
+            "substantive_terms": ["服务", "使用", "隧道", "ID", "名称", "带宽"],
+            "stopword_terms": ["查询", "所有", "的", "返回", "和"],
+            "modality_terms": [],
+            "time_terms": [],
+            "unparsed_terms": [],
+            "literal_requests": [],
+            "slot_terms": [
+                {"text": "ID", "slot": "projection", "attached_to": "隧道"},
+                {"text": "名称", "slot": "projection", "attached_to": "隧道"},
+                {"text": "带宽", "slot": "projection", "attached_to": "隧道"},
+            ],
+            "coverage": _coverage(covered=["服务", "使用", "隧道", "ID", "名称", "带宽"]),
+        }
+
+    if "服务质量等级为金牌" in question and "服务" in question and "带宽" in question:
+        return {
+            "schema_version": "question_decomposition_v1",
+            "result_type": "decomposition",
+            "original_question": question,
+            "intent_type": "list",
+            "output_shape": "rows",
+            "target_concepts": ["服务", "ID", "名称", "带宽"],
+            "relation_phrases": [],
+            "literal_candidates": [
+                {"text": "金牌", "kind_hint": "enum_or_name", "attached_to": "服务质量等级"}
+            ],
+            "semantic_terms": ["Service", "Service.quality_of_service"],
+            "substantive_terms": ["服务质量等级", "金牌", "服务", "ID", "名称", "带宽"],
+            "stopword_terms": ["查询", "所有", "为", "的", "和"],
+            "modality_terms": [],
+            "time_terms": [],
+            "unparsed_terms": [],
+            "literal_requests": [
+                {
+                    "raw_literal": "金牌",
+                    "expected_vertex": "Service",
+                    "expected_property": "quality_of_service",
+                    "literal_kind_hint": "enum",
+                }
+            ],
+            "slot_terms": [
+                {"text": "服务质量等级", "slot": "filter", "attached_to": "服务"},
+                {"text": "金牌", "slot": "filter", "attached_to": "服务质量等级"},
+                {"text": "ID", "slot": "projection", "attached_to": "服务"},
+                {"text": "名称", "slot": "projection", "attached_to": "服务"},
+                {"text": "带宽", "slot": "projection", "attached_to": "服务"},
+            ],
+            "coverage": _coverage(covered=["服务质量等级", "金牌", "服务", "ID", "名称", "带宽"]),
         }
 
     return {

@@ -245,7 +245,14 @@ def test_pipeline_can_use_real_llm_mode_with_openai_compatible_client(
                             "raw_literal": "Gold",
                         }
                     ],
-                    "projection": [{"semantic_type": "vertex", "name": "Tunnel"}],
+                    "projection": [
+                        {
+                            "semantic_type": "property",
+                            "owner": "Tunnel",
+                            "name": "id",
+                            "alias": "tunnel_id",
+                        }
+                    ],
                     "coverage": {
                         "substantive_terms": {
                             "total": 4,

@@ -145,6 +145,33 @@ class GroundedUnderstanding(UnderstandingBaseModel):
             raise ValueError("query_shape must not be empty")
         return text
 
+    @field_validator("projection", mode="after")
+    @classmethod
+    def validate_projection_contract(cls, value: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        for item in value:
+            semantic_type = item.get("semantic_type")
+            if semantic_type is None:
+                if "source" in item:
+                    continue
+                if _looks_like_projection_property(item):
+                    continue
+                raise ValueError("projection item requires source, semantic_type=property, or semantic_type=vertex_full")
+            if semantic_type == "vertex":
+                raise ValueError(
+                    "ambiguous bare vertex projection is not allowed; "
+                    "use semantic_type=property for requested fields or semantic_type=vertex_full "
+                    "for an explicit whole-node projection"
+                )
+            if semantic_type not in {"property", "vertex_full"}:
+                raise ValueError("projection semantic_type must be property or vertex_full")
+            if semantic_type == "property" and not _looks_like_projection_property(item):
+                raise ValueError("property projection requires owner/name, owner/property, or semantic_id")
+            if semantic_type == "vertex_full" and not (
+                item.get("semantic_id") or item.get("name") or item.get("vertex")
+            ):
+                raise ValueError("vertex_full projection requires semantic_id, name, or vertex")
+        return value
+
     @model_validator(mode="after")
     def validate_status_payload(self) -> "GroundedUnderstanding":
         if self.status == "unsupported_query_shape":
@@ -215,6 +242,16 @@ class GroundedUnderstandingFailure(UnderstandingBaseModel):
 GroundedUnderstandingOutcome: TypeAlias = GroundedUnderstanding | GroundedUnderstandingFailure
 
 GROUNDED_UNDERSTANDING_RESPONSE_ADAPTER = TypeAdapter(GroundedUnderstanding)
+
+
+def _looks_like_projection_property(item: dict[str, Any]) -> bool:
+    if isinstance(item.get("property"), dict):
+        prop = item["property"]
+        return bool(prop.get("owner") and (prop.get("name") or prop.get("property_name")))
+    if item.get("owner") and (item.get("name") or item.get("property") or item.get("property_name")):
+        return True
+    semantic_id = item.get("semantic_id")
+    return isinstance(semantic_id, str) and "." in semantic_id
 
 
 def parse_grounded_understanding_response(payload: Any) -> GroundedUnderstanding:

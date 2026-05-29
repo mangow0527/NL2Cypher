@@ -96,7 +96,14 @@ def test_selecting_service_uses_tunnel_yields_binder_compatible_payload() -> Non
                         "raw_literal": "Gold",
                     }
                 ],
-                "projection": [{"semantic_type": "vertex", "name": "Tunnel"}],
+                "projection": [
+                    {
+                        "semantic_type": "property",
+                        "owner": "Tunnel",
+                        "name": "id",
+                        "alias": "tunnel_id",
+                    }
+                ],
                 "limit": 50,
                 "coverage": _coverage(["Gold", "服务", "使用", "隧道"]),
                 "unsupported": None,
@@ -134,7 +141,14 @@ def test_selecting_service_uses_tunnel_yields_binder_compatible_payload() -> Non
         ("Service", "quality_of_service")
     ]
     assert plan.filters[0].value == "GOLD"
-    assert plan.projection == [{"semantic_type": "vertex", "name": "Tunnel"}]
+    assert plan.projection == [
+        {
+            "semantic_type": "property",
+            "owner": "Tunnel",
+            "name": "id",
+            "alias": "tunnel_id",
+        }
+    ]
 
 
 def test_schema_violation_retries_then_returns_valid_grounding() -> None:
@@ -178,6 +192,73 @@ def test_schema_violation_stops_after_initial_attempt_plus_two_retries() -> None
     assert result.attempts == 3
     assert result.retry_count == 2
     assert [call["attempt"] for call in client.calls] == [1, 2, 3]
+
+
+def test_bare_vertex_projection_is_schema_invalid() -> None:
+    bare_vertex_payload = _valid_minimal_payload()
+    bare_vertex_payload["projection"] = [{"semantic_type": "vertex", "name": "Service"}]
+    client = FakeGroundedLLMClient(
+        [
+            bare_vertex_payload,
+            bare_vertex_payload,
+            bare_vertex_payload,
+        ]
+    )
+
+    result = GroundedUnderstandingSelector(client).select(
+        question_decomposition=_gold_decomposition(),
+        candidates=_gold_candidates(),
+        literal_results=[],
+    )
+
+    assert isinstance(result, GroundedUnderstandingFailure)
+    assert result.status == "generation_failed"
+    assert result.reason == "grounded_understanding_schema_invalid"
+    assert result.error_type == "ValidationError"
+    assert "ambiguous bare vertex projection" in result.errors[-1].message
+
+
+def test_non_projection_semantic_type_is_schema_invalid() -> None:
+    invalid_projection_payload = _valid_minimal_payload()
+    invalid_projection_payload["projection"] = [
+        {"semantic_type": "edge", "name": "SERVICE_USES_TUNNEL"}
+    ]
+    client = FakeGroundedLLMClient(
+        [
+            invalid_projection_payload,
+            invalid_projection_payload,
+            invalid_projection_payload,
+        ]
+    )
+
+    result = GroundedUnderstandingSelector(client).select(
+        question_decomposition=_gold_decomposition(),
+        candidates=_gold_candidates(),
+        literal_results=[],
+    )
+
+    assert isinstance(result, GroundedUnderstandingFailure)
+    assert result.reason == "grounded_understanding_schema_invalid"
+    assert "projection semantic_type must be property or vertex_full" in result.errors[-1].message
+
+
+def test_vertex_full_projection_is_explicitly_allowed() -> None:
+    vertex_full_payload = _valid_minimal_payload()
+    vertex_full_payload["projection"] = [
+        {"semantic_type": "vertex_full", "name": "Service", "alias": "service"}
+    ]
+    client = FakeGroundedLLMClient([vertex_full_payload])
+
+    result = GroundedUnderstandingSelector(client).select(
+        question_decomposition=_gold_decomposition(),
+        candidates=_gold_candidates(),
+        literal_results=[],
+    )
+
+    assert isinstance(result, GroundedUnderstanding)
+    assert result.projection == [
+        {"semantic_type": "vertex_full", "name": "Service", "alias": "service"}
+    ]
 
 
 def test_provider_unavailable_returns_service_failed_without_deterministic_fallback() -> None:
@@ -312,6 +393,12 @@ def _gold_candidates() -> CandidateRetrievalResult:
                 "Service.quality_of_service",
                 owner="Service",
                 semantic_name="quality_of_service",
+            ),
+            _candidate(
+                "property",
+                "Tunnel.id",
+                owner="Tunnel",
+                semantic_name="id",
             ),
         ]
     )

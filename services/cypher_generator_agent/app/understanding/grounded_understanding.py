@@ -294,6 +294,21 @@ def _validate_reference_item(
             field_name=field_name,
         )
         return
+    if semantic_type == "vertex_full":
+        semantic_id = str(
+            item.get("semantic_id") or item.get("name") or item.get("vertex_full") or item.get("vertex") or ""
+        )
+        if not semantic_id:
+            return
+        semantic_name = item.get("semantic_name") or item.get("name") or semantic_id
+        index.require_semantic_reference(
+            semantic_type="vertex",
+            semantic_id=semantic_id,
+            semantic_name=str(semantic_name) if semantic_name is not None else None,
+            owner=None,
+            field_name=field_name,
+        )
+        return
 
     semantic_id = str(item.get("semantic_id") or item.get("name") or item.get(semantic_type) or "")
     if not semantic_id:

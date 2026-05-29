@@ -204,6 +204,7 @@ def test_golden_questions_have_required_contract_fields_and_coverage() -> None:
         "literal",
         "coverage_failure",
         "aggregate",
+        "projection_slot",
         "unsupported_query",
         "repair_oscillation",
         "readonly_violation",

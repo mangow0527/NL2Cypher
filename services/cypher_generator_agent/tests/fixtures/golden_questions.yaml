@@ -356,3 +356,45 @@ golden_questions:
     expected_cypher_fixture: expected_cypher/gq-030.cypher
     regression_scope: full
     ci_smoke: false
+
+  - id: gq-031
+    question: 查询所有服务的 ID、名称、元素类型、服务质量等级、带宽和时延
+    expected_status: generated
+    primary_ir: MIR-001
+    expected_reason_code: generated
+    coverage: projection_slot
+    query_shape: vertex_lookup
+    expected_dsl_ir: MIR-001
+    cypher_filled_by_ir: MIR-001
+    expected_dsl_fixture: expected_dsl/gq-031.json
+    expected_cypher_fixture: expected_cypher/gq-031.cypher
+    regression_scope: smoke
+    ci_smoke: true
+
+  - id: gq-032
+    question: 查询所有服务使用的隧道，返回隧道的 ID、名称和带宽
+    expected_status: generated
+    primary_ir: MIR-001
+    expected_reason_code: generated
+    coverage: projection_slot
+    query_shape: single_hop_traversal
+    expected_dsl_ir: MIR-001
+    cypher_filled_by_ir: MIR-001
+    expected_dsl_fixture: expected_dsl/gq-032.json
+    expected_cypher_fixture: expected_cypher/gq-032.cypher
+    regression_scope: smoke
+    ci_smoke: true
+
+  - id: gq-033
+    question: 查询服务质量等级为金牌的所有服务的 ID、名称和带宽
+    expected_status: generated
+    primary_ir: MIR-001
+    expected_reason_code: generated
+    coverage: projection_slot
+    query_shape: vertex_lookup
+    expected_dsl_ir: MIR-001
+    cypher_filled_by_ir: MIR-001
+    expected_dsl_fixture: expected_dsl/gq-033.json
+    expected_cypher_fixture: expected_cypher/gq-033.cypher
+    regression_scope: full
+    ci_smoke: false
