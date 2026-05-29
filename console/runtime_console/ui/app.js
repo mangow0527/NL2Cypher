@@ -1,4 +1,3 @@
-const serviceGrid = document.getElementById('service-grid');
 const difficultyGrid = document.getElementById('difficulty-grid');
 const taskTableBody = document.getElementById('task-table-body');
 const difficultyFilter = document.getElementById('difficulty-filter');
@@ -62,29 +61,6 @@ function tone(status) {
     default:
       return 'neutral';
   }
-}
-
-function renderServiceCards(services) {
-  serviceGrid.innerHTML = services
-    .map(
-      (service) => `
-        <article class="service-card">
-          <div class="task-card-head">
-            <div>
-              <strong>${escapeHtml(service.label_zh)}</strong>
-              <p>${escapeHtml(service.label_en)}</p>
-            </div>
-            <span class="status-pill tone-${tone(service.status)}">${escapeHtml(service.status)}</span>
-          </div>
-          <div class="task-card-meta">
-            <span>Port ${escapeHtml(service.port)}</span>
-            <span>${escapeHtml(service.base_url)}</span>
-          </div>
-          <p>${escapeHtml(service.description_zh)}</p>
-        </article>
-      `
-    )
-    .join('');
 }
 
 function percentage(value, total) {
@@ -206,15 +182,6 @@ async function loadTasks() {
   renderTaskTable(payload.tasks || []);
 }
 
-async function loadServices() {
-  const response = await fetch('/api/v1/runtime/services');
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`);
-  }
-  const payload = await response.json();
-  renderServiceCards(payload.services || []);
-}
-
 async function loadTaskSummary() {
   const response = await fetch('/api/v1/tasks/summary');
   if (!response.ok) {
@@ -261,14 +228,10 @@ nextPageButton.addEventListener('click', () => {
   });
 });
 
-Promise.all([loadServices(), loadTaskSummary(), loadTasks()]).catch((error) => {
+Promise.all([loadTaskSummary(), loadTasks()]).catch((error) => {
   tableMeta.textContent = `任务索引加载失败: ${String(error)}`;
   taskTableBody.innerHTML = `<tr><td colspan="8" class="empty-cell">${escapeHtml(String(error))}</td></tr>`;
 });
-
-setInterval(() => {
-  loadServices().catch(() => {});
-}, 10000);
 
 setInterval(() => {
   loadTaskSummary().catch(() => {});

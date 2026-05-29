@@ -31,12 +31,13 @@ def test_runtime_results_center_html_exposes_pipeline_sections(monkeypatch, tmp_
     assert "Cypher 结果与质量" not in response.text
     assert "改进评估" not in response.text
     assert "repair-agent 诊断摘要" not in response.text
-    assert "服务运行状态" in response.text
+    assert "服务运行状态" not in response.text
+    assert "Runtime Service Status" not in response.text
     assert "难度结论概览" in response.text
     assert "任务明细表" in response.text
     assert "按难度过滤" in response.text
     assert "按 ID 搜索" in response.text
-    assert "service-grid" in response.text
+    assert "service-grid" not in response.text
     assert "difficulty-grid" in response.text
     assert "task-table-body" in response.text
     assert "pipeline-view" not in response.text

@@ -131,10 +131,6 @@ h3 span {
   margin-top: 22px;
 }
 
-.services-panel {
-  margin-bottom: 22px;
-}
-
 .difficulty-panel,
 .task-table-panel {
   margin-bottom: 22px;
@@ -159,23 +155,6 @@ h3 span {
   padding: 22px;
   backdrop-filter: blur(10px);
   min-width: 0;
-}
-
-.service-grid {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 14px;
-}
-
-.service-card {
-  border: 1px solid rgba(64, 51, 41, 0.1);
-  background: rgba(255, 255, 255, 0.58);
-  border-radius: 8px;
-  padding: 16px;
-}
-
-.service-card p {
-  margin-bottom: 0;
 }
 
 .difficulty-grid {
@@ -397,8 +376,6 @@ tbody tr.is-selected {
 .task-card strong,
 .task-card p,
 .task-card span,
-.service-card strong,
-.service-card p,
 .overview-card p,
 .pipeline-step summary span {
   min-width: 0;
@@ -700,7 +677,6 @@ pre {
 @media (max-width: 1120px) {
   .artifact-grid,
   .overview-grid,
-  .service-grid,
   .difficulty-grid {
     grid-template-columns: 1fr;
   }

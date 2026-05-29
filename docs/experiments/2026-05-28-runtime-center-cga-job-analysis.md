@@ -210,7 +210,37 @@ MIR-003 后，参数执行契约已不再列为剩余问题；当时主要未解
 结论：
 
 - 对比 MIR-002.7 本地采样，completion tokens 从 `246/251` 降到 `197/173`，端到端耗时也下降。
-- 第一条 query 仍未达到 MIR-005 预期的约 `155 completion tokens`，因此本轮只记录收益，不追加新的压缩策略；正式结论仍需多次采样和远端 8 样本回归。
+- 第一条 query 仍未达到 MIR-005 预期的约 `155 completion tokens`，因此本轮只记录收益，不追加新的压缩策略；远端 8 样本重跑见下。
+
+### MIR-005 远端部署与 8 样本重跑
+
+- 本轮远端部署标识：`9aee174+mir005-20260529`。
+- 重跑时间：2026-05-29 17:20-17:22 左右（Asia/Shanghai）。
+- 重跑方式：清理当前 8 条样本在 testing/CGA/repair 数据目录下的旧记录后，直接长超时调用 CGA `8000` 和 testing-agent `8003`。
+- 重跑记录：
+  - `/home/mabingjie/apps/qa-agent/artifacts/experiment_runs/current8_after_mir005_direct_rerun_20260529T092051Z.json`
+  - `/home/mabingjie/apps/qa-agent/artifacts/experiment_runs/current8_after_mir005_runtime_summary_20260529T092206Z.json`
+- 服务状态：CGA `8000`、运行中心 `8001`、testing-agent `8003` 均 health ok。
+- final verdict 汇总：`pass=5`，`fail=2`，`pending=1`。
+- strict check 汇总：`pass=1`，`fail=6`，`not_run=1`。
+- 契约检查：8 条样本的 `question_decomposer` 输出字段均为 `intent_type/literal_candidates/modality_terms/original_question/output_shape/result_type/schema_version/substantive_terms/time_terms/unparsed_terms`，不再包含 `target_concepts/relation_phrases/stopword_terms`。
+
+| QA ID | 远端状态 | completion tokens / decomposer 耗时 | 判断 |
+| --- | --- | ---: | --- |
+| `qa_9cfa692813d5` | `generated / final_verdict=pass / strict_check=fail` | `196 / 6705 ms` | projection 仍完整；strict mismatch 仍是字段别名/字段值口径问题。 |
+| `qa_c80a82efe561` | `generated / final_verdict=pass / strict_check=fail` | `197 / 9004 ms` | 单跳终点 projection 仍完整；strict mismatch 待核。 |
+| `qa_76e37da317b4` | `generated / final_verdict=pass / strict_check=pass` | `129 / 7347 ms` | 基准 count 样本保持 strict pass。 |
+| `qa_c2508f2c0bac` | `generated / final_verdict=pass / strict_check=fail` | `238 / 12119 ms` | 参数内联仍正常；strict mismatch 来自 `bandwidth` 与 `service_bandwidth` 别名口径。 |
+| `qa_526d49332ed1` | `generated / final_verdict=pass / strict_check=fail` | `203 / 5351 ms` | testing-agent 判为语义等价，但 strict 仍因字段别名口径失败；路径覆盖问题仍需后续 MIR 重新审视。 |
+| `qa_c3e83dd7ad32` | `generated / final_verdict=fail / strict_check=fail` | `244 / 9861 ms` | 不再 clarification；仍缺 location 聚合、排序和 `LIMIT 3`。 |
+| `qa_6494b2085699` | `clarification_required / final_verdict=pending / strict_check=not_run` | `319 / 11570 ms` | IP owner/property 绑定仍未闭环；decomposer 已把 `10.0.0.4` attached_to `网元`。 |
+| `qa_a5f4b0253af3` | `generated / final_verdict=fail / strict_check=fail` | `205 / 6076 ms` | 多跳路径与方向词仍未闭环。 |
+
+远端结论：
+
+- MIR-005 的 schema/prompt slimming 已在远端生效，旧三字段不再进入 decomposer 输出。
+- 8 样本 final verdict 从 MIR-004 后的 `pass=4/fail=3/pending=1` 变为 `pass=5/fail=2/pending=1`；这主要来自 testing-agent 对 `qa_526d49332ed1` 判为 semantic equivalent，不代表路径语义问题已经完全解决。
+- 性能收益存在但不均匀：多数样本 completion tokens 落在 `196-244`，简单 count 为 `129`，IP 复杂样本为 `319`；本轮不追加新压缩策略。
 
 ## 问题明细与当前进度
 

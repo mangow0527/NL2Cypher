@@ -26,7 +26,7 @@
 | MIR-002 | Decomposer Substantive Slot Hard Cut | 代码已完成，性能验收未达标，待再决策 | decomposer latency / duplicate retrieval terms | P0 |
 | MIR-003 | Executable Cypher Inline Output with Template Trace | 已远端闭环 | `qa_c2508f2c0bac` | P0 |
 | MIR-004 | Slot-Authoritative Literal Candidate Filtering | 已远端验证，原始澄清失败点闭环 | `qa_c3e83dd7ad32` | P0 |
-| MIR-005 | Decomposer Redundant Output Field Removal | 代码已完成，本地验证通过，待正式延迟回归/远端验证 | decomposer completion token latency | P0 |
+| MIR-005 | Decomposer Redundant Output Field Removal | 已远端验证，性能收益未完全达标 | decomposer completion token latency | P0 |
 
 后续新增问题按 `MIR-006`、`MIR-007` 继续追加。
 
@@ -442,7 +442,7 @@ PYTHONPATH=. pytest tests/test_runtime_results_service_api.py -q
 | MIR-005.3 | attached_to On-Demand Only | 已完成 | P1 | S | backend/LLM | MIR-005.0 |
 | MIR-005.4 | modality / unparsed Trigger-Rate Decision | 已完成：保留 | P2 | XS | backend/QA | MIR-005.0 |
 | MIR-005.5 | Prompt Slimming and Schema Update | 已完成 | P0 | S | backend/LLM | MIR-005.1 到 MIR-005.4 |
-| MIR-005.6 | Latency Regression and Token Baseline | 轻量采样完成，正式多次回归待跑 | P0 | S | QA | MIR-005.1 到 MIR-005.5 |
+| MIR-005.6 | Latency Regression and Token Baseline | 已远端采样，收益未完全达标 | P0 | S | QA | MIR-005.1 到 MIR-005.5 |
 
 推荐顺序：
 
@@ -452,7 +452,7 @@ MIR-005.0 -> MIR-005.1 -> MIR-005.2 -> MIR-005.3 -> MIR-005.4 -> MIR-005.5 -> MI
 
 必须先做 `MIR-005.0 Downstream Consumption Audit and Baseline`。删字段前必须确认下游没有真实消费。如果某字段仍被读取，对应子 IR 要从“删除输出”改为“改为代码推导”，不能直接删。
 
-### 7.5 实施摘要（2026-05-29）
+### 7.5 闭环摘要（2026-05-29）
 
 字段审计结论：
 
@@ -468,7 +468,7 @@ MIR-005.0 -> MIR-005.1 -> MIR-005.2 -> MIR-005.3 -> MIR-005.4 -> MIR-005.5 -> MI
 
 - `question_decomposition_v1` 不再允许 `target_concepts`、`relation_phrases`、`stopword_terms`；旧字段若由 mock/遗留 payload 进入 pipeline，会在规范化阶段被剔除。
 - prompt 和 OpenAI-compatible 简化契约已删除旧字段说明与示例输出。
-- retriever 不再读取旧双轨字段；运行中心说明改为“旧 trace/coverage 兼容字段”，避免把旧字段误读成当前 schema。
+- retriever 不再读取旧双轨字段。
 - 本地验证：`PYTHONPATH=. pytest services/cypher_generator_agent/tests -q` -> `517 passed in 3.71s`；`PYTHONPATH=. pytest tests/test_runtime_results_service_api.py -q` -> `32 passed in 0.32s`。
 
 轻量 LLM 采样（各 1 次，`qwen3-32b`，无 schema retry）：
@@ -478,7 +478,15 @@ MIR-005.0 -> MIR-005.1 -> MIR-005.2 -> MIR-005.3 -> MIR-005.4 -> MIR-005.5 -> MI
 | `查询所有服务使用的隧道，返回隧道的 ID、名称和带宽` | 2797 | 197 | 2994 | 7417 ms |
 | `Gold 服务使用了哪些隧道` | 2789 | 173 | 2962 | 5649 ms |
 
-结论：completion tokens 已从 MIR-002.7 的 `246/251` 降到 `197/173`，延迟同步下降；第一条仍未达到约 `155 tokens` 的目标。正式验收仍需多次采样和远端回归，本轮不继续追加压缩策略。
+远端验证：
+
+- 部署标识：`9aee174+mir005-20260529`。
+- 重跑记录：`current8_after_mir005_direct_rerun_20260529T092051Z.json`、`current8_after_mir005_runtime_summary_20260529T092206Z.json`。
+- final verdict：`pass=5`，`fail=2`，`pending=1`；strict check：`pass=1`，`fail=6`，`not_run=1`。
+- 8 条样本的 decomposer 输出字段均不再包含 `target_concepts/relation_phrases/stopword_terms`。
+- 远端 completion tokens：`129-319`。多数样本落在 `196-244`，复杂 IP 样本为 `319`，性能收益存在但不均匀。
+
+结论：MIR-005 的 schema/prompt slimming 已闭环，completion tokens 较 MIR-002.7 有下降，但未稳定达到约 `155 tokens` 的目标。本轮不追加新的压缩策略；后续若继续优化，应另开 MIR 处理 prompt/schema 体积或 provider guided decoding。
 
 ### MIR-005.0 Downstream Consumption Audit and Baseline
 
