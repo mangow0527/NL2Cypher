@@ -25,9 +25,8 @@ def test_runtime_results_center_html_exposes_pipeline_sections(monkeypatch, tmp_
     assert response.status_code == 200
     assert "运行结果中心" in response.text
     assert "Runtime Results Center" in response.text
-    assert "cypher-generator-agent" in response.text
-    assert "testing-agent" in response.text
-    assert "repair-agent" in response.text
+    assert "只展示符合 testing-agent 新契约的正式运行索引" not in response.text
+    assert "点击任务后进入独立详情页查看" not in response.text
     assert "Cypher 结果与质量" not in response.text
     assert "改进评估" not in response.text
     assert "repair-agent 诊断摘要" not in response.text
