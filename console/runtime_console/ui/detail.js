@@ -31,7 +31,14 @@ const questionDecompositionFieldHints = {
   relationships_mentioned: '兼容旧 trace 的关系短语字段，含义等同于 relation_phrases。',
   literal_candidate_objects: '保留 literal_candidates 的结构化对象列表，供后续字面值解析读取 text、kind_hint、attached_to。',
   literal_requests: '由工程代码生成的字面值解析请求，明确 raw_literal 应该绑定到哪个 vertex/edge 的哪个 property。',
+  skipped_literal_candidates: '按 slot 判定后未送入 literal resolver 的候选词。结构控制词会在这里留下 raw、slot 和跳过原因。',
   substantive_terms: '实义词对象数组，每项包含 text、slot 和可选 attached_to；slot 表示该词进入 projection、filter、group_by、order_by、limit、path 或 unknown。',
+  text: '用户问题中的原始表层词。',
+  slot: '该词在查询计划中的语义角色，是判断 projection、filter、group_by、order_by、limit、path 的权威字段。',
+  attached_to: '该词修饰或归属的表层概念，例如 “Gold” attached_to “服务”。',
+  kind_hint: '字面值类型提示，例如 enum_or_name、id、number、datetime 或 unknown。',
+  raw: '原始候选词文本。',
+  reason: '系统记录该项被跳过、失败或进入修复的原因。',
   stopword_terms: '覆盖分类轴字段：礼貌语、连接词、助词或查询引导词，例如“查询”“帮我”“及其”“的”。',
   modality_terms: '覆盖分类轴字段：表达近似、不确定或软约束的词，例如“大概”“应该”“可能”。',
   time_terms: '覆盖分类轴字段：时间或时间范围表达，例如“最近”“2024 年”“过去 7 天”。',
@@ -40,6 +47,41 @@ const questionDecompositionFieldHints = {
   coverage: '覆盖率报告，记录 substantive_terms 中哪些词已覆盖、哪些仍缺失；返回字段覆盖明细位于 projection_terms。',
   filters: '后续阶段可能补充的过滤条件结构；Question Decomposer 本身不再输出旧的过滤短语字段。',
   mock_intent: '本地 mock 流程使用的测试意图标记，真实 LLM 流程通常不依赖它。',
+};
+
+const commonFieldHints = {
+  schema_version: '当前对象的结构版本，用来判断字段契约。',
+  trace_schema_version: 'CGA trace 的结构版本，当前 GraphTrace 使用 cga_graph_trace_v1。',
+  trace_id: '本次生成链路的 trace 标识。',
+  question_id: '输入问题或 QA 样本的稳定标识。',
+  generation_run_id: '本次生成尝试的运行标识。',
+  source_question: '进入 CGA 的原始自然语言问题。',
+  question: '当前阶段处理的自然语言问题。',
+  status: '当前对象或阶段的状态。',
+  final_status: 'CGA 全链路最终状态。',
+  started_at: '阶段或 trace 开始时间。',
+  finished_at: 'trace 结束时间。',
+  duration_ms: '阶段耗时，单位毫秒。',
+  input_ref: '阶段输入在 trace 中的存储引用。',
+  output_ref: '阶段输出在 trace 中的存储引用。',
+  input: '阶段收到的结构化输入。',
+  output: '阶段产生的结构化输出。',
+  metrics: '阶段记录的计数或统计指标。',
+  errors: '阶段执行时产生的错误列表。为空表示没有错误。',
+  warnings: '阶段执行时产生的警告列表。为空表示没有警告。',
+  code: '错误、警告或校验问题的稳定代码。',
+  message: '错误、警告或校验问题的人类可读说明。',
+  details: '补充诊断上下文，通常用于排查具体字段、候选或校验规则。',
+  llm_calls: '该阶段保存的 LLM 调用记录，包含 prompt、raw output、解析结果和 token 用量。',
+  token_usage: 'LLM 调用的 token 统计。',
+  token_usage_total: 'LLM 调用消耗的总 token 数。',
+  raw_output: '模型或下游服务返回的原始文本。',
+  parsed_output: '原始输出解析后的结构化对象。',
+  prompt: '发给模型的完整提示词。',
+  call_id: 'LLM 调用的唯一标识。',
+  schema_name: '本次结构化输出要求遵循的 schema 名称。',
+  attempt: '本阶段或 LLM 调用的尝试次数。',
+  confidence: '候选、绑定或解析结果的置信度。',
 };
 
 function escapeHtml(value) {
@@ -153,6 +195,7 @@ const stageMetricLabels = {
   llm_call_count: ['LLM 调用', '次'],
   candidate_count: ['候选召回', '个'],
   literal_count: ['字面值', '个'],
+  skipped_literal_candidate_count: ['跳过 literal candidate', '个'],
   operation_count: ['DSL 操作', '个'],
   checked_rule_count: ['校验规则', '条'],
   retry_count: ['重试', '次'],
@@ -194,6 +237,51 @@ function formatStageMetrics(metrics) {
       return `${label}: ${formatStageMetricValue(value)}${unit}`;
     });
   return parts.length ? parts.join(' · ') : '无阶段指标';
+}
+
+function fallbackFieldHint(key, section) {
+  if (!key) {
+    return '未命名字段。';
+  }
+  if (key.endsWith('_id')) {
+    return '稳定标识字段，用来把当前对象与 trace、样本或下游记录关联。';
+  }
+  if (key.endsWith('_count')) {
+    return '计数字段，表示当前阶段记录的对应对象数量。';
+  }
+  if (key.endsWith('_at')) {
+    return '时间戳字段，用来定位该事件或记录发生的时间。';
+  }
+  if (key.endsWith('_ms')) {
+    return '耗时字段，单位毫秒。';
+  }
+  if (key.includes('cypher')) {
+    return 'Cypher 相关字段，用来展示生成、编译或校验后的查询文本。';
+  }
+  if (key.includes('dsl')) {
+    return '受限 DSL 相关字段，用来展示 Cypher 编译前的中间查询结构。';
+  }
+  if (key.includes('literal')) {
+    return '字面值解析相关字段，用来追踪自然语言中的值如何进入或跳过 resolver。';
+  }
+  if (key.includes('candidate')) {
+    return '候选召回相关字段，用来记录可供后续阶段选择的语义对象。';
+  }
+  if (key.includes('coverage')) {
+    return '覆盖率相关字段，用来判断用户问题中的语义词是否被后续计划覆盖。';
+  }
+  if (key.includes('projection')) {
+    return '返回字段相关字段，用来判断最终查询会返回哪些对象或属性。';
+  }
+  if (key.includes('filter')) {
+    return '过滤条件相关字段，用来记录属性约束和值绑定。';
+  }
+  if (key.includes('repair')) {
+    return '修复流程相关字段，用来记录失败后的重试、澄清或终止决策。';
+  }
+  return section === 'metrics'
+    ? '阶段指标字段，记录该阶段执行过程中的数量、耗时或调用统计。'
+    : 'trace 原始字段，运行中心按服务落盘内容原样展示。';
 }
 
 const stageFieldHints = {
@@ -248,45 +336,137 @@ const stageFieldHints = {
     },
   },
   candidate_retrieval: {
+    input: {
+      _summary: '这里展示候选召回阶段收到的问题拆解结果。',
+      ...questionDecompositionFieldHints,
+    },
     output: {
       _summary: '这里展示语义层召回到的候选对象，供后续 LLM 在候选集合内选择。',
       candidates: '召回的语义候选列表，可能包含点、边、属性、指标或路径模板。',
+      semantic_type: '候选对象类型，例如 vertex、edge、property、metric 或 path_pattern。',
       semantic_id: '语义对象的稳定标识。',
+      semantic_name: '语义对象名称，通常是模型中的点、边、属性或指标名。',
       score: '召回相似度或匹配分数。',
+      match_type: '候选命中方式，例如 exact、synonym、text 或 embedding。',
+      evidence: '召回证据，说明哪个用户词命中了哪条模型信息。',
+      owner: '属性候选所属的点或边。',
+      metadata: '候选对象的补充元信息，例如合法值、方向语义或属性类型。',
+    },
+    metrics: {
+      _summary: '这里展示候选召回规模。',
+      candidate_count: '本阶段召回出的语义候选总数。',
+      errors: '候选召回阶段产生的错误列表。为空表示没有错误。',
+      warnings: '候选召回阶段产生的警告列表。为空表示没有警告。',
     },
   },
   literal_resolver: {
+    input: {
+      _summary: '这里展示本阶段实际会解析哪些 literal，以及哪些候选因 slot 语义被跳过。',
+      literal_requests: '送入 literal resolver 的解析请求。每项包含 raw_literal、期望 vertex/edge、expected_property 和 literal_kind_hint。',
+      raw_literal: '用户问题中的原始字面值文本。',
+      expected_vertex: 'resolver 应在该点类型下查找属性值。',
+      expected_edge: 'resolver 应在该边类型下查找属性值。',
+      expected_property: 'resolver 应匹配的属性名。',
+      literal_kind_hint: '字面值类型提示，例如 enum_or_name、id、numeric、time 或 unknown。',
+      skipped_literal_candidates: '按 slot 判定后未送入 literal resolver 的候选词。结构控制词会在这里留下 raw、slot 和跳过原因。',
+      raw: '被跳过候选的原始文本。',
+      slot: '该候选在 substantive_terms 中的语义槽位。slot 是是否进入 resolver 的判定锚点。',
+      reason: '跳过原因，例如 slot=limit 表示该词是 limit 控制词，不是过滤值。',
+    },
     output: {
       _summary: '这里展示字面值解析结果，例如把 “Gold” 解析成某个枚举值。',
       raw_literal: '用户问题里的原始字面值。',
       resolved: '是否成功解析到语义层或 value-index 中的确定值。',
       resolved_value: '解析后的标准值。',
+      normalized_value: 'resolver 标准化后的值，用于后续绑定和 Cypher 参数。',
+      match_type: '解析命中方式，例如 exact、synonym 或 fuzzy。',
       expected: '期望匹配的语义字段。',
+      expected_vertex: '解析目标点类型。',
+      expected_edge: '解析目标边类型。',
+      expected_property: '解析目标属性。',
+      evidence: '解析证据，说明命中了哪条 value-index 或属性合法值。',
       error_code: '解析失败原因。',
       alternatives: '可供用户选择的候选值。',
       value_index_miss: '是否因为 value-index 没有命中而失败。',
+      requires_user_choice: '是否需要用户从 alternatives 中选择。',
+    },
+    metrics: {
+      _summary: '这里展示 literal resolver 的解析数量和跳过数量。',
+      literal_count: '实际送入 resolver 并产出解析结果的 literal 数量。',
+      skipped_literal_candidate_count: '因结构槽位被跳过的 literal candidate 数量，例如 slot=limit 的 Top-N 数字。',
+      errors: 'literal resolver 阶段产生的错误列表。为空表示没有错误。',
+      warnings: 'literal resolver 阶段产生的警告列表。为空表示没有警告。',
     },
   },
   grounded_understanding: {
+    input: {
+      _summary: '这里展示语义落地阶段收到的拆解结果、召回候选和已解析 literal。',
+      decomposition: '问题结构化拆解结果。',
+      resolved_literals: 'literal resolver 已解析成功或失败的结果列表。',
+      attempt_no: '语义落地理解的尝试轮次。',
+      repair_context: '修复回灌时补充给本阶段的上下文。',
+    },
     output: {
       _summary: '这里展示 LLM 在候选集合内做出的语义选择。',
       query_shape: '被识别出的查询形态。',
       selected_vertices: '最终选择的点类型。',
       selected_edges: '最终选择的边/关系类型。',
       selected_properties: '最终选择的属性字段。',
+      selected_literals: '最终纳入语义计划的已解析字面值。',
+      filters: '语义层选择出的过滤条件。',
+      projection: '语义层选择出的返回字段或对象。',
+      group_by: '语义层选择出的分组维度。',
+      measures: '语义层选择出的聚合度量。',
+      sort: '语义层选择出的排序规则。',
+      limit: '语义层选择出的数量限制。',
+      coverage: '本阶段给出的语义覆盖报告。',
+      unsupported: '如果查询形态不支持，这里记录原因。',
       assumptions: '系统在高置信场景下做出的假设。',
+    },
+    metrics: {
+      _summary: '这里展示语义落地阶段的 LLM 调用情况。',
+      llm_call_count: '本阶段发起的 LLM 调用次数。',
+      token_usage: '本阶段 LLM 调用的 token 明细。',
+      token_usage_total: '本阶段 LLM 调用消耗的总 token 数。',
+      errors: '语义落地阶段产生的错误列表。为空表示没有错误。',
+      warnings: '语义落地阶段产生的警告列表。为空表示没有警告。',
     },
   },
   semantic_binder: {
+    input: {
+      _summary: '这里展示语义落地结果，binder 会把它收敛成稳定绑定计划。',
+      query_shape: '语义落地阶段选择的查询形态。',
+      selected_vertices: '待绑定的点候选。',
+      selected_edges: '待绑定的边候选。',
+      selected_properties: '待绑定的属性候选。',
+      selected_literals: '待绑定的 literal 解析结果。',
+      filters: '待绑定的过滤条件。',
+      projection: '待绑定的返回字段。',
+    },
     output: {
       _summary: '这里展示稳定的语义绑定计划，供校验器和 DSL 构建器使用。',
       query_shape: '查询形态。',
-      bindings: '自然语言片段到语义对象的绑定结果。',
+      vertex_bindings: '已确认的点类型绑定。',
+      edge_bindings: '已确认的边/关系绑定。',
+      property_bindings: '已确认的属性绑定。',
+      literal_bindings: '已确认的 literal 到属性值绑定。',
+      metric_bindings: '已确认的指标绑定。',
+      path_pattern_bindings: '已确认的命名路径模板绑定。',
       filters: '已绑定到具体字段和值的过滤条件。',
-      projections: '准备返回给用户的字段或对象。',
+      group_by: '已绑定的分组维度。',
+      measures: '已绑定的聚合度量。',
+      projection: '准备返回给用户的字段或对象。',
+      sort: '排序规则。',
+      limit: '数量限制。',
+      assumptions: '绑定过程中保留的假设。',
     },
   },
   semantic_validator: {
+    input: {
+      _summary: '这里展示语义校验器收到的绑定计划和覆盖率报告。',
+      binding_plan: 'semantic_binder 输出的稳定绑定计划。',
+      coverage: '问题拆解阶段生成并经 pipeline 补齐的覆盖率报告。',
+    },
     output: {
       _summary: '这里展示语义正确性校验结果。',
       is_valid: '语义绑定是否通过校验。',
@@ -313,15 +493,40 @@ const stageFieldHints = {
     },
   },
   dsl_builder: {
+    input: {
+      _summary: '这里展示 DSL 构建器收到的已校验绑定计划。',
+      query_shape: '绑定计划中的查询形态。',
+      vertex_bindings: 'DSL 构建可使用的点绑定。',
+      edge_bindings: 'DSL 构建可使用的边绑定。',
+      property_bindings: 'DSL 构建可使用的属性绑定。',
+      literal_bindings: 'DSL 构建可使用的 literal 绑定。',
+      filters: '需要写入 DSL 的过滤条件。',
+      projection: '需要写入 DSL 的返回字段。',
+      sort: '需要写入 DSL 的排序规则。',
+      limit: '需要写入 DSL 的数量限制。',
+    },
     output: {
       _summary: '这里展示由语义绑定计划构建出的受限 DSL。',
       schema_version: 'DSL schema 版本。',
+      query_id: '本次 DSL 对应的问题或运行标识。',
       query_shape: 'DSL 表达的查询形态。',
+      source_question: 'DSL 来源自然语言问题。',
+      bindings: 'DSL 中使用的点、边、指标或路径绑定。',
       operations: 'DSL 操作序列，例如匹配、过滤、聚合、排序。',
+      filters: 'DSL 过滤条件。',
       projection: 'DSL 要返回的字段或对象。',
+      assumptions: '生成 DSL 时保留的系统假设。',
     },
   },
   dsl_parser: {
+    input: {
+      _summary: '这里展示待解析和校验的受限 DSL。',
+      schema_version: 'DSL schema 版本。',
+      query_shape: 'DSL 声明的查询形态。',
+      bindings: 'DSL 声明的绑定对象。',
+      operations: 'DSL 声明的操作序列。',
+      projection: 'DSL 声明的返回字段。',
+    },
     output: {
       _summary: '这里展示 DSL 解析结果，确认 DSL 结构可以被编译器消费。',
       query_shape: '解析后的查询形态。',
@@ -330,6 +535,10 @@ const stageFieldHints = {
     },
   },
   cypher_compiler: {
+    input: {
+      _summary: '这里展示编译器收到的 DSL 查询形态。',
+      query_shape: '编译器要处理的 DSL 查询形态。',
+    },
     output: {
       _summary: '这里展示 DSL 编译成 Cypher 后的结果。v1 对外执行的是内联后的 cypher_executable/cypher，模板和参数仅作为编译中间产物保留。',
       cypher_template: '编译器内部生成的参数化 Cypher 模板，例如 WHERE svc.quality_of_service = $quality_of_service；它不直接交给 testing-agent 执行。',
@@ -341,9 +550,16 @@ const stageFieldHints = {
     },
   },
   cypher_self_validation: {
+    input: {
+      _summary: '这里展示自校验器收到的最终 Cypher 和预期 RETURN 别名。',
+      cypher: '准备提交 testing-agent 的最终 Cypher。',
+      expected_return_aliases: '编译器期望 RETURN 子句包含的别名。',
+    },
     output: {
       _summary: '这里展示不连接数据库前的 Cypher 静态自校验结果。',
       valid: 'Cypher 是否通过自校验。',
+      mode: '自校验模式，例如 generated_query。',
+      checks: '逐项自校验规则结果。',
       errors: '阻断提交的静态错误，例如写操作、未知 label、RETURN 形态不一致，或最终执行 Cypher 仍残留 $param。',
       warnings: '不阻断提交的风险提示。',
       checked_rules: '本次执行过的校验规则。',
@@ -437,7 +653,7 @@ function renderStageSectionHelp(stage, section, payload) {
   const hints = stageFieldHint(stage.key, section);
   const keys = payloadFieldKeys(payload);
   const items = keys.map((key) => {
-    const description = hints[key] || '该字段暂未配置专门说明，需要补充到运行中心字段说明表。';
+    const description = hints[key] || commonFieldHints[key] || fallbackFieldHint(key, section);
     return `<div><dt>${escapeHtml(key)}</dt><dd>${escapeHtml(description)}</dd></div>`;
   });
   if (!items.length && !hints._summary) {
@@ -719,6 +935,7 @@ function renderCgaFlowStages(flow = {}) {
     ${renderTraceTable(table)}
     ${stages
       .map((stage) => {
+        const stageInput = stripLlmCallsFromPayload(stage.input);
         const stageOutput = stripLlmCallsFromPayload(stage.output);
         const stageMetrics = stripLlmCallsFromPayload(stage.metrics);
         return `
@@ -727,12 +944,15 @@ function renderCgaFlowStages(flow = {}) {
               <span>${escapeHtml(stage.title_zh || cgaStageTitles[stage.key] || stage.key || '未命名阶段')}</span>
               <span class="status-pill tone-${tone(stage.status)}">${escapeHtml(stage.status || 'unknown')}</span>
             </summary>
+            <h3>阶段输入</h3>
+            ${renderStageSectionHelp(stage, 'input', stageInput)}
+            ${codeBlock(stageInput)}
             <h3>阶段输出</h3>
             ${renderStageSectionHelp(stage, 'output', stageOutput)}
             ${codeBlock(stageOutput)}
             ${renderStageLlmCalls(stage)}
             <h3>阶段指标 / 错误 / 警告</h3>
-            ${renderStageSectionHelp(stage, 'metrics', { metrics: stageMetrics, errors: stage.errors, warnings: stage.warnings })}
+            ${renderStageSectionHelp(stage, 'metrics', { ...stageMetrics, errors: stage.errors, warnings: stage.warnings })}
             ${codeBlock({ metrics: stageMetrics, errors: stage.errors, warnings: stage.warnings })}
           </details>
         `;

@@ -104,9 +104,10 @@ def test_runtime_results_detail_script_puts_cypher_comparison_in_overview():
     assert "stripLlmCallsFromPayload" in script
     assert "renderStageLlmCalls" in script
     assert "本阶段 LLM 调用" in script
-    assert "阶段输入" not in script
+    assert "阶段输入" in script
     assert "const stageOutput = stripLlmCallsFromPayload(stage.output)" in script
-    assert "codeBlock(stageInput)" not in script
+    assert "const stageInput = stripLlmCallsFromPayload(stage.input)" in script
+    assert "codeBlock(stageInput)" in script
     assert "codeBlock(stageOutput)" in script
     assert "codeBlock(stage.output)" not in script
     assert "filter_phrases" not in script
@@ -117,6 +118,10 @@ def test_runtime_results_detail_script_puts_cypher_comparison_in_overview():
     assert "保留 literal_candidates 的结构化对象列表" in script
     assert "literal_requests" in script
     assert "由工程代码生成的字面值解析请求" in script
+    assert "skipped_literal_candidates" in script
+    assert "按 slot 判定后未送入 literal resolver 的候选词" in script
+    assert "skipped_literal_candidate_count" in script
+    assert "因结构槽位被跳过的 literal candidate 数量" in script
     assert "coverage" in script
     assert "覆盖率报告，记录 substantive_terms 中哪些词已覆盖、哪些仍缺失" in script
     assert "projection_terms" in script
