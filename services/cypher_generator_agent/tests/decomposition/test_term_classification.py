@@ -217,6 +217,35 @@ def test_prompt_example_3_treats_firewall_as_concept_not_literal() -> None:
     assert result.modality_terms == ["大概"]
 
 
+def test_prompt_defines_literals_by_filter_role_not_control_slots() -> None:
+    question = "返回前3名的隧道"
+    client = FakeStructuredLLMClient(
+        _valid_payload(
+            question,
+            intent_type="top_n",
+            output_shape="rows",
+            substantive_terms=[
+                {"text": "前", "slot": "limit"},
+                {"text": "3", "slot": "limit"},
+                {"text": "隧道", "slot": "projection"},
+            ],
+            target_concepts=["隧道"],
+            literal_candidates=[],
+        )
+    )
+
+    result = QuestionDecomposer(client).decompose(question)
+    prompt = client.calls[0]["prompt"]
+
+    assert result.literal_candidates == []
+    assert "返回前3名" in prompt
+    assert "不进 literal_candidates" in prompt
+    assert "带宽为3的链路" in prompt
+    assert "slot=limit" in prompt
+    assert "slot=filter" in prompt
+    assert "判定锚点" in prompt
+
+
 def test_recent_is_classified_as_time() -> None:
     question = "最近 down 的端口"
     client = FakeStructuredLLMClient(

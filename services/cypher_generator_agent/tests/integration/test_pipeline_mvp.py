@@ -15,6 +15,11 @@ from services.cypher_generator_agent.app.decomposition.models import (
     QuestionDecompositionFailure,
 )
 from services.cypher_generator_agent.app.infrastructure.config import get_settings
+from services.cypher_generator_agent.app.retrieval.models import (
+    CandidateEvidence,
+    CandidateRetrievalResult,
+    SemanticCandidate,
+)
 from services.cypher_generator_agent.app.understanding.models import GroundedUnderstandingFailure
 
 
@@ -1018,6 +1023,196 @@ def test_unresolved_literal_stops_before_dsl_or_cypher_generation() -> None:
     ]
 
 
+def test_qa_c3_limit_number_does_not_trigger_literal_clarification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    question = "统计服务使用的隧道源节点所在位置的网元数量，按数量降序排列，返回前3名。"
+    reached_grounding = False
+
+    def fake_decompose(raw_question: str) -> dict[str, Any]:
+        return {
+            "schema_version": "question_decomposition_v1",
+            "result_type": "decomposition",
+            "original_question": raw_question,
+            "intent_type": "top_n",
+            "output_shape": "grouped_rows",
+            "target_concepts": ["服务", "隧道", "源节点", "位置", "网元", "数量"],
+            "relation_phrases": ["使用", "源节点"],
+            "literal_candidates": [
+                {"text": "3", "kind_hint": "number", "attached_to": "数量"}
+            ],
+            "literal_requests": [],
+            "substantive_terms": [
+                _decomp_term("服务", "path"),
+                _decomp_term("使用", "path"),
+                _decomp_term("隧道", "path"),
+                _decomp_term("源节点", "path"),
+                _decomp_term("位置", "group_by", attached_to="网元"),
+                _decomp_term("网元", "projection"),
+                _decomp_term("数量", "projection"),
+                _decomp_term("降序", "order_by"),
+                _decomp_term("前", "limit"),
+                _decomp_term("3", "limit"),
+            ],
+            "stopword_terms": ["统计", "的", "所在", "按", "排列", "返回", "名"],
+            "modality_terms": [],
+            "time_terms": [],
+            "unparsed_terms": [],
+            "coverage": _coverage_payload(
+                ["服务", "使用", "隧道", "源节点", "位置", "网元", "数量", "降序", "前", "3"]
+            ),
+        }
+
+    def stop_after_literal_resolution(*args: Any, **kwargs: Any) -> GroundedUnderstandingFailure:
+        nonlocal reached_grounding
+        reached_grounding = True
+        assert kwargs["literal_results"] == []
+        return GroundedUnderstandingFailure(
+            reason="test_stopped_after_literal_resolution",
+            message="literal resolution completed without asking about the limit number",
+        )
+
+    monkeypatch.setattr(pipeline_module, "_mock_decompose", fake_decompose)
+    monkeypatch.setattr(
+        pipeline_module,
+        "_run_grounded_understanding_stage",
+        stop_after_literal_resolution,
+    )
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_ENABLED", "false")
+    get_settings.cache_clear()
+
+    try:
+        output = run_pipeline(
+            question=question,
+            qa_id="qa_c3e83dd7ad32",
+            generation_run_id="run-qa_c3e83dd7ad32",
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert reached_grounding is True
+    assert output.status == "service_failed"
+    literal_stage = _stage(output.trace, "literal_resolver")
+    literal_input = literal_stage["input_ref"]["value"]
+    assert literal_input["literal_requests"] == []
+    assert literal_input["skipped_literal_candidates"] == [
+        {"raw": "3", "slot": "limit", "reason": "slot=limit"}
+    ]
+    assert literal_stage["metrics"]["skipped_literal_candidate_count"] == 1
+
+
+def test_structural_limit_literal_candidate_is_skipped_while_filter_literal_resolves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_decompose(question: str) -> dict[str, Any]:
+        return {
+            "schema_version": "question_decomposition_v1",
+            "result_type": "decomposition",
+            "original_question": question,
+            "intent_type": "list",
+            "output_shape": "rows",
+            "target_concepts": ["服务", "隧道", "数量"],
+            "relation_phrases": ["使用"],
+            "literal_candidates": [
+                {"text": "Gold", "kind_hint": "enum_or_name", "attached_to": "服务"},
+                {"text": "3", "kind_hint": "number", "attached_to": "数量"},
+            ],
+            "literal_requests": [],
+            "substantive_terms": [
+                _decomp_term("Gold", "filter", attached_to="服务"),
+                _decomp_term("服务", "path"),
+                _decomp_term("使用", "path"),
+                _decomp_term("隧道", "projection"),
+                _decomp_term("前", "limit"),
+                _decomp_term("3", "limit"),
+            ],
+            "stopword_terms": [],
+            "modality_terms": [],
+            "time_terms": [],
+            "unparsed_terms": [],
+            "coverage": _coverage_payload(["Gold", "服务", "使用", "隧道", "前", "3"]),
+            "mock_intent": "gold_service_tunnels",
+        }
+
+    monkeypatch.setattr(pipeline_module, "_mock_decompose", fake_decompose)
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_ENABLED", "false")
+    get_settings.cache_clear()
+
+    try:
+        output = run_pipeline(
+            question="Gold 服务使用了哪些隧道，返回前3名",
+            qa_id="limit-literal-skip",
+            generation_run_id="run-limit-literal-skip",
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert output.status != "clarification_required"
+    literal_stage = _stage(output.trace, "literal_resolver")
+    literal_input = literal_stage["input_ref"]["value"]
+    assert [request["raw_literal"] for request in literal_input["literal_requests"]] == ["Gold"]
+    assert literal_input["skipped_literal_candidates"] == [
+        {"raw": "3", "slot": "limit", "reason": "slot=limit"}
+    ]
+    literal_output = literal_stage["output_ref"]["value"]
+    assert literal_output[0]["raw_literal"] == "Gold"
+    assert literal_output[0]["resolved"] is True
+    assert literal_stage["metrics"]["literal_count"] == 1
+    assert literal_stage["metrics"]["skipped_literal_candidate_count"] == 1
+
+
+def test_filter_numeric_literal_candidate_still_becomes_literal_request() -> None:
+    retrieval_result = CandidateRetrievalResult(
+        candidates=[
+            SemanticCandidate(
+                semantic_type="vertex",
+                semantic_id="Tunnel",
+                semantic_name="Tunnel",
+                score=0.9,
+                match_type="synonym",
+                evidence=[CandidateEvidence(term="隧道", source="synonym", matched_text="隧道")],
+            ),
+            SemanticCandidate(
+                semantic_type="property",
+                semantic_id="Tunnel.bandwidth",
+                semantic_name="bandwidth",
+                owner="Tunnel",
+                score=0.9,
+                match_type="synonym",
+                evidence=[CandidateEvidence(term="带宽", source="synonym", matched_text="带宽")],
+            ),
+        ]
+    )
+    decomposition = {
+        "schema_version": "question_decomposition_v1",
+        "original_question": "带宽为3的隧道",
+        "literal_candidates": [
+            {"text": "3", "kind_hint": "number", "attached_to": "带宽"}
+        ],
+        "literal_requests": [],
+        "substantive_terms": [
+            _decomp_term("带宽", "filter", attached_to="隧道"),
+            _decomp_term("3", "filter", attached_to="带宽"),
+            _decomp_term("隧道", "projection"),
+        ],
+    }
+
+    enriched = pipeline_module._with_literal_requests_from_candidates(
+        decomposition,
+        retrieval_result,
+    )
+
+    assert enriched["literal_requests"] == [
+        {
+            "raw_literal": "3",
+            "expected_vertex": "Tunnel",
+            "expected_property": "bandwidth",
+            "literal_kind_hint": "numeric",
+        }
+    ]
+    assert enriched.get("skipped_literal_candidates") == []
+
+
 def test_self_validation_failure_records_self_validation_stage_without_final_cypher() -> None:
     output = run_pipeline(
         question="隧道 tun-mpls-001 经过哪些设备",
@@ -1282,6 +1477,13 @@ def _stage_names(trace: dict[str, object]) -> list[str]:
     return [stage["stage"] for stage in trace["stages"]]
 
 
+def _stage(trace: dict[str, object], stage_name: str) -> dict[str, Any]:
+    for stage in trace["stages"]:
+        if stage["stage"] == stage_name:
+            return stage
+    raise AssertionError(f"missing {stage_name} stage")
+
+
 def _compiler_parameters(trace: dict[str, object]) -> dict[str, object]:
     for stage in trace["stages"]:
         if stage["stage"] == "cypher_compiler":
@@ -1346,6 +1548,16 @@ def _decomp_term(text: str, slot: str, *, attached_to: str | None = None) -> dic
     if attached_to is not None:
         payload["attached_to"] = attached_to
     return payload
+
+
+def _coverage_payload(covered: list[str]) -> dict[str, object]:
+    return {
+        "substantive_terms": {"total": len(covered), "covered": len(covered), "uncovered": []},
+        "stopword_terms": {"ignored": []},
+        "modality_terms": {"warning_only": []},
+        "time_terms": {"covered": [], "unresolved": []},
+        "unparsed_terms": {"unresolved": []},
+    }
 
 
 def _grounded_service_tunnel_payload(*, direction: str) -> dict[str, object]:

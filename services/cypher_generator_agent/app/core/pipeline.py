@@ -46,6 +46,10 @@ from services.cypher_generator_agent.app.understanding.grounded_understanding im
 from services.cypher_generator_agent.app.validation.coverage import CoverageReport
 from services.cypher_generator_agent.app.validation.semantic_validator import SemanticValidator
 
+
+_STRUCTURAL_LITERAL_SKIP_SLOTS = {"limit", "order_by", "group_by", "path", "projection"}
+
+
 def run_pipeline(
     *,
     question: str,
@@ -161,11 +165,15 @@ def _run_pipeline_steps(
         metrics=lambda result: {"candidate_count": len(result.candidates)},
     )
     decomposition = _with_literal_requests_from_candidates(decomposition, retrieval_result)
+    skipped_literal_candidates = list(decomposition.get("skipped_literal_candidates") or [])
 
     literal_results = _run_stage(
         trace,
         stage=StageName.LITERAL_RESOLVER,
-        input_payload={"literal_requests": decomposition["literal_requests"]},
+        input_payload={
+            "literal_requests": decomposition["literal_requests"],
+            "skipped_literal_candidates": skipped_literal_candidates,
+        },
         action=lambda: _resolve_literals(
             decomposition["literal_requests"],
             question=question,
@@ -176,7 +184,10 @@ def _run_pipeline_steps(
             ),
         ),
         output_payload=lambda results: [result.model_dump(mode="json") for result in results],
-        metrics=lambda results: {"literal_count": len(results)},
+        metrics=lambda results: {
+            "literal_count": len(results),
+            "skipped_literal_candidate_count": len(skipped_literal_candidates),
+        },
     )
     unresolved_literals = [result for result in literal_results if not result.resolved]
     if unresolved_literals:
@@ -1032,6 +1043,10 @@ def _with_literal_requests_from_candidates(
         return decomposition
 
     literal_candidates = _literal_candidate_payloads(decomposition)
+    literal_candidates, skipped_literal_candidates = _literal_candidates_allowed_by_slot(
+        decomposition,
+        literal_candidates,
+    )
     requests = [
         request
         for request in (
@@ -1042,12 +1057,43 @@ def _with_literal_requests_from_candidates(
     ]
     if not requests:
         requests = _literal_requests_from_value_candidates(decomposition, retrieval_result.candidates)
-    if not requests:
+    if not requests and not skipped_literal_candidates:
         return decomposition
 
     enriched = dict(decomposition)
     enriched["literal_requests"] = requests
+    enriched["skipped_literal_candidates"] = skipped_literal_candidates
     return enriched
+
+
+def _literal_candidates_allowed_by_slot(
+    decomposition: Mapping[str, Any],
+    literal_candidates: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    slot_by_text = _slot_by_substantive_text(decomposition)
+    allowed: list[dict[str, Any]] = []
+    skipped: list[dict[str, str]] = []
+    for literal in literal_candidates:
+        raw_literal = str(literal.get("text") or "").strip()
+        if not raw_literal:
+            continue
+        slot = slot_by_text.get(_norm(raw_literal), "unknown")
+        if slot in _STRUCTURAL_LITERAL_SKIP_SLOTS:
+            skipped.append({"raw": raw_literal, "slot": slot, "reason": f"slot={slot}"})
+            continue
+        allowed.append(literal)
+    return allowed, skipped
+
+
+def _slot_by_substantive_text(decomposition: Mapping[str, Any]) -> dict[str, str]:
+    slots: dict[str, str] = {}
+    for term in _substantive_term_payloads(decomposition.get("substantive_terms")):
+        text = str(term.get("text") or "").strip()
+        if not text:
+            continue
+        slot = str(term.get("slot") or "unknown").strip() or "unknown"
+        slots[_norm(text)] = slot
+    return slots
 
 
 def _literal_candidate_payloads(decomposition: Mapping[str, Any]) -> list[dict[str, Any]]:

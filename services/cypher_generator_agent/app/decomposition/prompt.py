@@ -69,6 +69,10 @@ attached_to 可选，用于说明该词修饰哪个表层概念。例如"时延"
 - literal_candidates：用来限定/过滤某概念的具体值。结构为 {text, kind_hint, attached_to}：
   - kind_hint 取值：enum_or_name | id | number | datetime | unknown。
   - 注意：只有"用来限定某概念的值"才是 literal。被查询的中心名词（"有多少防火墙"中的"防火墙"）是 target_concept，不是 literal。
+  - slot 是词语义角色的唯一权威来源。literal_candidates 只包含作为过滤/匹配条件、限定某个概念属性取值的字面值。
+  - 控制查询结构的数字或词语（返回数量、排序、分组）不是 literal，只属于 substantive_terms 的对应 slot。
+  - 判定锚点是 slot/语义角色，不是值是否为数字、日期或其他表面形态。
+  - 对比："返回前3名"中的"3" → substantive_terms(slot=limit)，不进 literal_candidates；"带宽为3的链路"中的"3" → substantive_terms(slot=filter)，并进入 literal_candidates。
 
 # 必填与默认
 - 必填：result_type、original_question、intent_type、output_shape。
@@ -83,6 +87,7 @@ attached_to 可选，用于说明该词修饰哪个表层概念。例如"时延"
 - "最近""2024年" → time_terms。
 - "数量""最多""前5" → substantive_terms（slot 按语义判定：数量驱动 projection，最多驱动 order_by，前5 驱动 limit）；不是 stopword。
 - "查询服务的名称"中的"名称" → substantive_terms（slot=projection）；"名称为 Service_002"中的"名称" → substantive_terms（slot=filter）。
+- "返回前3名"中的"3" → substantive_terms（slot=limit），不进 literal_candidates；"带宽为3的链路"中的"3" → substantive_terms（slot=filter），进 literal_candidates。
 - 绝不输出图 label、边名、属性名、指标名、path pattern id 或任何规范化标识——你不知道这些，只输出用户问题里的表层词语。
 
 # 示例
