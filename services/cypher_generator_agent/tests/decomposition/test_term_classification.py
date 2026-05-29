@@ -4,6 +4,8 @@ from collections.abc import Mapping
 from typing import Any
 
 from services.cypher_generator_agent.app.decomposition import QuestionDecomposer
+from services.cypher_generator_agent.app.decomposition import models as decomposition_models
+from services.cypher_generator_agent.app.decomposition.models import QuestionDecomposition
 
 
 class FakeStructuredLLMClient:
@@ -38,7 +40,10 @@ def test_polite_words_are_classified_as_stopwords() -> None:
         _valid_payload(
             question,
             intent_type="list",
-            substantive_terms=["Gold", "服务"],
+            substantive_terms=[
+                {"text": "Gold", "slot": "filter", "attached_to": "服务"},
+                {"text": "服务", "slot": "projection"},
+            ],
             stopword_terms=["麻烦", "帮我", "查一下"],
             literal_candidates=[{"text": "Gold", "kind_hint": "enum_or_name", "attached_to": "服务"}],
             output_shape="rows",
@@ -51,8 +56,9 @@ def test_polite_words_are_classified_as_stopwords() -> None:
     assert result.result_type == "decomposition"
     assert result.intent_type == "list"
     assert result.output_shape == "rows"
-    assert "Gold" in result.substantive_terms
-    assert "服务" in result.substantive_terms
+    assert _term_texts(result.substantive_terms) == ["Gold", "服务"]
+    assert result.substantive_terms[0].slot == _slot_kind("FILTER")
+    assert result.substantive_terms[0].attached_to == "服务"
     assert {"麻烦", "帮我", "查一下"} <= set(result.stopword_terms)
     assert result.literal_candidates[0].text == "Gold"
     assert result.literal_candidates[0].kind_hint == "enum_or_name"
@@ -61,9 +67,35 @@ def test_polite_words_are_classified_as_stopwords() -> None:
     assert question in client.calls[0]["prompt"]
     assert '你是图原生 Cypher 生成流水线中的"问题结构化拆解器"' in client.calls[0]["prompt"]
     assert "只输出用户问题里的表层词语" in client.calls[0]["prompt"]
-    assert "两条正交的分类轴" in client.calls[0]["prompt"]
-    assert "示例 3：含时间、近似、聚合，中心名词不是 literal" in client.calls[0]["prompt"]
+    assert "两条" + "正交的分类轴" not in client.calls[0]["prompt"]
+    assert "轴" + "三：语义槽位" not in client.calls[0]["prompt"]
+    assert "substantive_terms 的 slot 取值" in client.calls[0]["prompt"]
+    assert "示例 3:含时间、近似、聚合" in client.calls[0]["prompt"]
     assert "You are the Question Decomposer" not in client.calls[0]["prompt"]
+
+
+def test_decomposition_has_no_legacy_slot_field() -> None:
+    legacy_field = "slot" + "_terms"
+    assert legacy_field not in QuestionDecomposition.model_fields
+
+
+def test_substantive_terms_carry_slot() -> None:
+    slot_kind = _slot_kind("PROJECTION")
+    decomp = QuestionDecomposition.model_validate(
+        {
+            "result_type": "decomposition",
+            "original_question": "查询服务的名称",
+            "intent_type": "list",
+            "output_shape": "rows",
+            "substantive_terms": [
+                {"text": "服务", "slot": "projection"},
+                {"text": "名称", "slot": "projection", "attached_to": "服务"},
+            ],
+        }
+    )
+
+    assert decomp.substantive_terms[0].slot == slot_kind
+    assert decomp.substantive_terms[1].attached_to == "服务"
 
 
 def test_modality_word_is_classified_as_modality() -> None:
@@ -72,7 +104,10 @@ def test_modality_word_is_classified_as_modality() -> None:
         _valid_payload(
             question,
             intent_type="count",
-            substantive_terms=["多少", "防火墙"],
+            substantive_terms=[
+                {"text": "多少", "slot": "projection"},
+                {"text": "防火墙", "slot": "projection"},
+            ],
             modality_terms=["大概"],
             target_concepts=["防火墙"],
             output_shape="scalar",
@@ -82,7 +117,7 @@ def test_modality_word_is_classified_as_modality() -> None:
     result = QuestionDecomposer(client).decompose(question)
 
     assert "大概" in result.modality_terms
-    assert "防火墙" in result.substantive_terms
+    assert "防火墙" in _term_texts(result.substantive_terms)
     assert "防火墙" in result.target_concepts
     assert result.literal_candidates == []
 
@@ -94,35 +129,34 @@ def test_prompt_example_1_accepts_attribute_query_without_literal() -> None:
             question,
             intent_type="list",
             output_shape="rows",
-            substantive_terms=["服务", "使用", "隧道", "时延"],
+            substantive_terms=[
+                {"text": "服务", "slot": "path"},
+                {"text": "使用", "slot": "path"},
+                {"text": "隧道", "slot": "path"},
+                {"text": "时延", "slot": "projection", "attached_to": "服务"},
+            ],
             stopword_terms=["查询", "及其", "的"],
             target_concepts=["服务", "隧道", "时延"],
             relation_phrases=["使用"],
             literal_candidates=[],
-            slot_terms=[
-                {"text": "服务", "slot": "projection"},
-                {"text": "隧道", "slot": "projection"},
-                {"text": "时延", "slot": "projection", "attached_to": "服务"},
-                {"text": "使用", "slot": "path"},
-            ],
         )
     )
 
     result = QuestionDecomposer(client).decompose(question)
 
     assert result.result_type == "decomposition"
-    assert result.substantive_terms == ["服务", "使用", "隧道", "时延"]
+    assert [item.model_dump(exclude_none=True) for item in result.substantive_terms] == [
+        {"text": "服务", "slot": "path"},
+        {"text": "使用", "slot": "path"},
+        {"text": "隧道", "slot": "path"},
+        {"text": "时延", "slot": "projection", "attached_to": "服务"},
+    ]
     assert result.stopword_terms == ["查询", "及其", "的"]
     assert result.target_concepts == ["服务", "隧道", "时延"]
     assert result.relation_phrases == ["使用"]
     assert result.literal_candidates == []
-    assert [item.model_dump(exclude_none=True) for item in result.slot_terms] == [
-        {"text": "服务", "slot": "projection"},
-        {"text": "隧道", "slot": "projection"},
-        {"text": "时延", "slot": "projection", "attached_to": "服务"},
-        {"text": "使用", "slot": "path"},
-    ]
-    assert "轴三：语义槽位" in client.calls[0]["prompt"]
+    assert "slot" + "_terms" not in result.model_dump()
+    assert "轴" + "三：语义槽位" not in client.calls[0]["prompt"]
 
 
 def test_prompt_example_2_accepts_literal_filter() -> None:
@@ -132,7 +166,13 @@ def test_prompt_example_2_accepts_literal_filter() -> None:
             question,
             intent_type="list",
             output_shape="rows",
-            substantive_terms=["Gold", "级别", "服务", "使用", "隧道"],
+            substantive_terms=[
+                {"text": "Gold", "slot": "filter", "attached_to": "服务"},
+                {"text": "级别", "slot": "filter", "attached_to": "服务"},
+                {"text": "服务", "slot": "path"},
+                {"text": "使用", "slot": "path"},
+                {"text": "隧道", "slot": "projection"},
+            ],
             stopword_terms=["的", "了", "哪些"],
             target_concepts=["服务", "隧道"],
             relation_phrases=["使用"],
@@ -146,7 +186,7 @@ def test_prompt_example_2_accepts_literal_filter() -> None:
     assert result.relation_phrases == ["使用"]
     assert result.literal_candidates[0].text == "Gold"
     assert result.literal_candidates[0].kind_hint == "enum_or_name"
-    assert "Gold" in result.substantive_terms
+    assert "Gold" in _term_texts(result.substantive_terms)
 
 
 def test_prompt_example_3_treats_firewall_as_concept_not_literal() -> None:
@@ -156,7 +196,11 @@ def test_prompt_example_3_treats_firewall_as_concept_not_literal() -> None:
             question,
             intent_type="count",
             output_shape="scalar",
-            substantive_terms=["多少", "台", "防火墙"],
+            substantive_terms=[
+                {"text": "多少", "slot": "projection"},
+                {"text": "台", "slot": "projection"},
+                {"text": "防火墙", "slot": "projection"},
+            ],
             stopword_terms=["有"],
             modality_terms=["大概"],
             time_terms=["最近"],
@@ -179,7 +223,10 @@ def test_recent_is_classified_as_time() -> None:
         _valid_payload(
             question,
             intent_type="lookup",
-            substantive_terms=["down", "端口"],
+            substantive_terms=[
+                {"text": "down", "slot": "filter", "attached_to": "端口"},
+                {"text": "端口", "slot": "projection"},
+            ],
             time_terms=["最近"],
         )
     )
@@ -187,7 +234,7 @@ def test_recent_is_classified_as_time() -> None:
     result = QuestionDecomposer(client).decompose(question)
 
     assert "最近" in result.time_terms
-    assert {"down", "端口"} <= set(result.substantive_terms)
+    assert {"down", "端口"} <= set(_term_texts(result.substantive_terms))
 
 
 def test_growth_term_is_preserved_as_substantive() -> None:
@@ -196,15 +243,19 @@ def test_growth_term_is_preserved_as_substantive() -> None:
         _valid_payload(
             question,
             intent_type="compare",
-            substantive_terms=["收入", "增长", "情况"],
+            substantive_terms=[
+                {"text": "收入", "slot": "unknown"},
+                {"text": "增长", "slot": "unknown"},
+                {"text": "情况", "slot": "unknown"},
+            ],
             output_shape="unknown",
         )
     )
 
     result = QuestionDecomposer(client).decompose(question)
 
-    assert "增长" in result.substantive_terms
-    assert result.substantive_terms == ["收入", "增长", "情况"]
+    assert "增长" in _term_texts(result.substantive_terms)
+    assert _term_texts(result.substantive_terms) == ["收入", "增长", "情况"]
 
 
 def test_unclassified_meaningful_terms_remain_unparsed() -> None:
@@ -212,7 +263,10 @@ def test_unclassified_meaningful_terms_remain_unparsed() -> None:
     client = FakeStructuredLLMClient(
         _valid_payload(
             question,
-            substantive_terms=["带宽", "隧道"],
+            substantive_terms=[
+                {"text": "带宽", "slot": "filter", "attached_to": "隧道"},
+                {"text": "隧道", "slot": "projection"},
+            ],
             unparsed_terms=["异常高"],
         )
     )
@@ -228,7 +282,10 @@ def test_decomposition_does_not_emit_graph_bound_literal_requests_or_coverage() 
         _valid_payload(
             question,
             intent_type="lookup",
-            substantive_terms=["Gold", "服务"],
+            substantive_terms=[
+                {"text": "Gold", "slot": "filter", "attached_to": "服务"},
+                {"text": "服务", "slot": "projection"},
+            ],
             literal_candidates=[{"text": "Gold", "kind_hint": "enum_or_name", "attached_to": "服务"}],
             output_shape="rows",
         )
@@ -245,7 +302,7 @@ def _valid_payload(
     question: str,
     *,
     intent_type: str = "unknown",
-    substantive_terms: list[str],
+    substantive_terms: list[dict[str, str]],
     literal_candidates: list[dict[str, str]] | None = None,
     target_concepts: list[str] | None = None,
     relation_phrases: list[str] | None = None,
@@ -253,7 +310,6 @@ def _valid_payload(
     modality_terms: list[str] | None = None,
     time_terms: list[str] | None = None,
     unparsed_terms: list[str] | None = None,
-    slot_terms: list[dict[str, str]] | None = None,
     output_shape: str = "unknown",
 ) -> dict[str, Any]:
     return {
@@ -269,6 +325,14 @@ def _valid_payload(
         "modality_terms": modality_terms or [],
         "time_terms": time_terms or [],
         "unparsed_terms": unparsed_terms or [],
-        "slot_terms": slot_terms or [],
         "output_shape": output_shape,
     }
+
+
+def _term_texts(terms: list[Any]) -> list[str]:
+    return [str(item.text) for item in terms]
+
+
+def _slot_kind(name: str) -> Any:
+    assert hasattr(decomposition_models, "SlotKind")
+    return getattr(decomposition_models.SlotKind, name)

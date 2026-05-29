@@ -13,7 +13,7 @@ def test_device_through_tunnel_question_generates_bounded_variable_path() -> Non
     assert output.status == "generated"
     assert output.cypher == (
         "MATCH path = (tun:Tunnel)-[:PATH_THROUGH*1..8]->(ne:NetworkElement)\n"
-        "WHERE ne.id = $id\n"
+        "WHERE ne.id = 'ne-0001'\n"
         "RETURN tun.id AS tunnel_id"
     )
     assert output.dsl is not None

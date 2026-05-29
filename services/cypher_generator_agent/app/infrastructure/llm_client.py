@@ -70,7 +70,8 @@ class OpenAICompatibleStructuredLLMClient:
             )
             response.raise_for_status()
 
-        content = _response_content(response.json())
+        response_payload = response.json()
+        content = _response_content(response_payload)
         self.last_call_trace = {
             "schema_name": schema_name,
             "attempt": attempt,
@@ -79,6 +80,9 @@ class OpenAICompatibleStructuredLLMClient:
             "raw_output": content,
             "status": "success",
         }
+        token_usage = _token_usage(response_payload)
+        if token_usage:
+            self.last_call_trace["token_usage"] = token_usage
         payload = json.loads(_strip_json_fence(content))
         if not isinstance(payload, Mapping):
             raise ValueError("structured LLM response must be a JSON object")
@@ -146,6 +150,8 @@ class TracedStructuredLLMClient:
             call["model"] = inner_trace.get("model") or call["model"]
             call["prompt"] = inner_trace.get("prompt") or call["prompt"]
             call["raw_output"] = inner_trace.get("raw_output") or ""
+            if isinstance(inner_trace.get("token_usage"), Mapping):
+                call["token_usage"] = dict(inner_trace["token_usage"])
         if not call["raw_output"]:
             call["raw_output"] = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         call["parsed_output"] = dict(payload)
@@ -176,6 +182,18 @@ def _schema_bound_prompt(
     )
 
 
+def _token_usage(response_payload: Mapping[str, Any]) -> dict[str, int]:
+    usage = response_payload.get("usage")
+    if not isinstance(usage, Mapping):
+        return {}
+    result: dict[str, int] = {}
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        value = usage.get(key)
+        if isinstance(value, int):
+            result[key] = value
+    return result
+
+
 def _prompt_already_contains_schema_contract(prompt: str, *, schema_name: str) -> bool:
     return schema_name in prompt and "JSON Schema:" in prompt and "返回且只返回一个 JSON 对象" in prompt
 
@@ -197,12 +215,14 @@ def _question_decomposition_contract() -> str:
             '  "result_type": "decomposition",',
             '  "intent_type": "lookup|list|count|aggregate|top_n|path|compare|unknown",',
             '  "original_question": "原始用户问题",',
+            '  "substantive_terms": [',
+            '    {"text": "会影响查询语义的实质词", "slot": "projection|filter|group_by|order_by|limit|path|unknown", "attached_to": "可选修饰对象"}',
+            "  ],",
             '  "target_concepts": ["问题中的业务对象词，例如 服务、隧道、网元"],',
             '  "relation_phrases": ["连接两个业务对象的关系短语，例如 使用、经过、连接"],',
             '  "literal_candidates": [',
             '    {"text": "表层字面值", "kind_hint": "enum_or_name|id|number|datetime|unknown", "attached_to": "附着对象词"}',
             "  ],",
-            '  "substantive_terms": ["会影响查询语义的实质词"],',
             '  "stopword_terms": ["礼貌、连接或填充词"],',
             '  "modality_terms": ["大概、可能、应该这类软约束词"],',
             '  "time_terms": ["最近、2024 年、过去 7 天这类时间词"],',

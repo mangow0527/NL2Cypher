@@ -57,7 +57,11 @@ def test_schema_violation_retries_then_returns_valid_decomposition() -> None:
             _valid_payload(
                 question,
                 intent_type="compare",
-                substantive_terms=["收入", "增长", "情况"],
+                substantive_terms=[
+                    {"text": "收入", "slot": "unknown"},
+                    {"text": "增长", "slot": "unknown"},
+                    {"text": "情况", "slot": "unknown"},
+                ],
                 output_shape="unknown",
             ),
         ]
@@ -69,10 +73,11 @@ def test_schema_violation_retries_then_returns_valid_decomposition() -> None:
     assert result.result_type == "decomposition"
     assert result.intent_type == "compare"
     assert result.output_shape == "unknown"
-    assert result.substantive_terms == ["收入", "增长", "情况"]
+    assert [term.text for term in result.substantive_terms] == ["收入", "增长", "情况"]
     assert [call["attempt"] for call in client.calls] == [1, 2]
-    assert all("两条正交的分类轴" in call["prompt"] for call in client.calls)
-    assert all("示例 2：含字面值与过滤" in call["prompt"] for call in client.calls)
+    assert all("两条" + "正交的分类轴" not in call["prompt"] for call in client.calls)
+    assert all("slot" + "_terms" not in call["prompt"] for call in client.calls)
+    assert all("示例 2:含字面值与过滤" in call["prompt"] for call in client.calls)
 
 
 def test_schema_violation_stops_after_initial_attempt_plus_two_retries() -> None:
@@ -103,7 +108,10 @@ def test_missing_intent_or_output_shape_is_schema_invalid() -> None:
                 "schema_version": "question_decomposition_v1",
                 "result_type": "decomposition",
                 "original_question": "Gold 服务",
-                "substantive_terms": ["Gold", "服务"],
+                "substantive_terms": [
+                    {"text": "Gold", "slot": "filter", "attached_to": "服务"},
+                    {"text": "服务", "slot": "projection"},
+                ],
             }
         ]
     )
@@ -126,7 +134,10 @@ def test_literal_candidate_requires_text_kind_hint_and_attached_to_keys() -> Non
                 "target_concepts": ["服务"],
                 "relation_phrases": [],
                 "literal_candidates": [{"text": "Gold"}],
-                "substantive_terms": ["Gold", "服务"],
+                "substantive_terms": [
+                    {"text": "Gold", "slot": "filter", "attached_to": "服务"},
+                    {"text": "服务", "slot": "projection"},
+                ],
                 "stopword_terms": [],
                 "modality_terms": [],
                 "time_terms": [],
@@ -152,7 +163,10 @@ def test_normal_decomposition_requires_explicit_result_type() -> None:
                 "target_concepts": ["服务"],
                 "relation_phrases": [],
                 "literal_candidates": [],
-                "substantive_terms": ["Gold", "服务"],
+                "substantive_terms": [
+                    {"text": "Gold", "slot": "filter", "attached_to": "服务"},
+                    {"text": "服务", "slot": "projection"},
+                ],
                 "stopword_terms": [],
                 "modality_terms": [],
                 "time_terms": [],
@@ -175,7 +189,10 @@ def test_filter_phrases_is_rejected_as_removed_field() -> None:
                 **_valid_payload(
                     "Gold 服务",
                     intent_type="list",
-                    substantive_terms=["Gold", "服务"],
+                    substantive_terms=[
+                        {"text": "Gold", "slot": "filter", "attached_to": "服务"},
+                        {"text": "服务", "slot": "projection"},
+                    ],
                     output_shape="rows",
                 ),
                 "filter_phrases": ["Gold 服务"],
@@ -196,7 +213,10 @@ def test_literal_kind_hint_rejects_values_outside_enum() -> None:
                 **_valid_payload(
                     "Gold 服务",
                     intent_type="list",
-                    substantive_terms=["Gold", "服务"],
+                    substantive_terms=[
+                        {"text": "Gold", "slot": "filter", "attached_to": "服务"},
+                        {"text": "服务", "slot": "projection"},
+                    ],
                     output_shape="rows",
                 ),
                 "literal_candidates": [
@@ -253,7 +273,7 @@ def _valid_payload(
     question: str,
     *,
     intent_type: str = "unknown",
-    substantive_terms: list[str],
+    substantive_terms: list[dict[str, str]],
     output_shape: str = "unknown",
 ) -> dict[str, Any]:
     return {

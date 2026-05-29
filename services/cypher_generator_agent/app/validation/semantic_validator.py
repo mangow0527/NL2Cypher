@@ -96,7 +96,7 @@ class SemanticValidator:
                 }
             )
 
-        projection_uncovered = list(coverage.slot_terms.projection.uncovered)
+        projection_uncovered = list(coverage.projection_terms.uncovered)
         if projection_uncovered:
             errors.append(
                 SemanticValidationIssue(
@@ -109,8 +109,8 @@ class SemanticValidator:
                     recoverability="repairable",
                     action="repair_binding",
                     details={
-                        "required": list(coverage.slot_terms.projection.required),
-                        "covered": list(coverage.slot_terms.projection.covered),
+                        "required": list(coverage.projection_terms.required),
+                        "covered": list(coverage.projection_terms.covered),
                         "uncovered": projection_uncovered,
                     },
                 )
@@ -121,13 +121,13 @@ class SemanticValidator:
         plan: BindingPlan,
         coverage: CoverageReport,
     ) -> CoverageReport:
-        projection = coverage.slot_terms.projection
+        projection = coverage.projection_terms
         if not projection.required:
             return coverage
 
         covered = list(projection.covered)
         for item in plan.projection:
-            raw_terms = item.get("slot_terms") if isinstance(item, Mapping) else None
+            raw_terms = item.get("projection_terms") if isinstance(item, Mapping) else None
             if not isinstance(raw_terms, list | tuple):
                 continue
             for raw_term in raw_terms:
@@ -138,12 +138,8 @@ class SemanticValidator:
         uncovered = [term for term in projection.required if term not in covered]
         return coverage.model_copy(
             update={
-                "slot_terms": coverage.slot_terms.model_copy(
-                    update={
-                        "projection": projection.model_copy(
-                            update={"covered": covered, "uncovered": uncovered}
-                        )
-                    }
+                "projection_terms": projection.model_copy(
+                    update={"covered": covered, "uncovered": uncovered}
                 )
             }
         )

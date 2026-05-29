@@ -47,10 +47,13 @@ def test_gold_service_question_generates_single_hop_cypher() -> None:
     assert output.status == "generated"
     assert output.cypher is not None
     assert "MATCH (svc:Service)-[:SERVICE_USES_TUNNEL]->(tun:Tunnel)" in output.cypher
-    assert "svc.quality_of_service = $quality_of_service" in output.cypher
+    assert "svc.quality_of_service = 'Gold'" in output.cypher
+    assert "$quality_of_service" not in output.cypher
     assert "RETURN tun.id AS tunnel_id" in output.cypher
     assert output.trace["semantic_model"]["name"] == "network_schema_v10"
     assert _compiler_parameters(output.trace)["quality_of_service"] == "Gold"
+    assert "svc.quality_of_service = $quality_of_service" in _compiler_template(output.trace)
+    assert _compiler_executable(output.trace) == output.cypher
     assert _stage_names(output.trace) == EXPECTED_STAGES
     assert "db_connection" not in _all_keys(output.trace)
     assert "execution_result" not in _all_keys(output.trace)
@@ -70,31 +73,29 @@ def test_multi_property_service_projection_uses_each_requested_slot(
             "relation_phrases": [],
             "literal_candidates": [],
             "literal_requests": [],
-            "substantive_terms": ["服务", "ID", "名称", "元素类型", "服务质量等级", "带宽", "时延"],
+            "substantive_terms": [
+                _decomp_term("服务", "projection"),
+                _decomp_term("ID", "projection", attached_to="服务"),
+                _decomp_term("名称", "projection", attached_to="服务"),
+                _decomp_term("元素类型", "projection", attached_to="服务"),
+                _decomp_term("服务质量等级", "projection", attached_to="服务"),
+                _decomp_term("带宽", "projection", attached_to="服务"),
+                _decomp_term("时延", "projection", attached_to="服务"),
+            ],
             "stopword_terms": ["查询", "所有", "的", "和"],
             "modality_terms": [],
             "time_terms": [],
             "unparsed_terms": [],
-            "slot_terms": [
-                {"text": "ID", "slot": "projection", "attached_to": "服务"},
-                {"text": "名称", "slot": "projection", "attached_to": "服务"},
-                {"text": "元素类型", "slot": "projection", "attached_to": "服务"},
-                {"text": "服务质量等级", "slot": "projection", "attached_to": "服务"},
-                {"text": "带宽", "slot": "projection", "attached_to": "服务"},
-                {"text": "时延", "slot": "projection", "attached_to": "服务"},
-            ],
             "coverage": {
                 "substantive_terms": {"total": 7, "covered": 7, "uncovered": []},
                 "stopword_terms": {"ignored": ["查询", "所有", "的", "和"]},
                 "modality_terms": {"warning_only": []},
                 "time_terms": {"covered": [], "unresolved": []},
                 "unparsed_terms": {"unresolved": []},
-                "slot_terms": {
-                    "projection": {
-                        "required": ["ID", "名称", "元素类型", "服务质量等级", "带宽", "时延"],
-                        "covered": [],
-                        "uncovered": ["ID", "名称", "元素类型", "服务质量等级", "带宽", "时延"],
-                    }
+                "projection_terms": {
+                    "required": ["ID", "名称", "元素类型", "服务质量等级", "带宽", "时延"],
+                    "covered": [],
+                    "uncovered": ["ID", "名称", "元素类型", "服务质量等级", "带宽", "时延"],
                 },
             },
         }
@@ -193,7 +194,12 @@ def test_pipeline_can_use_real_llm_mode_with_openai_compatible_client(
                     "literal_candidates": [
                         {"text": "Gold", "kind_hint": "enum_or_name", "attached_to": "服务"}
                     ],
-                    "substantive_terms": ["Gold", "服务", "使用", "隧道"],
+                    "substantive_terms": [
+                        _decomp_term("Gold", "filter", attached_to="服务"),
+                        _decomp_term("服务", "path"),
+                        _decomp_term("使用", "path"),
+                        _decomp_term("隧道", "projection"),
+                    ],
                     "stopword_terms": [],
                     "modality_terms": [],
                     "time_terms": [],
@@ -322,8 +328,9 @@ def test_pipeline_can_use_real_llm_mode_with_openai_compatible_client(
     assert llm_calls[0]["schema_name"] == "question_decomposition_v1"
     assert "返回且只返回一个 JSON 对象" in llm_calls[0]["prompt"]
     assert '图原生 Cypher 生成流水线中的"问题结构化拆解器"' in llm_calls[0]["prompt"]
-    assert "两条正交的分类轴" in llm_calls[0]["prompt"]
-    assert "示例 3：含时间、近似、聚合，中心名词不是 literal" in llm_calls[0]["prompt"]
+    assert "两条" + "正交的分类轴" not in llm_calls[0]["prompt"]
+    assert "substantive_terms 的 slot 取值" in llm_calls[0]["prompt"]
+    assert "示例 3:含时间、近似、聚合" in llm_calls[0]["prompt"]
     assert "Return exactly one JSON object" not in llm_calls[0]["prompt"]
     assert "JSON Schema:" in llm_calls[0]["prompt"]
     assert '"intent_type": "list"' in llm_calls[0]["raw_output"]
@@ -353,7 +360,12 @@ def test_llm_literal_kind_hint_outside_contract_is_schema_invalid(
                 "literal_candidates": [
                     {"text": "Gold", "kind_hint": "service", "attached_to": "服务"}
                 ],
-                "substantive_terms": ["Gold", "服务", "使用", "隧道"],
+                "substantive_terms": [
+                    _decomp_term("Gold", "filter", attached_to="服务"),
+                    _decomp_term("服务", "path"),
+                    _decomp_term("使用", "path"),
+                    _decomp_term("隧道", "projection"),
+                ],
                 "stopword_terms": ["了", "哪些"],
                 "modality_terms": [],
                 "time_terms": [],
@@ -410,7 +422,12 @@ def test_llm_enum_literal_with_qualifier_prefers_enum_property_over_id(
                 "literal_candidates": [
                     {"text": "Gold级别", "kind_hint": "enum_or_name", "attached_to": "服务"}
                 ],
-                "substantive_terms": ["Gold级别", "服务", "使用", "隧道"],
+                "substantive_terms": [
+                    _decomp_term("Gold级别", "filter", attached_to="服务"),
+                    _decomp_term("服务", "path"),
+                    _decomp_term("使用", "path"),
+                    _decomp_term("隧道", "projection"),
+                ],
                 "stopword_terms": ["都", "哪些"],
                 "modality_terms": [],
                 "time_terms": [],
@@ -520,7 +537,11 @@ def test_decomposition_slot_normalization_uses_attachment_and_classifier_without
                 "target_concepts": ["防火墙"],
                 "relation_phrases": [],
                 "literal_candidates": [],
-                "substantive_terms": ["多少", "台", "防火墙"],
+                "substantive_terms": [
+                    _decomp_term("多少", "projection"),
+                    _decomp_term("台", "projection"),
+                    _decomp_term("防火墙", "projection"),
+                ],
                 "stopword_terms": ["有"],
                 "modality_terms": [],
                 "time_terms": [],
@@ -623,7 +644,11 @@ def test_value_synonym_candidate_becomes_literal_request_when_llm_omits_literal_
                 "target_concepts": ["防火墙"],
                 "relation_phrases": [],
                 "literal_candidates": [],
-                "substantive_terms": ["多少", "台", "防火墙"],
+                "substantive_terms": [
+                    _decomp_term("多少", "projection"),
+                    _decomp_term("台", "projection"),
+                    _decomp_term("防火墙", "projection"),
+                ],
                 "stopword_terms": ["有"],
                 "modality_terms": [],
                 "time_terms": [],
@@ -653,7 +678,9 @@ def test_value_synonym_candidate_becomes_literal_request_when_llm_omits_literal_
         get_settings.cache_clear()
 
     assert output.status == "generated"
-    assert "WHERE ne.elem_type = $elem_type" in output.cypher
+    assert "WHERE ne.elem_type = 'firewall'" in output.cypher
+    assert "$elem_type" not in output.cypher
+    assert "WHERE ne.elem_type = $elem_type" in _compiler_template(output.trace)
     assert _compiler_parameters(output.trace)["elem_type"] == "firewall"
 
 
@@ -675,7 +702,10 @@ def test_llm_vertex_lookup_without_filter_or_projection_uses_selected_literal_an
                     "literal_candidates": [
                         {"text": "down", "kind_hint": "enum_or_name", "attached_to": "端口"}
                     ],
-                    "substantive_terms": ["down", "端口"],
+                    "substantive_terms": [
+                        _decomp_term("down", "filter", attached_to="端口"),
+                        _decomp_term("端口", "projection"),
+                    ],
                     "stopword_terms": ["有哪些"],
                     "modality_terms": [],
                     "time_terms": ["当前"],
@@ -759,7 +789,9 @@ def test_llm_vertex_lookup_without_filter_or_projection_uses_selected_literal_an
         get_settings.cache_clear()
 
     assert output.status == "generated"
-    assert output.cypher == "MATCH (port:Port)\nWHERE port.status = $status\nRETURN port.id AS port_id"
+    assert output.cypher == "MATCH (port:Port)\nWHERE port.status = 'down'\nRETURN port.id AS port_id"
+    assert _compiler_template(output.trace) == "MATCH (port:Port)\nWHERE port.status = $status\nRETURN port.id AS port_id"
+    assert _compiler_parameters(output.trace)["status"] == "down"
 
 
 def test_llm_repair_loop_regrounds_after_repairable_validator_error(
@@ -781,7 +813,12 @@ def test_llm_repair_loop_regrounds_after_repairable_validator_error(
                     "literal_candidates": [
                         {"text": "Gold", "kind_hint": "enum_or_name", "attached_to": "服务"}
                     ],
-                    "substantive_terms": ["Gold", "服务", "使用", "隧道"],
+                    "substantive_terms": [
+                        _decomp_term("Gold", "filter", attached_to="服务"),
+                        _decomp_term("服务", "path"),
+                        _decomp_term("使用", "path"),
+                        _decomp_term("隧道", "projection"),
+                    ],
                     "stopword_terms": [],
                     "modality_terms": [],
                     "time_terms": [],
@@ -859,11 +896,13 @@ def test_tunnel_path_question_generates_named_path_pattern_cypher() -> None:
     assert output.status == "generated"
     assert output.cypher is not None
     assert output.cypher == (
-        "MATCH (t:Tunnel {id: $tunnel_id})-[p:PATH_THROUGH]->(ne:NetworkElement)\n"
+        "MATCH (t:Tunnel {id: 'tun-mpls-001'})-[p:PATH_THROUGH]->(ne:NetworkElement)\n"
         "RETURN ne AS device, p.hop_order AS hop\n"
         "ORDER BY p.hop_order ASC"
     )
     assert _compiler_parameters(output.trace) == {"tunnel_id": "tun-mpls-001"}
+    assert "MATCH (t:Tunnel {id: $tunnel_id})" in _compiler_template(output.trace)
+    assert _compiler_executable(output.trace) == output.cypher
     assert output.dsl is not None
     assert output.dsl["query_shape"] == "named_path_pattern"
     assert output.dsl["operations"][0]["path_pattern_name"] == "tunnel_full_path"
@@ -897,7 +936,13 @@ def test_generated_output_includes_user_visible_assumption_notices(
     def modality_decompose(question: str) -> dict[str, object]:
         payload = original_decompose("全网有多少台防火墙")
         payload["original_question"] = question
-        payload["substantive_terms"] = ["多少", "防火墙"]
+        payload["literal_candidates"] = [
+            {"text": "防火墙", "kind_hint": "enum_or_name", "attached_to": "设备"}
+        ]
+        payload["substantive_terms"] = [
+            _decomp_term("多少", "projection"),
+            _decomp_term("防火墙", "projection"),
+        ]
         payload["coverage"] = {
             "substantive_terms": {"total": 2, "covered": 2, "uncovered": []},
             "stopword_terms": {"ignored": []},
@@ -1244,6 +1289,20 @@ def _compiler_parameters(trace: dict[str, object]) -> dict[str, object]:
     raise AssertionError("missing cypher_compiler stage")
 
 
+def _compiler_template(trace: dict[str, object]) -> str:
+    for stage in trace["stages"]:
+        if stage["stage"] == "cypher_compiler":
+            return stage["output_ref"]["value"]["cypher_template"]
+    raise AssertionError("missing cypher_compiler stage")
+
+
+def _compiler_executable(trace: dict[str, object]) -> str:
+    for stage in trace["stages"]:
+        if stage["stage"] == "cypher_compiler":
+            return stage["output_ref"]["value"]["cypher_executable"]
+    raise AssertionError("missing cypher_compiler stage")
+
+
 def _all_keys(value: object) -> set[str]:
     if isinstance(value, dict):
         keys = set(value)
@@ -1279,6 +1338,13 @@ def _grounded_binding(
         payload["owner"] = owner
     if direction is not None:
         payload["direction"] = direction
+    return payload
+
+
+def _decomp_term(text: str, slot: str, *, attached_to: str | None = None) -> dict[str, str]:
+    payload = {"text": text, "slot": slot}
+    if attached_to is not None:
+        payload["attached_to"] = attached_to
     return payload
 
 

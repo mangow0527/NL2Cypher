@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import re
 
 from services.cypher_generator_agent.app.cypher_validation import (
@@ -22,11 +22,13 @@ from services.cypher_generator_agent.app.dsl.ast import (
     SubqueryOperation,
     TraverseEdgeOperation,
     UsePathPatternOperation,
+    ValueLiteral,
     VariablePathOperation,
 )
 from services.cypher_generator_agent.app.dsl.models import QueryShape
 from services.cypher_generator_agent.app.semantic_model import GraphSemanticRegistry
 
+from .literals import inline_cypher_parameters
 from .projection import projection_aliases, projection_item_alias
 from .projection import extract_parameter_names, is_cypher_identifier
 from .templates import get_path_pattern_template
@@ -59,6 +61,17 @@ OPERATOR_CYPHER = {
     "in": "IN",
     "contains": "CONTAINS",
 }
+UNRESOLVED_MATCH_TYPES = {"unresolved"}
+RESOLVED_MATCH_TYPES = {
+    "exact",
+    "id_exact",
+    "manual_fixture",
+    "synonym",
+    "text_exact",
+    "value_index_exact",
+    "value_model",
+    "value_synonym",
+}
 
 
 class CypherCompilerError(ValueError):
@@ -75,16 +88,25 @@ class CypherCompilerError(ValueError):
 @dataclass(frozen=True)
 class CypherCompilationDraft:
     schema_version: str
-    cypher: str
+    cypher_template: str
+    cypher_executable: str
     parameters: dict[str, object]
     expected_return_aliases: list[str]
+    parameter_sources: list[dict[str, object]] = field(default_factory=list)
+
+    @property
+    def cypher(self) -> str:
+        return self.cypher_template
 
 
 @dataclass(frozen=True)
 class CypherCompilationResult:
     schema_version: str
+    cypher_template: str
     cypher: str
+    cypher_executable: str
     parameters: dict[str, object]
+    parameter_sources: list[dict[str, object]]
     validation_result: CypherSelfValidationResult
 
 
@@ -124,27 +146,32 @@ class CypherCompiler:
 
         return CypherCompilationDraft(
             schema_version=CYPHER_COMPILATION_RESULT_SCHEMA_VERSION,
-            cypher=cypher,
-            parameters=parameters,
+            cypher_template=cypher,
+            cypher_executable=inline_cypher_parameters(cypher, parameters.values),
+            parameters=parameters.values,
             expected_return_aliases=projection_aliases(ast.projection),
+            parameter_sources=parameters.sources,
         )
 
     def compile(self, ast: RestrictedQueryAst) -> CypherCompilationResult:
         draft = self.compile_draft(ast)
         validation_result = self.validator.validate_generated_query(
-            draft.cypher,
+            draft.cypher_executable,
             expected_return_aliases=draft.expected_return_aliases,
         )
         if not validation_result.valid:
             raise CypherCompilerError("compiled Cypher self-validation failed", validation_result=validation_result)
         return CypherCompilationResult(
             schema_version=CYPHER_COMPILATION_RESULT_SCHEMA_VERSION,
-            cypher=draft.cypher,
+            cypher_template=draft.cypher_template,
+            cypher=draft.cypher_executable,
+            cypher_executable=draft.cypher_executable,
             parameters=draft.parameters,
+            parameter_sources=draft.parameter_sources,
             validation_result=validation_result,
         )
 
-    def _compile_vertex_lookup(self, ast: RestrictedQueryAst) -> tuple[str, dict[str, object]]:
+    def _compile_vertex_lookup(self, ast: RestrictedQueryAst) -> tuple[str, "_CompiledParameters"]:
         role = _single_vertex_role(ast)
         variable = _variable_for_owner(role.vertex_name, used=set())
         role_variables = {role.alias: variable}
@@ -155,9 +182,9 @@ class CypherCompiler:
         if where:
             clauses.append(f"WHERE {' AND '.join(where)}")
         clauses.append(_compile_return(ast.projection, role_variables))
-        return "\n".join(clauses), parameters.values
+        return "\n".join(clauses), parameters.result
 
-    def _compile_metric_aggregate(self, ast: RestrictedQueryAst) -> tuple[str, dict[str, object]]:
+    def _compile_metric_aggregate(self, ast: RestrictedQueryAst) -> tuple[str, "_CompiledParameters"]:
         operation = _single_operation(ast, MetricAggregateOperation)
         metric = self.registry.get_metric(operation.metric_name)
         if not metric.pattern or not metric.expression:
@@ -189,9 +216,9 @@ class CypherCompiler:
             clauses.append(f"WHERE {' AND '.join(where)}")
         clauses.append(_compile_source_return(ast.projection, source_expressions))
         _append_order_limit(clauses, ast, source_expressions)
-        return "\n".join(clauses), parameters.values
+        return "\n".join(clauses), parameters.result
 
-    def _compile_ad_hoc_aggregate(self, ast: RestrictedQueryAst) -> tuple[str, dict[str, object]]:
+    def _compile_ad_hoc_aggregate(self, ast: RestrictedQueryAst) -> tuple[str, "_CompiledParameters"]:
         operation = _single_operation(ast, AggregateOperation)
         roles = _aggregate_roles(operation, ast.filters)
         role_variables = _role_variables(roles.values())
@@ -208,9 +235,9 @@ class CypherCompiler:
             clauses.append(f"WHERE {' AND '.join(where)}")
         clauses.append(_compile_source_return(ast.projection, source_expressions))
         _append_order_limit(clauses, ast, source_expressions)
-        return "\n".join(clauses), parameters.values
+        return "\n".join(clauses), parameters.result
 
-    def _compile_top_n(self, ast: RestrictedQueryAst) -> tuple[str, dict[str, object]]:
+    def _compile_top_n(self, ast: RestrictedQueryAst) -> tuple[str, "_CompiledParameters"]:
         primary_operation = ast.operations[0] if ast.operations else None
         if isinstance(primary_operation, MetricAggregateOperation):
             return self._compile_metric_aggregate(ast)
@@ -218,7 +245,7 @@ class CypherCompiler:
             return self._compile_ad_hoc_aggregate(ast)
         raise CypherCompilerError("top_n requires aggregate or metric_aggregate operation")
 
-    def _compile_two_step_aggregate(self, ast: RestrictedQueryAst) -> tuple[str, dict[str, object]]:
+    def _compile_two_step_aggregate(self, ast: RestrictedQueryAst) -> tuple[str, "_CompiledParameters"]:
         subquery = _single_operation(ast, SubqueryOperation)
         roles = _aggregate_roles_from_parts(subquery.group_by, subquery.measures, [])
         role_variables = _role_variables(roles.values())
@@ -247,9 +274,9 @@ class CypherCompiler:
         )
         clauses.append(_compile_source_return(ast.projection, subquery_sources))
         _append_order_limit(clauses, ast, subquery_sources)
-        return "\n".join(clauses), parameters.values
+        return "\n".join(clauses), parameters.result
 
-    def _compile_single_hop(self, ast: RestrictedQueryAst) -> tuple[str, dict[str, object]]:
+    def _compile_single_hop(self, ast: RestrictedQueryAst) -> tuple[str, "_CompiledParameters"]:
         operation = _single_operation(ast, TraverseEdgeOperation)
         used: set[str] = set()
         from_var = _variable_for_owner(operation.from_role.vertex_name, used=used)
@@ -280,20 +307,20 @@ class CypherCompiler:
         if where:
             clauses.append(f"WHERE {' AND '.join(where)}")
         clauses.append(_compile_return(ast.projection, role_variables))
-        return "\n".join(clauses), parameters.values
+        return "\n".join(clauses), parameters.result
 
-    def _compile_named_path_pattern(self, ast: RestrictedQueryAst) -> tuple[str, dict[str, object]]:
+    def _compile_named_path_pattern(self, ast: RestrictedQueryAst) -> tuple[str, "_CompiledParameters"]:
         operation = _single_operation(ast, UsePathPatternOperation)
         cypher = _get_path_pattern_template_for_compile(
             self.registry,
             operation.path_pattern_name,
             self._path_pattern_template_overrides_for_tests,
         )
-        parameters = {key: value.effective_value for key, value in operation.parameters.items()}
-        _validate_template_parameters(cypher, parameters)
+        parameters = _compiled_path_pattern_parameters(operation.parameters)
+        _validate_template_parameters(cypher, parameters.values)
         return cypher, parameters
 
-    def _compile_variable_path(self, ast: RestrictedQueryAst) -> tuple[str, dict[str, object]]:
+    def _compile_variable_path(self, ast: RestrictedQueryAst) -> tuple[str, "_CompiledParameters"]:
         operation = _single_operation(ast, VariablePathOperation)
         if len(operation.allowed_edges) != 1:
             raise CypherCompilerError("variable_path compiler MVP requires exactly one allowed edge")
@@ -321,17 +348,36 @@ class CypherCompiler:
         if where:
             clauses.append(f"WHERE {' AND '.join(where)}")
         clauses.append(_compile_return(ast.projection, role_variables))
-        return "\n".join(clauses), parameters.values
+        return "\n".join(clauses), parameters.result
+
+
+@dataclass(frozen=True)
+class _CompiledParameters:
+    values: dict[str, object]
+    sources: list[dict[str, object]]
 
 
 class _ParameterBuilder:
     def __init__(self) -> None:
         self.values: dict[str, object] = {}
+        self.sources: list[dict[str, object]] = []
 
-    def add(self, base_name: str, value: object) -> str:
+    @property
+    def result(self) -> _CompiledParameters:
+        return _CompiledParameters(values=dict(self.values), sources=list(self.sources))
+
+    def add(
+        self,
+        base_name: str,
+        literal: ValueLiteral,
+        *,
+        source: str,
+    ) -> str:
+        value = _validated_literal_value(literal)
         name = _sanitize_identifier(base_name)
         if name not in self.values:
             self.values[name] = value
+            self.sources.append(_parameter_source(name, value, literal, source=source))
             return name
 
         index = 2
@@ -339,7 +385,50 @@ class _ParameterBuilder:
             index += 1
         unique_name = f"{name}_{index}"
         self.values[unique_name] = value
+        self.sources.append(_parameter_source(unique_name, value, literal, source=source))
         return unique_name
+
+
+def _compiled_path_pattern_parameters(parameters: Mapping[str, ValueLiteral]) -> _CompiledParameters:
+    values: dict[str, object] = {}
+    sources: list[dict[str, object]] = []
+    for name, literal in parameters.items():
+        value = _validated_literal_value(literal)
+        values[name] = value
+        sources.append(_parameter_source(name, value, literal, source="path_pattern_parameter"))
+    return _CompiledParameters(values=values, sources=sources)
+
+
+def _validated_literal_value(literal: ValueLiteral) -> object:
+    if literal.resolver_match_type in UNRESOLVED_MATCH_TYPES:
+        raise CypherCompilerError("unresolved literal cannot be inlined into executable Cypher")
+    if not _literal_has_resolution_evidence(literal):
+        raise CypherCompilerError("literal requires resolution evidence before it can be inlined into executable Cypher")
+    return literal.effective_value
+
+
+def _parameter_source(
+    name: str,
+    value: object,
+    literal: ValueLiteral,
+    *,
+    source: str,
+) -> dict[str, object]:
+    return {
+        "name": name,
+        "value": value,
+        "source": source,
+        "resolver_match_type": literal.resolver_match_type,
+        "resolved": _literal_has_resolution_evidence(literal),
+    }
+
+
+def _literal_has_resolution_evidence(literal: ValueLiteral) -> bool:
+    if literal.resolver_match_type in UNRESOLVED_MATCH_TYPES:
+        return False
+    if literal.normalized is not None:
+        return True
+    return literal.resolver_match_type in RESOLVED_MATCH_TYPES
 
 
 def compile_restricted_query_ast(
@@ -386,7 +475,7 @@ def _compile_filters(
         operator = OPERATOR_CYPHER.get(filter_item.operator)
         if operator is None:
             raise CypherCompilerError(f"unsupported filter operator: {filter_item.operator}")
-        parameter_name = parameters.add(filter_item.property.name, filter_item.value.effective_value)
+        parameter_name = parameters.add(filter_item.property.name, filter_item.value, source="dsl_filter")
         compiled.append(f"{variable}.{filter_item.property.name} {operator} ${parameter_name}")
     return compiled
 
@@ -500,7 +589,11 @@ def _compile_filter_subqueries(
         operator = OPERATOR_CYPHER.get(operation.predicate.operator)
         if operator is None:
             raise CypherCompilerError(f"unsupported filter_subquery operator: {operation.predicate.operator}")
-        parameter_name = parameters.add(operation.predicate.property, operation.predicate.value.effective_value)
+        parameter_name = parameters.add(
+            operation.predicate.property,
+            operation.predicate.value,
+            source="filter_subquery",
+        )
         compiled.append(f"{operation.predicate.property} {operator} ${parameter_name}")
     return compiled
 

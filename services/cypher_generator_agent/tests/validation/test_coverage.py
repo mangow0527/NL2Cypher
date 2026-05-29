@@ -117,12 +117,10 @@ def test_missing_projection_slot_term_is_repairable_coverage_error(
             "time_terms": {"covered": [], "unresolved": []},
             "unparsed_terms": {"unresolved": []},
             "modality_terms": {"warning_only": []},
-            "slot_terms": {
-                "projection": {
-                    "required": ["ID", "服务质量等级"],
-                    "covered": ["ID"],
-                    "uncovered": ["服务质量等级"],
-                }
+            "projection_terms": {
+                "required": ["ID", "服务质量等级"],
+                "covered": ["ID"],
+                "uncovered": ["服务质量等级"],
             },
         }
     )
@@ -137,7 +135,7 @@ def test_missing_projection_slot_term_is_repairable_coverage_error(
                 "owner": "Service",
                 "name": "id",
                 "alias": "service_id",
-                "slot_terms": ["ID"],
+                "projection_terms": ["ID"],
             }
         ],
     )

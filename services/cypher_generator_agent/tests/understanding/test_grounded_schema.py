@@ -310,7 +310,10 @@ def test_unsupported_output_preserves_coverage_gap_without_binder_payload() -> N
             "target_concepts": ["收入"],
             "relation_phrases": ["增长"],
             "literal_candidates": [],
-            "substantive_terms": ["收入", "增长"],
+            "substantive_terms": [
+                {"text": "收入", "slot": "unknown"},
+                {"text": "增长", "slot": "unknown"},
+            ],
             "stopword_terms": [],
             "modality_terms": [],
             "time_terms": [],
@@ -353,7 +356,12 @@ def _gold_decomposition() -> QuestionDecomposition:
         literal_candidates=[
             {"text": "Gold", "kind_hint": "enum_or_name", "attached_to": "服务"}
         ],
-        substantive_terms=["Gold", "服务", "使用", "隧道"],
+        substantive_terms=[
+            {"text": "Gold", "slot": "filter", "attached_to": "服务"},
+            {"text": "服务", "slot": "path"},
+            {"text": "使用", "slot": "path"},
+            {"text": "隧道", "slot": "projection"},
+        ],
         stopword_terms=[],
         modality_terms=[],
         time_terms=[],

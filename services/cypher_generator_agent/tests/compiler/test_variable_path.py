@@ -20,11 +20,16 @@ def test_variable_path_compiles_bounded_path_with_through_filter(
 
     assert result.cypher == (
         "MATCH path = (tun:Tunnel)-[:PATH_THROUGH*1..8]->(ne:NetworkElement)\n"
+        "WHERE ne.id = 'ne-0001'\n"
+        "RETURN tun.id AS tunnel_id"
+    )
+    assert result.cypher_template == (
+        "MATCH path = (tun:Tunnel)-[:PATH_THROUGH*1..8]->(ne:NetworkElement)\n"
         "WHERE ne.id = $id\n"
         "RETURN tun.id AS tunnel_id"
     )
     assert result.parameters == {"id": "ne-0001"}
-    assert "ne-0001" not in result.cypher
+    assert "$id" not in result.cypher
     assert result.validation_result.valid is True
 
 

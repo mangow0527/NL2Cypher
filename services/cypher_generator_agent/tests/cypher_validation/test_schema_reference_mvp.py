@@ -36,7 +36,7 @@ def validate(validator: CypherSelfValidator, cypher: str):
         ("MATCH (ne:NetworkElement) RETURN ne.unknown_property AS x", "unknown_property"),
         ("MATCH (t:Tunnel)-[:UNKNOWN_EDGE]->(ne:NetworkElement) RETURN ne", "UNKNOWN_EDGE"),
         ("MATCH (ne:NetworkElement)-[:PATH_THROUGH]->(t:Tunnel) RETURN ne", "PATH_THROUGH"),
-        ("MATCH (ne:NetworkElement {unknown_property: $id}) RETURN ne", "unknown_property"),
+            ("MATCH (ne:NetworkElement {unknown_property: 'ne-0001'}) RETURN ne", "unknown_property"),
     ],
 )
 def test_unknown_schema_references_are_invalid(
@@ -129,11 +129,11 @@ def test_numeric_aggregates_accept_compatible_properties(
 @pytest.mark.parametrize(
     ("cypher", "message_fragment"),
     [
-        ("MATCH (ne:NetworkElement) WHERE ne.name > $name RETURN ne.id AS id", "range"),
-        ("MATCH (ne:NetworkElement) WHERE ne.elem_type <= $elem_type RETURN ne.id AS id", "range"),
-        ("MATCH (ne:NetworkElement) WHERE $name < ne.name RETURN ne.id AS id", "range"),
-        ("MATCH (t:Tunnel) WHERE t.bandwidth CONTAINS $needle RETURN t.id AS id", "CONTAINS"),
-        ("MATCH (t:Tunnel) WHERE $needle CONTAINS t.bandwidth RETURN t.id AS id", "CONTAINS"),
+        ("MATCH (ne:NetworkElement) WHERE ne.name > 'core' RETURN ne.id AS id", "range"),
+        ("MATCH (ne:NetworkElement) WHERE ne.elem_type <= 'router' RETURN ne.id AS id", "range"),
+        ("MATCH (ne:NetworkElement) WHERE 'core' < ne.name RETURN ne.id AS id", "range"),
+        ("MATCH (t:Tunnel) WHERE t.bandwidth CONTAINS 'needle' RETURN t.id AS id", "CONTAINS"),
+        ("MATCH (t:Tunnel) WHERE 'needle' CONTAINS t.bandwidth RETURN t.id AS id", "CONTAINS"),
     ],
 )
 def test_operators_reject_incompatible_property_types(
@@ -152,10 +152,10 @@ def test_operators_reject_incompatible_property_types(
 @pytest.mark.parametrize(
     "cypher",
     [
-        "MATCH (t:Tunnel) WHERE t.bandwidth >= $min_bandwidth RETURN t.id AS id",
-        "MATCH (t:Tunnel)-[:PATH_THROUGH]->(ne:NetworkElement) WHERE t.bandwidth < $max_bandwidth RETURN t.id AS id",
-        "MATCH (ne:NetworkElement) WHERE ne.name CONTAINS $fragment RETURN ne.id AS id",
-        "MATCH (ne:NetworkElement) WHERE ne.elem_type IN $elem_types RETURN ne.id AS id",
+        "MATCH (t:Tunnel) WHERE t.bandwidth >= 100 RETURN t.id AS id",
+        "MATCH (t:Tunnel)-[:PATH_THROUGH]->(ne:NetworkElement) WHERE t.bandwidth < 1000 RETURN t.id AS id",
+        "MATCH (ne:NetworkElement) WHERE ne.name CONTAINS 'core' RETURN ne.id AS id",
+        "MATCH (ne:NetworkElement) WHERE ne.elem_type IN ['router', 'switch'] RETURN ne.id AS id",
         "MATCH (ne:NetworkElement) RETURN 'ne.name > $name' AS text",
     ],
 )

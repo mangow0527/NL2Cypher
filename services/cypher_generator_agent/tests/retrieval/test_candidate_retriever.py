@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from services.cypher_generator_agent.app.retrieval.index import build_semantic_index
-from services.cypher_generator_agent.app.retrieval.retriever import CandidateRetriever
+from services.cypher_generator_agent.app.retrieval.retriever import CandidateRetriever, _extract_search_terms
 from services.cypher_generator_agent.app.semantic_model.loader import load_graph_semantic_model
 
 
@@ -57,7 +57,11 @@ def test_question_decomposition_v1_terms_drive_candidate_retrieval(
             "target_concepts": ["隧道"],
             "relation_phrases": ["经过"],
             "literal_candidates": ["tun-mpls-001"],
-            "substantive_terms": ["隧道", "经过", "设备"],
+            "substantive_terms": [
+                {"text": "隧道", "slot": "path"},
+                {"text": "经过", "slot": "path"},
+                {"text": "设备", "slot": "projection"},
+            ],
         }
     )
 
@@ -79,7 +83,12 @@ def test_question_decomposition_v1_structured_literal_candidates_drive_retrieval
             "literal_candidates": [
                 {"text": "Gold", "kind_hint": "enum_or_name", "attached_to": "服务"}
             ],
-            "substantive_terms": ["Gold", "服务", "使用", "隧道"],
+            "substantive_terms": [
+                {"text": "Gold", "slot": "filter", "attached_to": "服务"},
+                {"text": "服务", "slot": "path"},
+                {"text": "使用", "slot": "path"},
+                {"text": "隧道", "slot": "projection"},
+            ],
             "stopword_terms": [],
             "modality_terms": [],
             "time_terms": [],
@@ -115,7 +124,12 @@ def test_aspect_particle_phrase_recalls_service_uses_tunnel_edge_from_packaged_a
             "literal_candidates": [
                 {"text": "Gold", "kind_hint": "enum_or_name", "attached_to": "服务"}
             ],
-            "substantive_terms": ["Gold", "服务", "使用", "隧道"],
+            "substantive_terms": [
+                {"text": "Gold", "slot": "filter", "attached_to": "服务"},
+                {"text": "服务", "slot": "path"},
+                {"text": "使用", "slot": "path"},
+                {"text": "隧道", "slot": "projection"},
+            ],
         }
     )
 
@@ -136,7 +150,12 @@ def test_retrieved_vertices_include_id_property_candidates_for_literal_binding()
             "literal_candidates": [
                 {"text": "tun-mpls-001", "kind_hint": "id", "attached_to": "隧道"}
             ],
-            "substantive_terms": ["隧道", "tun-mpls-001", "经过", "设备"],
+            "substantive_terms": [
+                {"text": "隧道", "slot": "path"},
+                {"text": "tun-mpls-001", "slot": "filter", "attached_to": "隧道"},
+                {"text": "经过", "slot": "path"},
+                {"text": "设备", "slot": "projection"},
+            ],
         }
     )
 
@@ -207,6 +226,24 @@ def test_retriever_supports_property_and_metric_candidates(retriever: CandidateR
     assert property_candidate.metadata["valid_values"] == ["GOLD", "SILVER", "BRONZE"]
     assert metric_candidate.match_type == "synonym"
     assert metric_candidate.metadata["valid_dimensions"] == ["svc.quality_of_service", "svc.service_type"]
+
+
+def test_search_terms_are_unique_by_text() -> None:
+    terms = _extract_search_terms(
+        {
+            "schema_version": "question_decomposition_v1",
+            "original_question": "",
+            "target_concepts": [],
+            "relation_phrases": [],
+            "literal_candidates": [],
+            "substantive_terms": [
+                {"text": "服务", "slot": "projection"},
+                {"text": "服务", "slot": "path"},
+            ],
+        }
+    )
+
+    assert terms == ["服务"]
 
 
 def test_semantic_index_includes_all_supported_semantic_types() -> None:

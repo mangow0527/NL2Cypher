@@ -19,7 +19,6 @@ class DecompositionBaseModel(BaseModel):
 
 IntentType = Literal["lookup", "list", "count", "aggregate", "top_n", "path", "compare", "unknown"]
 OutputShape = Literal["rows", "scalar", "grouped_rows", "path", "unknown"]
-SlotRole = Literal["projection", "filter", "group_by", "order_by", "limit", "path", "unknown"]
 
 
 class LiteralKindHint(str, Enum):
@@ -27,6 +26,16 @@ class LiteralKindHint(str, Enum):
     ID = "id"
     NUMBER = "number"
     DATETIME = "datetime"
+    UNKNOWN = "unknown"
+
+
+class SlotKind(str, Enum):
+    PROJECTION = "projection"
+    FILTER = "filter"
+    GROUP_BY = "group_by"
+    ORDER_BY = "order_by"
+    LIMIT = "limit"
+    PATH = "path"
     UNKNOWN = "unknown"
 
 
@@ -52,9 +61,9 @@ class LiteralCandidate(DecompositionBaseModel):
         return text
 
 
-class SlotTerm(DecompositionBaseModel):
+class SubstantiveTerm(DecompositionBaseModel):
     text: str
-    slot: SlotRole
+    slot: SlotKind
     attached_to: str | None = None
 
     @field_validator("text")
@@ -62,7 +71,7 @@ class SlotTerm(DecompositionBaseModel):
     def require_non_empty_text(cls, value: str) -> str:
         text = value.strip()
         if not text:
-            raise ValueError("slot term text must not be empty")
+            raise ValueError("substantive term text must not be empty")
         return text
 
     @field_validator("attached_to")
@@ -82,18 +91,16 @@ class QuestionDecomposition(DecompositionBaseModel):
     target_concepts: list[str] = Field(default_factory=list)
     relation_phrases: list[str] = Field(default_factory=list)
     literal_candidates: list[LiteralCandidate] = Field(default_factory=list)
-    substantive_terms: list[str] = Field(default_factory=list)
+    substantive_terms: list[SubstantiveTerm] = Field(default_factory=list)
     stopword_terms: list[str] = Field(default_factory=list)
     modality_terms: list[str] = Field(default_factory=list)
     time_terms: list[str] = Field(default_factory=list)
     unparsed_terms: list[str] = Field(default_factory=list)
-    slot_terms: list[SlotTerm] = Field(default_factory=list)
     output_shape: OutputShape
 
     @field_validator(
         "target_concepts",
         "relation_phrases",
-        "substantive_terms",
         "stopword_terms",
         "modality_terms",
         "time_terms",
@@ -103,6 +110,19 @@ class QuestionDecomposition(DecompositionBaseModel):
     @classmethod
     def normalize_term_list(cls, value: list[str]) -> list[str]:
         return normalize_terms(value)
+
+    @field_validator("substantive_terms", mode="after")
+    @classmethod
+    def dedupe_substantive_terms(cls, value: list[SubstantiveTerm]) -> list[SubstantiveTerm]:
+        terms: list[SubstantiveTerm] = []
+        seen: set[str] = set()
+        for term in value:
+            text = term.text.strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            terms.append(term.model_copy(update={"text": text}))
+        return terms
 
     @field_validator("original_question")
     @classmethod

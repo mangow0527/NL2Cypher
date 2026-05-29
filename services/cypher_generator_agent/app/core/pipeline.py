@@ -146,9 +146,7 @@ def _run_pipeline_steps(
             decomposition_llm_start,
             stage="question_decomposer",
         ),
-        metrics=lambda result: {
-            "llm_call_count": len(_llm_trace_slice(llm_client, decomposition_llm_start)),
-        },
+        metrics=lambda result: _llm_metrics(_llm_trace_slice(llm_client, decomposition_llm_start)),
     )
     if decomposition_output := _output_from_decomposition_outcome(trace, decomposition):
         return decomposition_output
@@ -303,14 +301,17 @@ def _run_pipeline_steps(
                 action=lambda: compiler.compile_draft(ast),
                 output_payload=lambda result: {
                     "schema_version": result.schema_version,
-                    "cypher": result.cypher,
+                    "cypher_template": result.cypher_template,
                     "parameters": result.parameters,
+                    "parameter_sources": result.parameter_sources,
+                    "cypher_executable": result.cypher_executable,
+                    "cypher": result.cypher_executable,
                     "expected_return_aliases": result.expected_return_aliases,
                 },
             )
             validation_result = _run_cypher_self_validation_stage(
                 trace,
-                cypher=compilation.cypher,
+                cypher=compilation.cypher_executable,
                 expected_return_aliases=compilation.expected_return_aliases,
                 validator=CypherSelfValidator(registry),
             )
@@ -333,7 +334,7 @@ def _run_pipeline_steps(
         except (CypherCompilerError, RestrictedDslValidationError, ValueError) as exc:
             return _failure(trace, reason="compiler_shape_mismatch", message=str(exc))
 
-        return _generated(trace, dsl=dsl, cypher=compilation.cypher, user_visible_notices=user_visible_notices)
+        return _generated(trace, dsl=dsl, cypher=compilation.cypher_executable, user_visible_notices=user_visible_notices)
 
 
 def _run_stage(
@@ -405,6 +406,23 @@ def _with_stage_llm_calls(
         "value": payload,
         "llm_calls": stage_calls,
     }
+
+
+def _llm_metrics(calls: list[dict[str, Any]]) -> dict[str, Any]:
+    metrics: dict[str, Any] = {"llm_call_count": len(calls)}
+    token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    for call in calls:
+        usage = call.get("token_usage")
+        if not isinstance(usage, Mapping):
+            continue
+        for key in token_usage:
+            token_usage[key] += int(usage.get(key, 0) or 0)
+    if any(token_usage.values()):
+        metrics["token_usage"] = token_usage
+        metrics["token_usage_total"] = token_usage["total_tokens"] or (
+            token_usage["prompt_tokens"] + token_usage["completion_tokens"]
+        )
+    return metrics
 
 
 def _structured_llm_client_from_settings(settings: Settings) -> Any:
@@ -512,7 +530,7 @@ def _deterministic_grounding_from_slots(
     literal_payloads = [result.model_dump(mode="json") for result in literal_results]
     filters = _filters_from_literal_results(literal_results)
     selected_properties = _property_refs_from_filters(filters)
-    coverage = decomposition.get("coverage") or _coverage(covered=_string_list(decomposition.get("substantive_terms")))
+    coverage = decomposition.get("coverage") or _coverage(covered=_substantive_term_texts(decomposition))
 
     if _is_count_slot(decomposition):
         target_vertex = _count_target_vertex(decomposition, vertex_ids, literal_results)
@@ -547,7 +565,7 @@ def _deterministic_grounding_from_slots(
         from_vertex = str(connecting_edge.metadata["from_vertex"])
         to_vertex = str(connecting_edge.metadata["to_vertex"])
         projection_vertex = _projection_vertex_for_traversal([from_vertex, to_vertex], literal_results)
-        projection = _projection_items_from_slots(
+        projection = _projection_items_from_substantive_terms(
             decomposition=decomposition,
             candidates=candidates,
             registry=registry,
@@ -556,7 +574,7 @@ def _deterministic_grounding_from_slots(
         if not projection:
             projection = [_id_projection_item(projection_vertex, registry)]
         selected_properties = _append_projection_properties(selected_properties, projection)
-        coverage = _coverage_with_projection_slots(decomposition, coverage, projection)
+        coverage = _coverage_with_projection_terms(decomposition, coverage, projection)
         return {
             "query_shape": "single_hop",
             "selected_vertices": [from_vertex, to_vertex],
@@ -569,7 +587,7 @@ def _deterministic_grounding_from_slots(
         }
 
     if len(vertex_ids) == 1:
-        projection = _projection_items_from_slots(
+        projection = _projection_items_from_substantive_terms(
             decomposition=decomposition,
             candidates=candidates,
             registry=registry,
@@ -578,7 +596,7 @@ def _deterministic_grounding_from_slots(
         if not projection:
             projection = [_id_projection_item(vertex_ids[0], registry)]
         selected_properties = _append_projection_properties(selected_properties, projection)
-        coverage = _coverage_with_projection_slots(decomposition, coverage, projection)
+        coverage = _coverage_with_projection_terms(decomposition, coverage, projection)
         return {
             "query_shape": "vertex_lookup",
             "selected_vertices": [vertex_ids[0]],
@@ -701,7 +719,7 @@ def _projection_vertex_for_traversal(
     return vertices[-1]
 
 
-def _projection_items_from_slots(
+def _projection_items_from_substantive_terms(
     *,
     decomposition: Mapping[str, Any],
     candidates: list[SemanticCandidate],
@@ -709,8 +727,13 @@ def _projection_items_from_slots(
     selected_vertices: list[str],
 ) -> list[dict[str, Any]]:
     projection_terms = [
-        item for item in _slot_terms(decomposition, slot="projection")
-        if _projection_slot_term_requires_property(item)
+        item for item in _substantive_terms_with_slot(decomposition, slot="projection")
+        if _projection_slot_term_requires_property(
+            item,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
     ]
     if not projection_terms:
         return []
@@ -731,7 +754,7 @@ def _projection_items_from_slots(
             "owner": owner,
             "name": property_name,
             "alias": f"{_snake_case(owner)}_{property_name}",
-            "slot_terms": [str(slot_term["text"])],
+            "projection_terms": [str(slot_term["text"])],
         }
         if not any(
             existing.get("owner") == owner and existing.get("name") == property_name
@@ -741,7 +764,7 @@ def _projection_items_from_slots(
             continue
         for existing in items:
             if existing.get("owner") == owner and existing.get("name") == property_name:
-                existing_terms = existing.setdefault("slot_terms", [])
+                existing_terms = existing.setdefault("projection_terms", [])
                 term = str(slot_term["text"])
                 if term not in existing_terms:
                     existing_terms.append(term)
@@ -749,9 +772,27 @@ def _projection_items_from_slots(
     return items
 
 
-def _projection_slot_term_requires_property(slot_term: Mapping[str, Any]) -> bool:
+def _projection_slot_term_requires_property(
+    slot_term: Mapping[str, Any],
+    *,
+    candidates: list[SemanticCandidate],
+    registry: Any,
+    selected_vertices: list[str],
+) -> bool:
     text = str(slot_term.get("text") or "").strip()
     if not text:
+        return False
+    attached_to = str(slot_term.get("attached_to") or "").strip()
+    if attached_to:
+        return True
+    object_matches = _attached_vertex_names(text, candidates)
+    if not object_matches:
+        object_matches = _attached_vertex_names_from_registry(
+            text,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+    if any(vertex in object_matches for vertex in selected_vertices):
         return False
     return True
 
@@ -856,20 +897,21 @@ def _attached_vertex_names_from_registry(
     return owners
 
 
-def _slot_terms(decomposition: Mapping[str, Any], *, slot: str) -> list[dict[str, Any]]:
-    raw_terms = decomposition.get("slot_terms")
+def _substantive_terms_with_slot(decomposition: Mapping[str, Any], *, slot: str) -> list[dict[str, Any]]:
+    raw_terms = decomposition.get("substantive_terms")
     if not isinstance(raw_terms, list | tuple):
         return []
     terms: list[dict[str, Any]] = []
     for item in raw_terms:
         if not isinstance(item, Mapping):
             continue
-        if str(item.get("slot") or "") != slot:
+        item_slot = str(item.get("slot") or "").strip()
+        if item_slot != slot:
             continue
         text = str(item.get("text") or "").strip()
         if not text:
             continue
-        payload = {"text": text, "slot": slot}
+        payload = {"text": text, "slot": item_slot}
         attached_to = str(item.get("attached_to") or "").strip()
         if attached_to:
             payload["attached_to"] = attached_to
@@ -902,17 +944,21 @@ def _append_projection_properties(
     return refs
 
 
-def _coverage_with_projection_slots(
+def _coverage_with_projection_terms(
     decomposition: Mapping[str, Any],
     coverage: Any,
     projection: list[dict[str, Any]],
 ) -> Any:
-    projection_terms = [str(item["text"]) for item in _slot_terms(decomposition, slot="projection")]
+    if _is_count_slot(decomposition):
+        return coverage
+    projection_terms = [
+        str(item["text"]) for item in _substantive_terms_with_slot(decomposition, slot="projection")
+    ]
     if not projection_terms:
         return coverage
     covered: list[str] = []
     for item in projection:
-        raw_terms = item.get("slot_terms")
+        raw_terms = item.get("projection_terms")
         if not isinstance(raw_terms, list | tuple):
             continue
         for raw_term in raw_terms:
@@ -921,13 +967,11 @@ def _coverage_with_projection_slots(
                 covered.append(term)
     uncovered = [term for term in projection_terms if term not in covered]
     payload = dict(coverage) if isinstance(coverage, Mapping) else CoverageReport.model_validate(coverage).model_dump(mode="json")
-    slot_terms = dict(payload.get("slot_terms") or {})
-    slot_terms["projection"] = {
+    payload["projection_terms"] = {
         "required": projection_terms,
         "covered": covered,
         "uncovered": uncovered,
     }
-    payload["slot_terms"] = slot_terms
     return payload
 
 
@@ -976,9 +1020,7 @@ def _run_grounded_understanding_stage(
             llm_start,
             stage="grounded_understanding",
         ),
-        metrics=lambda result: {
-            "llm_call_count": len(_llm_trace_slice(llm_client, llm_start)),
-        },
+        metrics=lambda result: _llm_metrics(_llm_trace_slice(llm_client, llm_start)),
     )
 
 
@@ -1397,20 +1439,20 @@ def _decomposition_payload(result: Any) -> dict[str, Any]:
             if isinstance(candidate, dict) and candidate.get("text")
         ]
         payload.setdefault("literal_requests", [])
-        payload.setdefault("coverage", _coverage(covered=payload.get("substantive_terms", [])))
-        return _normalize_decomposition_slots(payload)
+        payload.setdefault("coverage", _coverage(covered=_substantive_term_texts(payload)))
+        return _normalize_decomposition_terms(payload)
     if isinstance(result, Mapping):
-        return _normalize_decomposition_slots(dict(result))
+        return _normalize_decomposition_terms(dict(result))
     raise TypeError(f"question decomposer returned unsupported payload: {result!r}")
 
 
-def _normalize_decomposition_slots(payload: dict[str, Any]) -> dict[str, Any]:
+def _normalize_decomposition_terms(payload: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(payload)
     literal_objects = list(
         normalized.get("literal_candidate_objects") or normalized.get("literal_candidates") or []
     )
     target_concepts = _string_list(normalized.get("target_concepts"))
-    substantive_terms = _string_list(normalized.get("substantive_terms"))
+    substantive_terms = _substantive_term_payloads(normalized.get("substantive_terms"))
 
     for literal in literal_objects:
         if not isinstance(literal, Mapping):
@@ -1418,21 +1460,34 @@ def _normalize_decomposition_slots(payload: dict[str, Any]) -> dict[str, Any]:
         attached_to = str(literal.get("attached_to") or "").strip()
         if attached_to:
             target_concepts = _append_unique_term(target_concepts, attached_to)
-            substantive_terms = _append_unique_term(substantive_terms, attached_to)
+            substantive_terms = _append_unique_substantive_term(substantive_terms, attached_to)
         text = str(literal.get("text") or literal.get("raw_literal") or literal.get("value") or "").strip()
         if text:
-            substantive_terms = _append_unique_term(substantive_terms, text)
+            substantive_terms = _append_unique_substantive_term(
+                substantive_terms,
+                text,
+                slot="filter",
+                attached_to=attached_to or None,
+            )
 
     question = str(normalized.get("original_question") or normalized.get("question") or "")
     for classifier, concept in _classifier_surface_concepts(question).items():
         target_concepts = _append_unique_term(target_concepts, concept)
-        substantive_terms = _append_unique_term(substantive_terms, classifier)
-        substantive_terms = _append_unique_term(substantive_terms, concept)
+        substantive_terms = _append_unique_substantive_term(
+            substantive_terms,
+            classifier,
+            slot="projection",
+        )
+        substantive_terms = _append_unique_substantive_term(
+            substantive_terms,
+            concept,
+            slot="projection",
+        )
 
     normalized["target_concepts"] = target_concepts
     normalized["substantive_terms"] = substantive_terms
-    normalized.setdefault("coverage", _coverage(covered=substantive_terms))
-    normalized["coverage"] = _coverage_seeded_with_slot_terms(normalized, normalized["coverage"])
+    normalized.setdefault("coverage", _coverage(covered=_substantive_term_texts(normalized)))
+    normalized["coverage"] = _coverage_seeded_with_projection_terms(normalized, normalized["coverage"])
     return normalized
 
 
@@ -1449,26 +1504,69 @@ def _string_list(value: Any) -> list[str]:
     return [str(item).strip() for item in value if str(item).strip()]
 
 
-def _coverage_seeded_with_slot_terms(
+def _substantive_term_payloads(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list | tuple):
+        return []
+    terms: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        text = str(item.get("text") or "").strip()
+        if not text or text in seen:
+            continue
+        slot = str(item.get("slot") or "unknown").strip() or "unknown"
+        payload: dict[str, Any] = {"text": text, "slot": slot}
+        attached_to = str(item.get("attached_to") or "").strip()
+        if attached_to:
+            payload["attached_to"] = attached_to
+        terms.append(payload)
+        seen.add(text)
+    return terms
+
+
+def _substantive_term_texts(decomposition: Mapping[str, Any]) -> list[str]:
+    return [term["text"] for term in _substantive_term_payloads(decomposition.get("substantive_terms"))]
+
+
+def _coverage_seeded_with_projection_terms(
     decomposition: Mapping[str, Any],
     coverage: Any,
 ) -> Any:
-    projection_terms = [str(item["text"]) for item in _slot_terms(decomposition, slot="projection")]
+    if _is_count_slot(decomposition):
+        return coverage
+    projection_terms = [
+        str(item["text"]) for item in _substantive_terms_with_slot(decomposition, slot="projection")
+    ]
     if not projection_terms:
         return coverage
     payload = dict(coverage) if isinstance(coverage, Mapping) else CoverageReport.model_validate(coverage).model_dump(mode="json")
-    slot_terms = dict(payload.get("slot_terms") or {})
-    slot_terms.setdefault(
-        "projection",
+    payload.setdefault(
+        "projection_terms",
         {"required": projection_terms, "covered": [], "uncovered": projection_terms},
     )
-    payload["slot_terms"] = slot_terms
     return payload
 
 
 def _append_unique_term(values: list[str], term: str) -> list[str]:
     if term not in values:
         values.append(term)
+    return values
+
+
+def _append_unique_substantive_term(
+    values: list[dict[str, Any]],
+    text: str,
+    *,
+    slot: str = "unknown",
+    attached_to: str | None = None,
+) -> list[dict[str, Any]]:
+    if any(item.get("text") == text for item in values):
+        return values
+    payload: dict[str, Any] = {"text": text, "slot": slot}
+    if attached_to:
+        payload["attached_to"] = attached_to
+    values.append(payload)
     return values
 
 
@@ -1540,7 +1638,12 @@ def _mock_decompose(question: str) -> dict[str, Any]:
             "relation_phrases": ["使用隧道", "SERVICE_USES_TUNNEL"],
             "literal_candidates": ["svc-gold-001"],
             "semantic_terms": ["Service.id", "SERVICE_USES_TUNNEL"],
-            "substantive_terms": ["服务", "svc-gold-001", "使用", "隧道"],
+            "substantive_terms": [
+                _term("服务", "path"),
+                _term("svc-gold-001", "filter", attached_to="服务"),
+                _term("使用", "path"),
+                _term("隧道", "projection"),
+            ],
             "literal_requests": [
                 {
                     "raw_literal": "svc-gold-001",
@@ -1562,7 +1665,12 @@ def _mock_decompose(question: str) -> dict[str, Any]:
             "relation_phrases": ["使用隧道", "SERVICE_USES_TUNNEL"],
             "literal_candidates": [service_tier],
             "semantic_terms": ["Service.quality_of_service"],
-            "substantive_terms": [service_tier, "服务", "使用", "隧道"],
+            "substantive_terms": [
+                _term(service_tier, "filter", attached_to="服务"),
+                _term("服务", "path"),
+                _term("使用", "path"),
+                _term("隧道", "projection"),
+            ],
             "literal_requests": [
                 {
                     "raw_literal": service_tier,
@@ -1583,7 +1691,12 @@ def _mock_decompose(question: str) -> dict[str, Any]:
             "relation_phrases": ["经过", "PATH_THROUGH"],
             "literal_candidates": ["tun-mpls-001"],
             "semantic_terms": ["Tunnel.id", "tunnel_full_path"],
-            "substantive_terms": ["隧道", "tun-mpls-001", "经过", "设备"],
+            "substantive_terms": [
+                _term("隧道", "path"),
+                _term("tun-mpls-001", "filter", attached_to="隧道"),
+                _term("经过", "path"),
+                _term("设备", "projection"),
+            ],
             "literal_requests": [
                 {
                     "raw_literal": "tun-mpls-001",
@@ -1604,7 +1717,12 @@ def _mock_decompose(question: str) -> dict[str, Any]:
             "relation_phrases": ["经过", "PATH_THROUGH"],
             "literal_candidates": ["ne-0001"],
             "semantic_terms": ["NetworkElement.id", "PATH_THROUGH"],
-            "substantive_terms": ["隧道", "经过", "设备", "ne-0001"],
+            "substantive_terms": [
+                _term("隧道", "path"),
+                _term("经过", "path"),
+                _term("设备", "path"),
+                _term("ne-0001", "filter", attached_to="设备"),
+            ],
             "literal_requests": [
                 {
                     "raw_literal": "ne-0001",
@@ -1626,7 +1744,11 @@ def _mock_decompose(question: str) -> dict[str, Any]:
             "relation_phrases": ["HAS_PORT"],
             "literal_candidates": [device_id],
             "semantic_terms": ["NetworkElement.id", "HAS_PORT"],
-            "substantive_terms": ["设备", device_id, "端口"],
+            "substantive_terms": [
+                _term("设备", "path"),
+                _term(device_id, "filter", attached_to="设备"),
+                _term("端口", "projection"),
+            ],
             "literal_requests": [
                 {
                     "raw_literal": device_id,
@@ -1647,7 +1769,11 @@ def _mock_decompose(question: str) -> dict[str, Any]:
             "relation_phrases": [],
             "literal_candidates": ["down"],
             "semantic_terms": ["Port.status"],
-            "substantive_terms": ["当前", "down", "端口"],
+            "substantive_terms": [
+                _term("当前", "unknown"),
+                _term("down", "filter", attached_to="端口"),
+                _term("端口", "projection"),
+            ],
             "literal_requests": [
                 {
                     "raw_literal": "down",
@@ -1664,11 +1790,17 @@ def _mock_decompose(question: str) -> dict[str, Any]:
         return {
             "schema_version": "question_decomposition_v1",
             "original_question": question,
+            "intent_type": "count",
+            "output_shape": "scalar",
             "target_concepts": ["NetworkElement", "防火墙", "设备"],
             "relation_phrases": [],
             "literal_candidates": ["防火墙"],
             "semantic_terms": ["device_count", "NetworkElement.elem_type"],
-            "substantive_terms": ["全网", "多少", "防火墙"],
+            "substantive_terms": [
+                _term("全网", "unknown"),
+                _term("多少", "projection"),
+                _term("防火墙", "projection"),
+            ],
             "literal_requests": [
                 {
                     "raw_literal": "防火墙",
@@ -1689,7 +1821,11 @@ def _mock_decompose(question: str) -> dict[str, Any]:
             "relation_phrases": [],
             "literal_candidates": [],
             "semantic_terms": ["device_count", "NetworkElement.elem_type"],
-            "substantive_terms": ["按设备类型", "统计", "设备数量"],
+            "substantive_terms": [
+                _term("按设备类型", "group_by"),
+                _term("统计", "projection"),
+                _term("设备数量", "projection"),
+            ],
             "literal_requests": [],
             "coverage": _coverage(covered=["按设备类型", "统计", "设备数量"]),
             "mock_intent": "device_count_by_elem_type",
@@ -1703,7 +1839,11 @@ def _mock_decompose(question: str) -> dict[str, Any]:
             "relation_phrases": ["HAS_PORT"],
             "literal_candidates": [],
             "semantic_terms": ["port_count", "NetworkElement.id"],
-            "substantive_terms": ["端口最多", "5", "设备"],
+            "substantive_terms": [
+                _term("端口最多", "order_by"),
+                _term("5", "limit"),
+                _term("设备", "projection"),
+            ],
             "literal_requests": [],
             "coverage": _coverage(covered=["端口最多", "5", "设备"]),
             "mock_intent": "top_n_devices_by_port_count",
@@ -1717,7 +1857,11 @@ def _mock_decompose(question: str) -> dict[str, Any]:
             "relation_phrases": [],
             "literal_candidates": [],
             "semantic_terms": ["Port.status", "Port.id"],
-            "substantive_terms": ["先按状态", "统计端口", "最多"],
+            "substantive_terms": [
+                _term("先按状态", "group_by"),
+                _term("统计端口", "projection"),
+                _term("最多", "order_by"),
+            ],
             "literal_requests": [],
             "coverage": _coverage(covered=["先按状态", "统计端口", "最多"]),
             "mock_intent": "two_step_port_status_count",
@@ -1731,7 +1875,11 @@ def _mock_decompose(question: str) -> dict[str, Any]:
             "relation_phrases": [],
             "literal_candidates": [],
             "semantic_terms": ["Port.status", "Port.id"],
-            "substantive_terms": ["按状态", "统计", "端口数量"],
+            "substantive_terms": [
+                _term("按状态", "group_by"),
+                _term("统计", "projection"),
+                _term("端口数量", "projection"),
+            ],
             "literal_requests": [],
             "coverage": _coverage(covered=["按状态", "统计", "端口数量"]),
             "mock_intent": "port_count_by_status",
@@ -1748,20 +1896,20 @@ def _mock_decompose(question: str) -> dict[str, Any]:
             "relation_phrases": [],
             "literal_candidates": [],
             "semantic_terms": ["Service"],
-            "substantive_terms": ["服务", "ID", "名称", "元素类型", "服务质量等级", "带宽", "时延"],
+            "substantive_terms": [
+                _term("服务", "projection"),
+                _term("ID", "projection", attached_to="服务"),
+                _term("名称", "projection", attached_to="服务"),
+                _term("元素类型", "projection", attached_to="服务"),
+                _term("服务质量等级", "projection", attached_to="服务"),
+                _term("带宽", "projection", attached_to="服务"),
+                _term("时延", "projection", attached_to="服务"),
+            ],
             "stopword_terms": ["查询", "所有", "的", "和"],
             "modality_terms": [],
             "time_terms": [],
             "unparsed_terms": [],
             "literal_requests": [],
-            "slot_terms": [
-                {"text": "ID", "slot": "projection", "attached_to": "服务"},
-                {"text": "名称", "slot": "projection", "attached_to": "服务"},
-                {"text": "元素类型", "slot": "projection", "attached_to": "服务"},
-                {"text": "服务质量等级", "slot": "projection", "attached_to": "服务"},
-                {"text": "带宽", "slot": "projection", "attached_to": "服务"},
-                {"text": "时延", "slot": "projection", "attached_to": "服务"},
-            ],
             "coverage": _coverage(covered=["服务", "ID", "名称", "元素类型", "服务质量等级", "带宽", "时延"]),
         }
 
@@ -1776,17 +1924,19 @@ def _mock_decompose(question: str) -> dict[str, Any]:
             "relation_phrases": ["使用"],
             "literal_candidates": [],
             "semantic_terms": ["Service", "Tunnel", "SERVICE_USES_TUNNEL"],
-            "substantive_terms": ["服务", "使用", "隧道", "ID", "名称", "带宽"],
+            "substantive_terms": [
+                _term("服务", "path"),
+                _term("使用", "path"),
+                _term("隧道", "projection"),
+                _term("ID", "projection", attached_to="隧道"),
+                _term("名称", "projection", attached_to="隧道"),
+                _term("带宽", "projection", attached_to="隧道"),
+            ],
             "stopword_terms": ["查询", "所有", "的", "返回", "和"],
             "modality_terms": [],
             "time_terms": [],
             "unparsed_terms": [],
             "literal_requests": [],
-            "slot_terms": [
-                {"text": "ID", "slot": "projection", "attached_to": "隧道"},
-                {"text": "名称", "slot": "projection", "attached_to": "隧道"},
-                {"text": "带宽", "slot": "projection", "attached_to": "隧道"},
-            ],
             "coverage": _coverage(covered=["服务", "使用", "隧道", "ID", "名称", "带宽"]),
         }
 
@@ -1803,7 +1953,14 @@ def _mock_decompose(question: str) -> dict[str, Any]:
                 {"text": "金牌", "kind_hint": "enum_or_name", "attached_to": "服务质量等级"}
             ],
             "semantic_terms": ["Service", "Service.quality_of_service"],
-            "substantive_terms": ["服务质量等级", "金牌", "服务", "ID", "名称", "带宽"],
+            "substantive_terms": [
+                _term("服务质量等级", "filter", attached_to="服务"),
+                _term("金牌", "filter", attached_to="服务质量等级"),
+                _term("服务", "projection"),
+                _term("ID", "projection", attached_to="服务"),
+                _term("名称", "projection", attached_to="服务"),
+                _term("带宽", "projection", attached_to="服务"),
+            ],
             "stopword_terms": ["查询", "所有", "为", "的", "和"],
             "modality_terms": [],
             "time_terms": [],
@@ -1816,13 +1973,6 @@ def _mock_decompose(question: str) -> dict[str, Any]:
                     "literal_kind_hint": "enum",
                 }
             ],
-            "slot_terms": [
-                {"text": "服务质量等级", "slot": "filter", "attached_to": "服务"},
-                {"text": "金牌", "slot": "filter", "attached_to": "服务质量等级"},
-                {"text": "ID", "slot": "projection", "attached_to": "服务"},
-                {"text": "名称", "slot": "projection", "attached_to": "服务"},
-                {"text": "带宽", "slot": "projection", "attached_to": "服务"},
-            ],
             "coverage": _coverage(covered=["服务质量等级", "金牌", "服务", "ID", "名称", "带宽"]),
         }
 
@@ -1833,11 +1983,21 @@ def _mock_decompose(question: str) -> dict[str, Any]:
         "relation_phrases": [],
         "literal_candidates": [],
         "semantic_terms": ["Service"],
-        "substantive_terms": ["收入", "增长"] if ("收入" in question or "增长" in question) else [question],
+        "substantive_terms": [
+            _term("收入", "unknown"),
+            _term("增长", "unknown"),
+        ] if ("收入" in question or "增长" in question) else [_term(question, "unknown")],
         "literal_requests": [],
         "coverage": _coverage(uncovered=["收入", "增长"] if ("收入" in question or "增长" in question) else [question]),
         "mock_intent": "coverage_failure",
     }
+
+
+def _term(text: str, slot: str, *, attached_to: str | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {"text": text, "slot": slot}
+    if attached_to:
+        payload["attached_to"] = attached_to
+    return payload
 
 
 def _coverage(

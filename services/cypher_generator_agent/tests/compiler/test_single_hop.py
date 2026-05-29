@@ -6,7 +6,7 @@ from services.cypher_generator_agent.app.semantic_model import GraphSemanticRegi
 from .conftest import parse_dsl, single_hop_dsl
 
 
-def test_gold_service_uses_tunnel_compiles_parameterized_cypher(
+def test_gold_service_uses_tunnel_compiles_executable_cypher_with_template_trace(
     registry: GraphSemanticRegistry,
 ) -> None:
     ast = parse_dsl(single_hop_dsl(), registry)
@@ -16,11 +16,17 @@ def test_gold_service_uses_tunnel_compiles_parameterized_cypher(
     assert result.schema_version == "cypher_compilation_result_v1"
     assert result.cypher == (
         "MATCH (svc:Service)-[:SERVICE_USES_TUNNEL]->(tun:Tunnel)\n"
+        "WHERE svc.quality_of_service = 'GOLD'\n"
+        "RETURN tun.id AS tunnel_id"
+    )
+    assert result.cypher_executable == result.cypher
+    assert result.cypher_template == (
+        "MATCH (svc:Service)-[:SERVICE_USES_TUNNEL]->(tun:Tunnel)\n"
         "WHERE svc.quality_of_service = $quality_of_service\n"
         "RETURN tun.id AS tunnel_id"
     )
     assert result.parameters == {"quality_of_service": "GOLD"}
-    assert "GOLD" not in result.cypher
+    assert "$quality_of_service" not in result.cypher
     assert result.validation_result.valid is True
     assert {check.name: check.status for check in result.validation_result.checks}["shape"] == "passed"
 
@@ -56,11 +62,13 @@ def test_single_hop_duplicate_filter_property_names_get_unique_parameters(
 
     result = compile_restricted_query_ast(ast, registry)
 
-    assert "svc.id = $id" in result.cypher
-    assert "tun.id = $id_2" in result.cypher
+    assert "svc.id = 'svc-gold-001'" in result.cypher
+    assert "tun.id = 'tun-mpls-001'" in result.cypher
+    assert "svc.id = $id" in result.cypher_template
+    assert "tun.id = $id_2" in result.cypher_template
     assert result.parameters == {"id": "svc-gold-001", "id_2": "tun-mpls-001"}
-    assert "svc-gold-001" not in result.cypher
-    assert "tun-mpls-001" not in result.cypher
+    assert "$id" not in result.cypher
+    assert "$id_2" not in result.cypher
 
 
 def test_projection_alias_controls_return_alias(

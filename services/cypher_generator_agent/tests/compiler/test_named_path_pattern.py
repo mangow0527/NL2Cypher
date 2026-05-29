@@ -20,7 +20,13 @@ def test_tunnel_full_path_uses_fixture_template_and_instantiates_parameters(
 
     result = compile_restricted_query_ast(ast, registry)
 
-    assert result.cypher == FIXTURE_TEMPLATE
+    assert result.cypher_template == FIXTURE_TEMPLATE
+    assert result.cypher == (
+        "MATCH (t:Tunnel {id: 'tun-mpls-001'})-[p:PATH_THROUGH]->(ne:NetworkElement)\n"
+        "RETURN ne AS device, p.hop_order AS hop\n"
+        "ORDER BY p.hop_order ASC"
+    )
+    assert result.cypher_executable == result.cypher
     assert result.parameters == {"tunnel_id": "tun-mpls-001"}
-    assert "tun-mpls-001" not in result.cypher
+    assert "$tunnel_id" not in result.cypher
     assert result.validation_result.valid is True

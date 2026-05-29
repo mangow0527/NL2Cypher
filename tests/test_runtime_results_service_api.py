@@ -119,14 +119,15 @@ def test_runtime_results_detail_script_puts_cypher_comparison_in_overview():
     assert "由工程代码生成的字面值解析请求" in script
     assert "coverage" in script
     assert "覆盖率报告，记录 substantive_terms 中哪些词已覆盖、哪些仍缺失" in script
-    assert "slot_terms" in script
+    assert "projection_terms" in script
+    assert "slot_terms" not in script
     assert "projection_coverage_missing" in script
     assert "返回字段覆盖缺失" in script
     assert "relation_phrases" in script
     assert "表示两个业务对象如何连接的关系短语" in script
     assert "例如“服务使用隧道”中的“使用”" in script
     assert "substantive_terms" in script
-    assert "覆盖分类轴字段：驱动查询语义的实质词" in script
+    assert "实义词对象数组，每项包含 text、slot 和可选 attached_to" in script
     assert "stopword_terms" in script
     assert "覆盖分类轴字段：礼貌语、连接词、助词或查询引导词" in script
     assert "modality_terms" in script
@@ -167,6 +168,13 @@ def test_runtime_results_detail_script_puts_cypher_comparison_in_overview():
     assert "发给大模型的完整提示词" not in script
     assert "大模型原始输出" not in script
     assert "parser 后 Cypher" not in script
+    assert "cypher_template" in script
+    assert "编译器内部生成的参数化 Cypher 模板" in script
+    assert "cypher_executable" in script
+    assert "参数内联后的可执行 Cypher" in script
+    assert "parameter_sources" in script
+    assert "每个模板参数的来源元信息" in script
+    assert "不是 v1 的执行契约" in script
 
 
 def test_runtime_results_generated_cypher_overview_card_has_no_status_pill():

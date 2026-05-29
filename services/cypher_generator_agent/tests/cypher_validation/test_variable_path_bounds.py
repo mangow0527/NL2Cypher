@@ -21,7 +21,7 @@ def test_bounded_variable_path_passes_static_self_validation(
 ) -> None:
     result = validator.validate_generated_query(
         "MATCH path = (t:Tunnel)-[:PATH_THROUGH*1..8]->(ne:NetworkElement) "
-        "WHERE ne.id = $id RETURN t.id AS tunnel_id"
+        "WHERE ne.id = 'ne-0001' RETURN t.id AS tunnel_id"
     )
 
     assert result.valid is True

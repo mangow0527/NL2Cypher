@@ -8,6 +8,8 @@ from .models import (
     QuestionDecompositionClarification,
     QuestionDecompositionFailure,
     QuestionDecompositionOutcome,
+    SlotKind,
+    SubstantiveTerm,
 )
 
 __all__ = [
@@ -20,5 +22,7 @@ __all__ = [
     "QuestionDecompositionClarification",
     "QuestionDecompositionFailure",
     "QuestionDecompositionOutcome",
+    "SlotKind",
     "StructuredLLMClient",
+    "SubstantiveTerm",
 ]

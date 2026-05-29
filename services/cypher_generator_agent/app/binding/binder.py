@@ -554,7 +554,7 @@ def _normalize_reference_item(item: Mapping[str, Any], *, field_name: str) -> di
     if semantic_type == "property":
         owner, name = _extract_owner_name(normalized)
         reference = {"semantic_type": "property", "owner": owner, "name": name}
-        for key in ("alias", "slot_terms"):
+        for key in ("alias", "projection_terms"):
             if normalized.get(key) is not None:
                 reference[key] = normalized[key]
         return reference

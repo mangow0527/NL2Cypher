@@ -6,7 +6,7 @@ from services.cypher_generator_agent.app.semantic_model import GraphSemanticRegi
 from .conftest import parse_dsl
 
 
-def test_metric_aggregate_compiles_parameterized_filter(
+def test_metric_aggregate_compiles_inline_filter(
     registry: GraphSemanticRegistry,
 ) -> None:
     ast = parse_dsl(_device_count_firewall_dsl(), registry)
@@ -15,11 +15,16 @@ def test_metric_aggregate_compiles_parameterized_filter(
 
     assert result.cypher == (
         "MATCH (ne:NetworkElement)\n"
+        "WHERE ne.elem_type = 'firewall'\n"
+        "RETURN count(ne) AS device_count"
+    )
+    assert result.cypher_template == (
+        "MATCH (ne:NetworkElement)\n"
         "WHERE ne.elem_type = $elem_type\n"
         "RETURN count(ne) AS device_count"
     )
     assert result.parameters == {"elem_type": "firewall"}
-    assert "firewall" not in result.cypher
+    assert "$elem_type" not in result.cypher
     assert result.validation_result.valid is True
 
 

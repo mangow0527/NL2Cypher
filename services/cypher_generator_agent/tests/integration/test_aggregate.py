@@ -16,7 +16,7 @@ def test_pipeline_generates_metric_aggregate_for_firewall_count() -> None:
     assert result.dsl["operations"][0]["filters"][0]["value"]["normalized"] == "firewall"
     assert result.cypher == (
         "MATCH (ne:NetworkElement)\n"
-        "WHERE ne.elem_type = $elem_type\n"
+        "WHERE ne.elem_type = 'firewall'\n"
         "RETURN count(ne) AS device_count"
     )
     trace = result.trace

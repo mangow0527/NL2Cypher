@@ -15,6 +15,7 @@ FailureCode = Literal[
     "cypher_syntax_invalid",
     "cypher_readonly_violation",
     "cypher_schema_reference_invalid",
+    "cypher_parameter_placeholder_not_allowed",
     "target_dialect_static_error",
     "compiler_shape_mismatch",
 ]

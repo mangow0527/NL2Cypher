@@ -64,7 +64,7 @@ def test_spec_allowlisted_scalar_functions_pass_target_dialect(
 @pytest.mark.parametrize(
     "cypher",
     [
-        "MATCH (t:Tunnel {id: $tunnel_id}) RETURN t.id AS tunnel_id",
+        "MATCH (t:Tunnel {id: 'tun-mpls-001'}) RETURN t.id AS tunnel_id",
         (
             "MATCH (t:Tunnel)-[p:PATH_THROUGH {hop_order: 1}]->(ne:NetworkElement) "
             "RETURN ne.id AS device_id, p.hop_order AS hop"

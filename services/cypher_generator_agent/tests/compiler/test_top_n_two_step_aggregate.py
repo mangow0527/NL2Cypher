@@ -60,6 +60,14 @@ def test_two_step_aggregate_compiles_filter_subquery(
     assert result.cypher == (
         "MATCH (port:Port)\n"
         "WITH port.status AS status, count(port.id) AS port_count\n"
+        "WHERE port_count > 10\n"
+        "RETURN status AS status, port_count AS port_count\n"
+        "ORDER BY port_count DESC\n"
+        "LIMIT 5"
+    )
+    assert result.cypher_template == (
+        "MATCH (port:Port)\n"
+        "WITH port.status AS status, count(port.id) AS port_count\n"
         "WHERE port_count > $port_count\n"
         "RETURN status AS status, port_count AS port_count\n"
         "ORDER BY port_count DESC\n"
