@@ -25,9 +25,10 @@
 | MIR-001 | Projection Slot Coverage and No Silent ID Downgrade | 已严格闭环 | `qa_9cfa692813d5` | P0 |
 | MIR-002 | Decomposer Substantive Slot Hard Cut | 代码已完成，性能验收未达标，待再决策 | decomposer latency / duplicate retrieval terms | P0 |
 | MIR-003 | Executable Cypher Inline Output with Template Trace | 已远端闭环 | `qa_c2508f2c0bac` | P0 |
-| MIR-004 | Slot-Authoritative Literal Candidate Filtering | 待审核 | `qa_c3e83dd7ad32` | P0 |
+| MIR-004 | Slot-Authoritative Literal Candidate Filtering | 已远端验证，原始澄清失败点闭环 | `qa_c3e83dd7ad32` | P0 |
+| MIR-005 | Decomposer Redundant Output Field Removal | 代码已完成，本地验证通过，待正式延迟回归/远端验证 | decomposer completion token latency | P0 |
 
-后续新增问题按 `MIR-005`、`MIR-006` 继续追加。
+后续新增问题按 `MIR-006`、`MIR-007` 继续追加。
 
 ## 2. 总体修改原则
 
@@ -101,7 +102,7 @@ MATCH (svc:Service) RETURN svc.id AS service_id
 
 - 本地 regression 已覆盖 projection slice；最新全量验证为 `services/cypher_generator_agent/tests` 511 passed、`tests/test_runtime_results_service_api.py` 32 passed。
 - 远端 MIR-001 strict 重跑证明 projection 不再塌缩；部分样本仍有 `strict_check=fail`，属于 testing/golden 口径或后续语义问题。
-- `qa_c2508f2c0bac` 的参数传递问题已由 MIR-003 闭环；`qa_c3e83dd7ad32` 的 Top-N/limit 角色混淆已进入 MIR-004；IP owner/property 与多跳路径方向仍待后续 MIR。
+- `qa_c2508f2c0bac` 的参数传递问题已由 MIR-003 闭环；`qa_c3e83dd7ad32` 的 limit 数字误入 literal resolver 问题已由 MIR-004 闭环，剩余聚合/order/limit 生成能力待后续 MIR；IP owner/property 与多跳路径方向仍待后续 MIR。
 
 ## 4. MIR-002 Decomposer Substantive Slot Hard Cut
 
@@ -337,166 +338,363 @@ pipeline 看到 `literal_candidates` 后，构造了 literal request：
 - 不改 `question_decomposition_v1` schema version。
 - 保持 CGA 不连接数据库、不执行 Cypher。
 
-### 6.4 子 IR 总览
+### 6.4 闭环摘要
+
+| 子 IR | 当前状态 | 关键结果 |
+| --- | --- | --- |
+| MIR-004.0 | 已完成 | 增加 `qa_c3e83dd7ad32` 回归，并加入 limit 数量与真实 filter 数字的对照测试。 |
+| MIR-004.1 | 已完成 | prompt 强化 `literal_candidates` 只表示过滤/匹配值，结构控制词只听 slot。 |
+| MIR-004.2 | 已完成 | pipeline 在 literal request 构造前按 slot 过滤结构词，`limit/order_by/group_by/path/projection` 不送 literal resolver。 |
+| MIR-004.3 | 已完成 | trace 记录 `skipped_literal_candidates` 与 `skipped_literal_candidate_count`，运行中心可解释跳过原因。 |
+| MIR-004.4 | 已完成 | slot-disambiguation 回归并入测试，覆盖结构槽位数字与 filter 数字不误伤。 |
+
+实现口径：
+
+- 下游判断一个词是否能进入 literal resolver 时，以 `substantive_terms[].slot` 为权威，而不是以值形态或 `literal_candidates` 数组归属为权威。
+- `slot=filter/unknown` 的 literal candidate 保持原解析路径；结构槽位词被跳过并在 trace 中留痕。
+- 运行中心字段说明补充了真实含义，详情页能展示阶段输入、跳过的 literal candidate 和相关 metric。
+
+### 6.5 验证与边界
+
+本地验证：
+
+```text
+PYTHONPATH=. pytest services/cypher_generator_agent/tests/integration/test_pipeline_mvp.py::test_qa_c3_limit_number_does_not_trigger_literal_clarification services/cypher_generator_agent/tests/integration/test_pipeline_mvp.py::test_structural_limit_literal_candidate_is_skipped_while_filter_literal_resolves services/cypher_generator_agent/tests/decomposition/test_term_classification.py::test_prompt_defines_literals_by_filter_role_not_control_slots -q
+PYTHONPATH=. pytest tests/test_runtime_results_service_api.py -q
+```
+
+远端验证：
+
+- 部署标识：`ba68344+mir004-runtime-center-20260529`
+- 重跑记录：
+  - `/home/mabingjie/apps/qa-agent/artifacts/experiment_runs/current8_after_mir004_direct_rerun_20260529T084801Z.json`
+  - `/home/mabingjie/apps/qa-agent/artifacts/experiment_runs/current8_after_mir004_runtime_summary_20260529T084801Z.json`
+- `qa_c3e83dd7ad32` 已从 `clarification_required` 推进为 `generated`。
+- 最新 trace 中 `literal_resolver.input.skipped_literal_candidates=[{"raw":"3","slot":"limit","reason":"slot=limit"}]`，`skipped_literal_candidate_count=1`。
+
+边界：
+
+- MIR-004 闭环的是“结构控制词被误送 literal resolver 并触发澄清”的失败点。
+- `qa_c3e83dd7ad32` 远端仍为 `final_verdict=fail / strict_check=fail`，因为生成 Cypher 只返回源节点网元 ID，没有表达 location 分组计数、按数量降序和 `LIMIT 3`。这属于 aggregate/group/order/limit 结构落地问题，应作为独立 MIR 处理。
+- `literal_candidates` 仍是独立于 `substantive_terms` 的并列数组，schema 层仍可表达“同一词既是结构控制又是 literal”的矛盾。更根本的方向是把 literal 信息内嵌进 `substantive_terms`，但本 MIR 不做该破坏性 schema 重构。
+
+## 7. MIR-005 Decomposer Redundant Output Field Removal
+
+### 7.1 背景
+
+触发问题：`question_decomposer` 调用 `qwen3-32b` 的端到端耗时过高，交互式问数体验差。
+
+实测数据（streaming）：
+
+- TTFT 中位数约 `0.72s`。
+- completion tokens 约 `246-283`。
+- TPOT 中位数约 `32.5ms/token`。
+- 端到端中位数约 `9.17s`。
+- 偶发 TPOT 抖动到 `72ms/token`，端到端约 `22s`。
+- `llm_call_count=1`，无 schema retry；瓶颈不在 TTFT，也不在重试。
+
+硬约束：
+
+1. **模型不可更换**：全链路只有一个 `qwen3-32b`。任何换模型、蒸馏、轻量分类器或小模型 decomposer 方向都不在本 MIR 范围内。
+2. **唯一可动变量是 completion token 数**：端到端耗时近似为 `TTFT(0.72s) + completion_tokens * 32.5ms`。当前 completion 约 `250 tokens`，要降延迟只能减少 LLM 输出 token。
+
+根因：completion token 偏高，其中包含可由 `substantive_terms` 推导的冗余字段（`target_concepts`、`relation_phrases`）、下游无实质消费的字段（`stopword_terms`），以及非必要时仍输出的 `attached_to`。
+
+本 MIR 是 MIR-002 的延续。MIR-002 已把 slot 合并进 `substantive_terms`，每个实义词自带 `slot`。本 MIR 进一步利用该结构：删除可从 `substantive_terms` 推导出的冗余输出字段，把推导逻辑下沉到工程代码，而不是让 LLM 重复输出。
+
+预期收益：completion token 从约 `250` 降到约 `155`，decomposer 端到端从约 `9s` 降到约 `5.5-6s`，且不损失下游可用信息。
+
+### 7.2 成本链路
+
+| 输出字段 | 冗余性质 | token 成本 |
+| --- | --- | --- |
+| `target_concepts` | `substantive_terms` 中名词性词的子集视图，内容完全重复。 | 词被输出第二遍。 |
+| `relation_phrases` | `substantive_terms` 中 `slot=path` 词的子集视图，内容完全重复。 | 词被输出第二遍。 |
+| `stopword_terms` | coverage 检查只关心 substantive 是否覆盖；stopword 是被忽略对象，`不出现=已忽略`，列出来再忽略对 coverage 等价。 | 整个数组的 token。 |
+| `attached_to`（无条件输出） | 仅在该词修饰的概念不唯一、需要消歧时才有用；无歧义时冗余。 | 每个无需消歧的 entry 多一个字段。 |
+| `modality_terms` / `unparsed_terms` | 实际触发率待测；若极低则常年空数组，并占用模型判断成本。 | 取决于触发率。 |
+
+### 7.3 修改目标
+
+- 删除可由 `substantive_terms` 推导的输出字段：`target_concepts`、`relation_phrases`；推导逻辑下沉到代码。
+- 删除无实质下游消费的字段：`stopword_terms`；前提是消费审计确认没有真实消费方。
+- `attached_to` 改为按需输出，仅在消歧需要时填写。
+- 根据实测触发率决定是否删除 `modality_terms` / `unparsed_terms`。
+- 删除字段的同时，删除 prompt 中对应的讲解段落和示例字段，减少模型判断负担和 input token。
+- 目标：completion token 从约 `250` 降到约 `155`，端到端从约 `9s` 降到约 `5.5-6s`。
+
+非目标：
+
+- 不换模型，不引入蒸馏、轻量分类器或小模型 decomposer。
+- 不改 `substantive_terms` 的结构；MIR-002 已定稿。
+- 不采用缩短 key 名、数组位置编码、slot 单字符编码等有损压缩。本 MIR 只删冗余字段，不牺牲可读性和可维护性。
+- 不改 `question_decomposition_v1` schema version。
+- 不改 decomposition 之外的 LLM prompt。
+- 不连接数据库，不执行 Cypher。
+
+### 7.4 子 IR 总览
 
 | 子 IR | 名称 | 开发状态 | 优先级 | 估算 | 角色 | 依赖 |
 | --- | --- | --- | --- | --- | --- | --- |
-| MIR-004.0 | Regression Fixture and Baseline | 待审核 | P0 | S | QA/backend | 无 |
-| MIR-004.1 | Decomposer literal_candidates Definition Tightening | 待审核 | P0 | S | backend/LLM | MIR-004.0 |
-| MIR-004.2 | Pipeline Structural-Slot Filter Before Literal Request | 待审核 | P0 | S | backend | MIR-004.0 |
-| MIR-004.3 | Trace for Skipped Literal Candidates | 待审核 | P1 | XS | backend/infra | MIR-004.2 |
-| MIR-004.4 | Regression Matrix Integration | 待审核 | P0 | XS | QA/infra | MIR-004.0 到 MIR-004.3 |
+| MIR-005.0 | Downstream Consumption Audit and Baseline | 已完成 | P0 | S | backend/QA | 无 |
+| MIR-005.1 | Derive target_concepts / relation_phrases From substantive_terms | 已完成 | P0 | M | backend | MIR-005.0 |
+| MIR-005.2 | Drop stopword_terms Output | 已完成 | P0 | S | backend | MIR-005.0 |
+| MIR-005.3 | attached_to On-Demand Only | 已完成 | P1 | S | backend/LLM | MIR-005.0 |
+| MIR-005.4 | modality / unparsed Trigger-Rate Decision | 已完成：保留 | P2 | XS | backend/QA | MIR-005.0 |
+| MIR-005.5 | Prompt Slimming and Schema Update | 已完成 | P0 | S | backend/LLM | MIR-005.1 到 MIR-005.4 |
+| MIR-005.6 | Latency Regression and Token Baseline | 轻量采样完成，正式多次回归待跑 | P0 | S | QA | MIR-005.1 到 MIR-005.5 |
 
 推荐顺序：
 
 ```text
-MIR-004.0 -> MIR-004.2 -> MIR-004.1 -> MIR-004.3 -> MIR-004.4
+MIR-005.0 -> MIR-005.1 -> MIR-005.2 -> MIR-005.3 -> MIR-005.4 -> MIR-005.5 -> MIR-005.6
 ```
 
-如果只能先做一项，优先做 `MIR-004.2 Pipeline Structural-Slot Filter Before Literal Request`，因为它是确定性工程防线，不依赖 LLM 输出完全正确，能拦住整类“结构控制词被当 literal”的问题。`MIR-004.1` 用于消除矛盾源，两者构成纵深防御，都应完成。
+必须先做 `MIR-005.0 Downstream Consumption Audit and Baseline`。删字段前必须确认下游没有真实消费。如果某字段仍被读取，对应子 IR 要从“删除输出”改为“改为代码推导”，不能直接删。
 
-### MIR-004.0 Regression Fixture and Baseline
+### 7.5 实施摘要（2026-05-29）
 
-目标：把 `qa_c3e83dd7ad32` 和同类 top_n/limit 样本固化为回归基线，同时建立“filter 值”的防误伤对照样本。
+字段审计结论：
+
+| 字段 | 当前处理 | 依据 |
+| --- | --- | --- |
+| `target_concepts` | 从 LLM schema/prompt/output 中删除，不做新推导字段。 | retriever 已改读 `substantive_terms`、literal、原问题和既有工程信号；不引入词性判断或额外 LLM。 |
+| `relation_phrases` | 从 LLM schema/prompt/output 中删除；关系召回由 `substantive_terms(slot=path)` 与原问题承接。 | 当前真实消费点只有 retriever，已不再读取旧字段。 |
+| `stopword_terms` | 从 decomposer 输出删除。 | coverage 不依赖 decomposer 的 stopword 列表计算遗漏词；coverage report 中的同名兼容字段仍可保留为报告结构。 |
+| `attached_to` | 保持 optional，prompt 明确只在消歧需要时填写。 | 下游已有缺省兜底；不改 `SubstantiveTerm` 结构。 |
+| `modality_terms` / `unparsed_terms` | 本轮保留。 | semantic validator 与 coverage 仍消费对应报告语义；没有足够 trace 数据支持删除。 |
+
+实现状态：
+
+- `question_decomposition_v1` 不再允许 `target_concepts`、`relation_phrases`、`stopword_terms`；旧字段若由 mock/遗留 payload 进入 pipeline，会在规范化阶段被剔除。
+- prompt 和 OpenAI-compatible 简化契约已删除旧字段说明与示例输出。
+- retriever 不再读取旧双轨字段；运行中心说明改为“旧 trace/coverage 兼容字段”，避免把旧字段误读成当前 schema。
+- 本地验证：`PYTHONPATH=. pytest services/cypher_generator_agent/tests -q` -> `517 passed in 3.71s`；`PYTHONPATH=. pytest tests/test_runtime_results_service_api.py -q` -> `32 passed in 0.32s`。
+
+轻量 LLM 采样（各 1 次，`qwen3-32b`，无 schema retry）：
+
+| Query | prompt tokens | completion tokens | total tokens | decomposer 耗时 |
+| --- | ---: | ---: | ---: | ---: |
+| `查询所有服务使用的隧道，返回隧道的 ID、名称和带宽` | 2797 | 197 | 2994 | 7417 ms |
+| `Gold 服务使用了哪些隧道` | 2789 | 173 | 2962 | 5649 ms |
+
+结论：completion tokens 已从 MIR-002.7 的 `246/251` 降到 `197/173`，延迟同步下降；第一条仍未达到约 `155 tokens` 的目标。正式验收仍需多次采样和远端回归，本轮不继续追加压缩策略。
+
+### MIR-005.0 Downstream Consumption Audit and Baseline
+
+目标：在删字段前，精确审计 `target_concepts`、`relation_phrases`、`stopword_terms`、`modality_terms`、`unparsed_terms` 的所有下游消费点；建立当前 completion token 和端到端耗时基线。
 
 建议文件：
 
 ```text
-services/cypher_generator_agent/tests/fixtures/golden_questions.yaml
-services/cypher_generator_agent/tests/decomposition/test_term_classification.py
-services/cypher_generator_agent/tests/integration/test_golden_questions.py
+docs/experiments/2026-05-28-runtime-center-cga-job-analysis.md
+services/cypher_generator_agent/app/decomposition/models.py
+services/cypher_generator_agent/app/core/pipeline.py
+services/cypher_generator_agent/app/retrieval/retriever.py
+services/cypher_generator_agent/app/validation/semantic_validator.py
+services/cypher_generator_agent/app/understanding/prompt.py
+console/runtime_console/ui/detail.js
+```
+
+开发内容：
+
+- 全仓库扫描这五个字段名，列出每一处读取它们的代码，包括 retriever、validator、pipeline、understanding prompt、运行中心等。
+- 对每个字段标注：有真实消费 / 只是被序列化进 prompt / 完全无消费。
+- 对 `stopword_terms` 的审计不止记录“哪里读了它”，还要判定“读取后它的语义作用”；特别是 coverage 是否把它当作减项参与遗漏词计算。区分“只是读取”和“作为计算输入参与结果”。
+- 对每个待删字段给出结论：可直接删 / 需改为代码推导 / 暂不可删。
+- 记录当前基线：至少两条代表 query 的 `completion_tokens`、TTFT、TPOT、端到端耗时和 retry count。
+- 建立 decomposer 准确率基线，与 token / 延迟基线并列：
+  - 选取一组覆盖各类 slot 的代表样本，建议 `10-15` 条，覆盖 projection、filter、group_by、order_by、limit、path，包含多字段投影、filter literal、limit 数字、需消歧 `attached_to` 等典型情形。
+  - 记录改动前每条样本的 slot 标注是否正确、literal 识别是否正确、projection 覆盖是否正确、path 关系识别是否正确。
+  - 基线必须可复跑，固化为测试 fixture 或脚本。
+
+验收：
+
+- 产出明确的“字段 -> 消费点”清单。
+- 每个待删字段都有可执行结论，且结论基于消费审计，不基于猜测。
+- 基线数据记录在案，可供 MIR-005.6 对照。
+- 准确率基线已建立并固化，覆盖样本数和各类 slot 分布已记录。
+
+### MIR-005.1 Derive target_concepts / relation_phrases From substantive_terms
+
+目标：让 LLM 不再输出 `target_concepts` 和 `relation_phrases`；`relation_phrases` 确定由代码推导，`target_concepts` 按 MIR-005.0 审计结论决定删除、推导或标记待决。
+
+建议文件：
+
+```text
+services/cypher_generator_agent/app/decomposition/models.py
+services/cypher_generator_agent/app/core/pipeline.py
+services/cypher_generator_agent/app/retrieval/retriever.py
+services/cypher_generator_agent/tests/retrieval/test_candidate_retriever.py
 services/cypher_generator_agent/tests/integration/test_pipeline_mvp.py
 ```
 
 开发内容：
 
-- 将 `qa_c3e83dd7ad32` 纳入 active regression scope。
-- 补至少 2 个同类聚合查询，覆盖“返回前N名”“排名前N”“取前N个”等 limit 措辞。
-- 必须补对照样本，覆盖“带宽为3的链路”“时延为100的隧道”这类值作为真实 filter 的查询，确保修复不会误伤它们。
-- golden 断言要检查 DSL 结构、slot 归属、是否构造 literal request，不只检查最终 Cypher 字符串。
-- 测试名称和断言说明应区分“limit 数量误判”和“真实 filter 值”。
+- `relation_phrases` —— 确定走推导：
+  - 从 LLM 输出 schema 中移除 `relation_phrases`。
+  - 推导规则：`relation_phrases = substantive_terms` 中 `slot=path` 的词。
+  - 所有当前读取 `relation_phrases` 的下游改为读取推导结果。
+- `target_concepts` —— 先看 MIR-005.0 审计结论，按结论分支：
+  - 若审计结论为“无真实下游消费”（只被序列化进 prompt 或完全无人读）：直接从 LLM 输出 schema 中删除，不做推导。这是首选情况。
+  - 若审计结论为“有真实下游消费”（例如被 retriever 当召回词）：
+    - 先评估能否仅用现有工程信号推导出等价的 `target_concepts`，包括 `slot`、已有候选 evidence、已存在的非 LLM 信号。
+    - 如果能用现有信号推导：实现推导，下游改读推导结果。
+    - 如果推导需要引入新组件，例如分词器、词性标注库、额外 LLM 调用：停止，不在 MIR-005.1 内实现。把该情况标记为需要单独讨论的待决项，写入 MIR 剩余风险或单独待决条目，等待用户决策。
+- 不恢复 MIR-002 已删除的独立 `slot_terms` 或其它双轨结构。
+- 严禁为了推导 `target_concepts` 而引入新的词性判断逻辑或额外 LLM 调用。
 
 验收：
 
-- 当前实现下，limit 样本的新增测试应能暴露“limit 词被送进 literal request / 退化为 clarification”的问题。
-- 对照样本在当前实现下应已通过，修复后不得回归。
-- 测试报告能清楚定位失败来自 slot/literal 角色混淆，而不是数据库执行或 strict check。
+- LLM `raw_output` 中不再出现 `relation_phrases`。
+- `relation_phrases` 推导值与改前 LLM 输出在代表样本上等价；retriever 召回不回归。
+- `target_concepts` 的处理与 MIR-005.0 审计结论一致：无消费则已删除；有消费且可用现有信号推导则推导值等价；有消费但需新组件则已标记为待决，未擅自实现。
+- 全程未引入任何新的词性判断逻辑或额外 LLM 调用。
 
-### MIR-004.1 Decomposer literal_candidates Definition Tightening
+### MIR-005.2 Drop stopword_terms Output
 
-目标：从定义上排除结构控制词进入 `literal_candidates`，消除矛盾源，而不是加样本特例。
+目标：停止输出 `stopword_terms`，前提是 MIR-005.0 确认无真实消费方。
+
+建议文件：
+
+```text
+services/cypher_generator_agent/app/decomposition/models.py
+services/cypher_generator_agent/app/decomposition/prompt.py
+services/cypher_generator_agent/tests/decomposition/test_term_classification.py
+services/cypher_generator_agent/tests/validation/test_coverage.py
+```
+
+开发内容：
+
+- 前置验证（删除前必做）：确认当前 coverage 实现是否把 `stopword_terms` 作为减项或任何形式的计算输入使用，而不仅是“读取了这个字段”。
+  - 若 coverage 仅遍历 `substantive_terms` 校验覆盖、完全不引用 `stopword_terms` 做减法：可安全删除。
+  - 若 coverage 把 `stopword_terms` 当作减项参与“遗漏词”计算：删除前必须先解耦这个依赖，改成 coverage 只基于 `substantive_terms` 判定，不依赖 stopword 列表，然后才能删除 `stopword_terms`。
+- 若 MIR-005.0 确认 `stopword_terms` 无真实消费方：从 schema 和 prompt 中删除该字段及其讲解。
+- 确认 coverage 逻辑：被忽略的词不出现在任何 bucket 即等于被忽略；coverage 只校验 substantive 覆盖，不依赖 stopword 列表。
+- 若 MIR-005.0 发现仍有消费方，则本子 IR 改为“保留但评估替代方案”，并在 MIR 记录消费方和保留原因。
+
+验收：
+
+- LLM 不再输出 `stopword_terms`。
+- coverage 校验行为不回归，被忽略词仍被正确忽略。
+- 删除 `stopword_terms` 后，对含大量 stopword 的问题，例如“麻烦帮我查一下所有的防火墙”，coverage 校验不误报，stopword 仍被正确忽略而非被当成未覆盖实义词。
+- 若保留该字段，必须有消费审计证据说明原因。
+
+### MIR-005.3 attached_to On-Demand Only
+
+目标：`attached_to` 仅在需要消歧时输出，无歧义时省略。
 
 建议文件：
 
 ```text
 services/cypher_generator_agent/app/decomposition/prompt.py
 services/cypher_generator_agent/app/decomposition/models.py
+services/cypher_generator_agent/app/core/pipeline.py
+services/cypher_generator_agent/tests/decomposition/test_term_classification.py
+services/cypher_generator_agent/tests/integration/test_pipeline_mvp.py
+```
+
+开发内容：
+
+- prompt 明确：`attached_to` 只在该词修饰的概念不唯一、需要消歧时才填；无歧义时省略。
+- 如果 `attached_to` 已是 optional，则优先只改 prompt 和测试；不改 `SubstantiveTerm` 结构。
+- 下游消费 `attached_to` 处确认能容忍其缺省，并有默认 owner / selected vertex 兜底行为。
+
+验收：
+
+- 无歧义样本中的 path 词和单 owner projection 词不输出 `attached_to`。
+- 需消歧样本，例如“时延”可能归属多个对象时，仍输出 `attached_to`。
+- 下游在 `attached_to` 缺省时行为正确，不发生 projection owner 回归。
+
+### MIR-005.4 modality / unparsed Trigger-Rate Decision
+
+目标：基于实测触发率决定是否删除 `modality_terms` / `unparsed_terms`。
+
+建议文件：
+
+```text
+docs/experiments/2026-05-28-runtime-center-cga-job-analysis.md
+services/cypher_generator_agent/app/decomposition/models.py
+services/cypher_generator_agent/app/decomposition/prompt.py
+```
+
+开发内容：
+
+- 统计近期生产 trace 中 `modality_terms` / `unparsed_terms` 非空的比例。
+- 若非空比例 `< 5%`：从 schema 和 prompt 中删除，并记录“未来遇到 modality 类问题再加回”。
+- 若非空比例 `>= 5%`：保留，并记录原因。
+- 本决策必须基于 trace 数据，不基于主观判断。
+
+验收：
+
+- 有明确触发率数据支撑删/留决策。
+- 决策结果写入 MIR 或实验记录。
+- 若删除字段，prompt 和 schema 不再残留对应讲解；若保留字段，记录其继续存在的消费价值。
+
+### MIR-005.5 Prompt Slimming and Schema Update
+
+目标：随字段删除同步精简 prompt，删除被删字段的讲解段落和示例字段，减少 input token 和模型判断负担。
+
+建议文件：
+
+```text
+services/cypher_generator_agent/app/decomposition/prompt.py
+services/cypher_generator_agent/app/decomposition/models.py
+services/cypher_generator_agent/app/infrastructure/llm_client.py
+services/cypher_generator_agent/tests/decomposition/test_schema_retry.py
 services/cypher_generator_agent/tests/decomposition/test_term_classification.py
 ```
 
 开发内容：
 
-- 在 prompt 中强化 `literal_candidates` 的本质定义：只包含“作为过滤/匹配条件、限定某个概念属性取值”的字面值。
-- 明确控制查询结构的数量、排序和分组词不属于 literal，只属于 `substantive_terms` 的对应 slot。
-- 加对比反例：
-  - “返回前3名”中的“3” -> `substantive_terms(slot=limit)`，不进 `literal_candidates`。
-  - “带宽为3的链路”中的“3” -> `substantive_terms(slot=filter)`，并进入 `literal_candidates`。
-- 明确判定锚点是 slot/语义角色，不是值形态。
+- prompt 中删除 `target_concepts`、`relation_phrases`、`stopword_terms` 以及视 MIR-005.4 决策删除的 `modality_terms` / `unparsed_terms` 的讲解段落。
+- 4 个示例的输出同步删除这些字段。
+- JSON Schema 同步更新。
+- 确认 prompt 仍清晰、示例仍自洽；不采用缩短 key 名、数组位置编码、slot 单字符等有损压缩。
 
 验收：
 
-- “返回前3名” -> “3”在 `substantive_terms(slot=limit)`，不在 `literal_candidates`。
-- “带宽为3的链路” -> “3”在 `substantive_terms(slot=filter)`，并在 `literal_candidates`。
-- “排名前5”“取前10个”等变体表现一致。
-- prompt 和测试说明不得把规则写成基于值形态的过滤。
+- prompt 中无已删字段的残留讲解。
+- 示例输出结构与新 schema 一致。
+- decomposer 单测在新 prompt 下通过。
+- prompt 字符数和 token 数较 MIR-005.0 baseline 有记录可比。
 
-### MIR-004.2 Pipeline Structural-Slot Filter Before Literal Request
+### MIR-005.6 Latency Regression and Token Baseline
 
-目标：在 pipeline 构造 literal request 之前，加确定性结构过滤，按 slot 决定一个 literal candidate 是否送入 resolver。
+目标：实测验证 token 和耗时收益，纳入回归。
 
 建议文件：
 
 ```text
-services/cypher_generator_agent/app/core/pipeline.py
+docs/experiments/2026-05-28-runtime-center-cga-job-analysis.md
 services/cypher_generator_agent/tests/integration/test_pipeline_mvp.py
-services/cypher_generator_agent/tests/validation/test_coverage.py
 ```
 
 开发内容：
 
-- 对每个 `literal_candidate`，按 text 找到其在 `substantive_terms` 中对应词的 slot。
-- 若 slot 属于 `limit`、`order_by`、`group_by`、`path`、`projection`，跳过，不构造 literal request；这些是结构或字段角色，不是待解析的数据值。
-- 若 slot 属于 `filter` 或 `unknown`，保持现有 literal request 构造路径。
-- 判定锚点是 slot，不是值形态；filter 槽位的值必须继续送解析。
+- 使用与 MIR-005.0 相同的代表 query，改后各跑多次。
+- 每次记录 `completion_tokens`、TTFT、TPOT、端到端耗时、retry count 和 `llm_call_count`。
+- 与 MIR-005.0 baseline 对照。
+- 同时检查 decomposer 准确率，包括 slot 标注、literal 识别、projection coverage、path 关系识别。
 
 验收：
 
-- `slot=limit` 的词不构造 literal request。
-- `slot=filter` 的词仍构造 literal request 并解析。
-- `qa_c3e83dd7ad32` 不再因“3”触发 `literal_unresolved`。
-- 新增测试证明 `limit/order_by/group_by/path/projection` 的结构词不会进入 literal resolver，而 filter 词不会被误跳过。
+- completion token 较基线下降，目标约 `250 -> 155`。
+- decomposer 端到端中位数较基线下降，目标约 `9s -> 5.5-6s`。
+- 用 MIR-005.0 固化的同一组准确率基线样本，逐条对照改动前后的 slot 标注、literal 识别、projection 覆盖、path 关系识别。
+- 改动后每一项的正确数不得低于基线；若任一样本出现“基线正确、改后错误”的退化，记录为准确率回归，不得通过验收，需修复或回退相关改动。
+- 准确率回归与延迟收益是两个独立的通过条件，必须同时满足：既要 token / 耗时达到目标，也要准确率不低于基线。任一不达标，本 MIR 不算完成。
+- 若实测收益与目标偏差 `> 30%`，记录数据，不自行追加优化，等待用户决策。
 
-### MIR-004.3 Trace for Skipped Literal Candidates
+### 7.5 剩余风险 / 未来方向
 
-目标：被跳过的 literal candidate 在 trace 中留痕，便于后续排障和运行中心解释。
+即使删光冗余字段，在单模型 `qwen3-32b` 且 TPOT 固定的硬约束下，decomposer 物理下限约 `4-5s`。整条问数链路如果仍包含 grounded_understanding 等其它 LLM 调用，整体进入 `5s` 以内可能无法仅靠 decomposer 输出瘦身实现。
 
-建议文件：
+后续若要进一步降低整体延迟，需要架构级权衡，例如将 decomposer 与 grounded_understanding 合并为单次 LLM 调用，或让简单查询走确定性快速路径。这些属于架构级变更，不在本 MIR 范围内。
 
-```text
-services/cypher_generator_agent/app/observability/trace.py
-services/cypher_generator_agent/app/core/pipeline.py
-console/runtime_console/ui/detail.js
-tests/test_runtime_results_service_api.py
-```
+另一个本次不采用的方向是有损压缩输出结构，例如缩短 key 名、数组位置编码、slot 单字符化。这类方案能再省少量 token，但牺牲可读性和可维护性；当前不做。仅当删冗余后仍无法满足延迟，且团队接受可读性代价时，再另行评估。
 
-开发内容：
-
-- 在 literal resolver 相关 stage 记录被跳过的 candidate 及原因，例如：
-
-```json
-{"raw": "3", "skipped": true, "reason": "slot=limit"}
-```
-
-- 运行中心可展示“因 slot=limit 未送 literal 解析”，避免用户看到 literal 消失却不知道原因。
-- trace 记录只描述 slot-based filtering，不引入值形态规则说明。
-
-验收：
-
-- trace 能看出“3 因 `slot=limit` 未送 literal 解析”。
-- 对真实 filter 值，trace 仍展示正常 literal request 和 resolver 结果。
-- 运行中心字段说明中能区分“跳过结构控制词”和“literal 解析失败”。
-
-### MIR-004.4 Regression Matrix Integration
-
-目标：纳入回归矩阵，防止后续 decomposer 或 pipeline 改动让 slot/literal 角色混淆回归。
-
-建议文件：
-
-```text
-services/cypher_generator_agent/tests/fixtures/golden_questions.yaml
-services/cypher_generator_agent/tests/integration/test_golden_regression_matrix.py
-services/cypher_generator_agent/tests/integration/test_golden_questions.py
-```
-
-开发内容：
-
-- 将 `qa_c3e83dd7ad32`、新增 limit 样本、filter 值对照样本标为 slot-disambiguation 回归 slice。
-- 该 slice 应可独立执行，并覆盖 decomposer 输出、literal request 构造和最终 generation status。
-- `qa_c3e83dd7ad32` 修复后的期望应包含 `ORDER BY ... DESC` 与 `LIMIT 3`，且不再 `clarification_required`。
-
-验收：
-
-- slot-disambiguation slice 可独立跑。
-- `qa_c3e83dd7ad32` 修复后能生成带 `LIMIT 3` 的 Cypher，不再 clarification。
-- filter 值对照样本不回归。
-
-### 6.5 剩余风险 / 未来方向
-
-`literal_candidates` 当前是独立于 `substantive_terms` 的并列数组，两者之间没有强制一致性约束，因此 LLM 可以把同一个词同时标成 `substantive_terms(slot=limit)` 和 `literal_candidates`，这个矛盾源在 schema 层是可表达的。
-
-更根本的修复是把 literal 信息内嵌进 `substantive_terms`，类似 MIR-002 中对 `slot_terms` 的合并，使“一个词同时是结构控制又是 literal”在结构上无法表达。**本 MIR 不做此重构**，避免再次引入破坏性 schema 变更；如果后续再次出现 literal 与 slot 不一致的问题，再启动独立 MIR 处理该 schema 合并。
-
-## 7. 后续 MIR 模板
+## 8. 后续 MIR 模板
 
 新增修改项时按以下模板追加：
 
@@ -535,7 +733,7 @@ services/cypher_generator_agent/tests/integration/test_golden_questions.py
 验收：
 ```
 
-## 8. 审核结论与后续 MIR 检查
+## 9. 审核结论与后续 MIR 检查
 
 MIR-001 审核后的当前默认决策：
 

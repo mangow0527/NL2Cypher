@@ -74,8 +74,6 @@ def test_multi_property_service_projection_uses_each_requested_slot(
             "original_question": question,
             "intent_type": "list",
             "output_shape": "rows",
-            "target_concepts": ["服务", "ID", "名称", "元素类型", "服务质量等级", "带宽", "时延"],
-            "relation_phrases": [],
             "literal_candidates": [],
             "literal_requests": [],
             "substantive_terms": [
@@ -87,7 +85,6 @@ def test_multi_property_service_projection_uses_each_requested_slot(
                 _decomp_term("带宽", "projection", attached_to="服务"),
                 _decomp_term("时延", "projection", attached_to="服务"),
             ],
-            "stopword_terms": ["查询", "所有", "的", "和"],
             "modality_terms": [],
             "time_terms": [],
             "unparsed_terms": [],
@@ -194,8 +191,6 @@ def test_pipeline_can_use_real_llm_mode_with_openai_compatible_client(
                     "result_type": "decomposition",
                     "intent_type": "list",
                     "original_question": "Gold 服务使用了哪些隧道",
-                    "target_concepts": ["服务", "隧道"],
-                    "relation_phrases": ["使用隧道"],
                     "literal_candidates": [
                         {"text": "Gold", "kind_hint": "enum_or_name", "attached_to": "服务"}
                     ],
@@ -205,7 +200,6 @@ def test_pipeline_can_use_real_llm_mode_with_openai_compatible_client(
                         _decomp_term("使用", "path"),
                         _decomp_term("隧道", "projection"),
                     ],
-                    "stopword_terms": [],
                     "modality_terms": [],
                     "time_terms": [],
                     "unparsed_terms": [],
@@ -360,8 +354,6 @@ def test_llm_literal_kind_hint_outside_contract_is_schema_invalid(
                 "result_type": "decomposition",
                 "intent_type": "list",
                 "original_question": "Gold 服务使用了哪些隧道",
-                "target_concepts": ["服务", "隧道"],
-                "relation_phrases": ["使用了"],
                 "literal_candidates": [
                     {"text": "Gold", "kind_hint": "service", "attached_to": "服务"}
                 ],
@@ -371,7 +363,6 @@ def test_llm_literal_kind_hint_outside_contract_is_schema_invalid(
                     _decomp_term("使用", "path"),
                     _decomp_term("隧道", "projection"),
                 ],
-                "stopword_terms": ["了", "哪些"],
                 "modality_terms": [],
                 "time_terms": [],
                 "unparsed_terms": [],
@@ -422,8 +413,6 @@ def test_llm_enum_literal_with_qualifier_prefers_enum_property_over_id(
                 "result_type": "decomposition",
                 "intent_type": "list",
                 "original_question": "Gold级别的服务都使用了哪些隧道",
-                "target_concepts": ["服务", "隧道"],
-                "relation_phrases": ["使用了"],
                 "literal_candidates": [
                     {"text": "Gold级别", "kind_hint": "enum_or_name", "attached_to": "服务"}
                 ],
@@ -433,7 +422,6 @@ def test_llm_enum_literal_with_qualifier_prefers_enum_property_over_id(
                     _decomp_term("使用", "path"),
                     _decomp_term("隧道", "projection"),
                 ],
-                "stopword_terms": ["都", "哪些"],
                 "modality_terms": [],
                 "time_terms": [],
                 "unparsed_terms": [],
@@ -539,15 +527,12 @@ def test_decomposition_slot_normalization_uses_attachment_and_classifier_without
                 "result_type": "decomposition",
                 "intent_type": "count",
                 "original_question": "有多少台防火墙",
-                "target_concepts": ["防火墙"],
-                "relation_phrases": [],
                 "literal_candidates": [],
                 "substantive_terms": [
                     _decomp_term("多少", "projection"),
                     _decomp_term("台", "projection"),
                     _decomp_term("防火墙", "projection"),
                 ],
-                "stopword_terms": ["有"],
                 "modality_terms": [],
                 "time_terms": [],
                 "unparsed_terms": [],
@@ -646,15 +631,12 @@ def test_value_synonym_candidate_becomes_literal_request_when_llm_omits_literal_
                 "result_type": "decomposition",
                 "intent_type": "count",
                 "original_question": "有多少台防火墙",
-                "target_concepts": ["防火墙"],
-                "relation_phrases": [],
                 "literal_candidates": [],
                 "substantive_terms": [
                     _decomp_term("多少", "projection"),
                     _decomp_term("台", "projection"),
                     _decomp_term("防火墙", "projection"),
                 ],
-                "stopword_terms": ["有"],
                 "modality_terms": [],
                 "time_terms": [],
                 "unparsed_terms": [],
@@ -702,8 +684,6 @@ def test_llm_vertex_lookup_without_filter_or_projection_uses_selected_literal_an
                     "result_type": "decomposition",
                     "intent_type": "list",
                     "original_question": "当前 down 的端口有哪些",
-                    "target_concepts": ["端口"],
-                    "relation_phrases": [],
                     "literal_candidates": [
                         {"text": "down", "kind_hint": "enum_or_name", "attached_to": "端口"}
                     ],
@@ -711,7 +691,6 @@ def test_llm_vertex_lookup_without_filter_or_projection_uses_selected_literal_an
                         _decomp_term("down", "filter", attached_to="端口"),
                         _decomp_term("端口", "projection"),
                     ],
-                    "stopword_terms": ["有哪些"],
                     "modality_terms": [],
                     "time_terms": ["当前"],
                     "unparsed_terms": [],
@@ -813,8 +792,6 @@ def test_llm_repair_loop_regrounds_after_repairable_validator_error(
                     "result_type": "decomposition",
                     "intent_type": "list",
                     "original_question": "Gold 服务使用了哪些隧道",
-                    "target_concepts": ["服务", "隧道"],
-                    "relation_phrases": ["使用隧道"],
                     "literal_candidates": [
                         {"text": "Gold", "kind_hint": "enum_or_name", "attached_to": "服务"}
                     ],
@@ -824,7 +801,6 @@ def test_llm_repair_loop_regrounds_after_repairable_validator_error(
                         _decomp_term("使用", "path"),
                         _decomp_term("隧道", "projection"),
                     ],
-                    "stopword_terms": [],
                     "modality_terms": [],
                     "time_terms": [],
                     "unparsed_terms": [],
@@ -1036,8 +1012,6 @@ def test_qa_c3_limit_number_does_not_trigger_literal_clarification(
             "original_question": raw_question,
             "intent_type": "top_n",
             "output_shape": "grouped_rows",
-            "target_concepts": ["服务", "隧道", "源节点", "位置", "网元", "数量"],
-            "relation_phrases": ["使用", "源节点"],
             "literal_candidates": [
                 {"text": "3", "kind_hint": "number", "attached_to": "数量"}
             ],
@@ -1054,7 +1028,6 @@ def test_qa_c3_limit_number_does_not_trigger_literal_clarification(
                 _decomp_term("前", "limit"),
                 _decomp_term("3", "limit"),
             ],
-            "stopword_terms": ["统计", "的", "所在", "按", "排列", "返回", "名"],
             "modality_terms": [],
             "time_terms": [],
             "unparsed_terms": [],
@@ -1111,8 +1084,6 @@ def test_structural_limit_literal_candidate_is_skipped_while_filter_literal_reso
             "original_question": question,
             "intent_type": "list",
             "output_shape": "rows",
-            "target_concepts": ["服务", "隧道", "数量"],
-            "relation_phrases": ["使用"],
             "literal_candidates": [
                 {"text": "Gold", "kind_hint": "enum_or_name", "attached_to": "服务"},
                 {"text": "3", "kind_hint": "number", "attached_to": "数量"},
@@ -1126,7 +1097,6 @@ def test_structural_limit_literal_candidate_is_skipped_while_filter_literal_reso
                 _decomp_term("前", "limit"),
                 _decomp_term("3", "limit"),
             ],
-            "stopword_terms": [],
             "modality_terms": [],
             "time_terms": [],
             "unparsed_terms": [],

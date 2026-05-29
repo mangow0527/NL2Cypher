@@ -54,8 +54,6 @@ def test_question_decomposition_v1_terms_drive_candidate_retrieval(
         {
             "schema_version": "question_decomposition_v1",
             "original_question": "隧道 tun-mpls-001 经过哪些设备",
-            "target_concepts": ["隧道"],
-            "relation_phrases": ["经过"],
             "literal_candidates": ["tun-mpls-001"],
             "substantive_terms": [
                 {"text": "隧道", "slot": "path"},
@@ -78,8 +76,6 @@ def test_question_decomposition_v1_structured_literal_candidates_drive_retrieval
             "schema_version": "question_decomposition_v1",
             "intent_type": "list",
             "original_question": "Gold 服务使用了哪些隧道",
-            "target_concepts": ["服务", "隧道"],
-            "relation_phrases": ["使用"],
             "literal_candidates": [
                 {"text": "Gold", "kind_hint": "enum_or_name", "attached_to": "服务"}
             ],
@@ -89,7 +85,6 @@ def test_question_decomposition_v1_structured_literal_candidates_drive_retrieval
                 {"text": "使用", "slot": "path"},
                 {"text": "隧道", "slot": "projection"},
             ],
-            "stopword_terms": [],
             "modality_terms": [],
             "time_terms": [],
             "unparsed_terms": [],
@@ -119,8 +114,6 @@ def test_aspect_particle_phrase_recalls_service_uses_tunnel_edge_from_packaged_a
         {
             "schema_version": "question_decomposition_v1",
             "original_question": "Gold 服务使用了哪些隧道",
-            "target_concepts": ["服务", "隧道"],
-            "relation_phrases": ["使用了"],
             "literal_candidates": [
                 {"text": "Gold", "kind_hint": "enum_or_name", "attached_to": "服务"}
             ],
@@ -145,8 +138,6 @@ def test_retrieved_vertices_include_id_property_candidates_for_literal_binding()
         {
             "schema_version": "question_decomposition_v1",
             "original_question": "隧道 tun-mpls-001 经过哪些设备",
-            "target_concepts": ["设备"],
-            "relation_phrases": ["经过"],
             "literal_candidates": [
                 {"text": "tun-mpls-001", "kind_hint": "id", "attached_to": "隧道"}
             ],
@@ -233,8 +224,6 @@ def test_search_terms_are_unique_by_text() -> None:
         {
             "schema_version": "question_decomposition_v1",
             "original_question": "",
-            "target_concepts": [],
-            "relation_phrases": [],
             "literal_candidates": [],
             "substantive_terms": [
                 {"text": "服务", "slot": "projection"},

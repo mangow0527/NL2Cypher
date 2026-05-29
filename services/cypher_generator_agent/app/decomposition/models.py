@@ -88,20 +88,14 @@ class QuestionDecomposition(DecompositionBaseModel):
     result_type: Literal["decomposition"]
     intent_type: IntentType
     original_question: str
-    target_concepts: list[str] = Field(default_factory=list)
-    relation_phrases: list[str] = Field(default_factory=list)
     literal_candidates: list[LiteralCandidate] = Field(default_factory=list)
     substantive_terms: list[SubstantiveTerm] = Field(default_factory=list)
-    stopword_terms: list[str] = Field(default_factory=list)
     modality_terms: list[str] = Field(default_factory=list)
     time_terms: list[str] = Field(default_factory=list)
     unparsed_terms: list[str] = Field(default_factory=list)
     output_shape: OutputShape
 
     @field_validator(
-        "target_concepts",
-        "relation_phrases",
-        "stopword_terms",
         "modality_terms",
         "time_terms",
         "unparsed_terms",

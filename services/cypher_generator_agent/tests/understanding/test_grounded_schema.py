@@ -307,14 +307,11 @@ def test_unsupported_output_preserves_coverage_gap_without_binder_payload() -> N
             "result_type": "decomposition",
             "intent_type": "compare",
             "original_question": "收入增长情况",
-            "target_concepts": ["收入"],
-            "relation_phrases": ["增长"],
             "literal_candidates": [],
             "substantive_terms": [
                 {"text": "收入", "slot": "unknown"},
                 {"text": "增长", "slot": "unknown"},
             ],
-            "stopword_terms": [],
             "modality_terms": [],
             "time_terms": [],
             "unparsed_terms": [],
@@ -351,8 +348,6 @@ def _gold_decomposition() -> QuestionDecomposition:
         result_type="decomposition",
         intent_type="list",
         original_question="Gold 服务使用了哪些隧道",
-        target_concepts=["服务", "隧道"],
-        relation_phrases=["使用"],
         literal_candidates=[
             {"text": "Gold", "kind_hint": "enum_or_name", "attached_to": "服务"}
         ],
@@ -362,7 +357,6 @@ def _gold_decomposition() -> QuestionDecomposition:
             {"text": "使用", "slot": "path"},
             {"text": "隧道", "slot": "projection"},
         ],
-        stopword_terms=[],
         modality_terms=[],
         time_terms=[],
         unparsed_terms=[],

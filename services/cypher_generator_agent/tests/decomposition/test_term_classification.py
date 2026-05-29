@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+import pytest
+
 from services.cypher_generator_agent.app.decomposition import QuestionDecomposer
 from services.cypher_generator_agent.app.decomposition import models as decomposition_models
 from services.cypher_generator_agent.app.decomposition.models import QuestionDecomposition
@@ -34,7 +36,7 @@ class FakeStructuredLLMClient:
         return self.response
 
 
-def test_polite_words_are_classified_as_stopwords() -> None:
+def test_polite_words_are_ignored_without_stopword_output() -> None:
     question = "麻烦帮我查一下 Gold 服务"
     client = FakeStructuredLLMClient(
         _valid_payload(
@@ -44,7 +46,6 @@ def test_polite_words_are_classified_as_stopwords() -> None:
                 {"text": "Gold", "slot": "filter", "attached_to": "服务"},
                 {"text": "服务", "slot": "projection"},
             ],
-            stopword_terms=["麻烦", "帮我", "查一下"],
             literal_candidates=[{"text": "Gold", "kind_hint": "enum_or_name", "attached_to": "服务"}],
             output_shape="rows",
         )
@@ -59,7 +60,9 @@ def test_polite_words_are_classified_as_stopwords() -> None:
     assert _term_texts(result.substantive_terms) == ["Gold", "服务"]
     assert result.substantive_terms[0].slot == _slot_kind("FILTER")
     assert result.substantive_terms[0].attached_to == "服务"
-    assert {"麻烦", "帮我", "查一下"} <= set(result.stopword_terms)
+    assert "麻烦" not in _term_texts(result.substantive_terms)
+    assert "帮我" not in _term_texts(result.substantive_terms)
+    assert "查一下" not in _term_texts(result.substantive_terms)
     assert result.literal_candidates[0].text == "Gold"
     assert result.literal_candidates[0].kind_hint == "enum_or_name"
     assert result.literal_candidates[0].attached_to == "服务"
@@ -77,6 +80,69 @@ def test_polite_words_are_classified_as_stopwords() -> None:
 def test_decomposition_has_no_legacy_slot_field() -> None:
     legacy_field = "slot" + "_terms"
     assert legacy_field not in QuestionDecomposition.model_fields
+
+
+def test_decomposition_schema_drops_redundant_llm_output_fields() -> None:
+    removed_fields = {"target_concepts", "relation_phrases", "stopword_terms"}
+
+    assert removed_fields.isdisjoint(QuestionDecomposition.model_fields)
+    schema = decomposition_models.question_decomposition_json_schema()
+    decomposition_schema = schema["$defs"]["QuestionDecomposition"]
+    assert removed_fields.isdisjoint(decomposition_schema["properties"])
+
+    with pytest.raises(ValueError):
+        QuestionDecomposition.model_validate(
+            {
+                "schema_version": "question_decomposition_v1",
+                "result_type": "decomposition",
+                "intent_type": "list",
+                "original_question": "查询服务使用的隧道",
+                "target_concepts": ["服务", "隧道"],
+                "relation_phrases": ["使用"],
+                "stopword_terms": ["查询", "的"],
+                "literal_candidates": [],
+                "substantive_terms": [
+                    {"text": "服务", "slot": "path"},
+                    {"text": "使用", "slot": "path"},
+                    {"text": "隧道", "slot": "projection"},
+                ],
+                "modality_terms": [],
+                "time_terms": [],
+                "unparsed_terms": [],
+                "output_shape": "rows",
+            }
+        )
+
+
+def test_prompt_contract_omits_redundant_decomposition_views() -> None:
+    question = "查询服务使用的隧道"
+    client = FakeStructuredLLMClient(
+        _valid_payload(
+            question,
+            intent_type="list",
+            output_shape="rows",
+            substantive_terms=[
+                {"text": "服务", "slot": "path"},
+                {"text": "使用", "slot": "path"},
+                {"text": "隧道", "slot": "projection"},
+            ],
+            literal_candidates=[],
+        )
+    )
+
+    result = QuestionDecomposer(client).decompose(question)
+    prompt = client.calls[0]["prompt"]
+    schema = client.calls[0]["schema"]
+
+    assert result.result_type == "decomposition"
+    for removed in ("target_concepts", "relation_phrases", "stopword_terms"):
+        assert removed not in prompt
+        assert removed not in schema["$defs"]["QuestionDecomposition"]["properties"]
+    assert "substantive_terms" in prompt
+    assert "literal_candidates" in prompt
+    assert "modality_terms" in prompt
+    assert "unparsed_terms" in prompt
+    assert "无歧义时省略" in prompt
 
 
 def test_substantive_terms_carry_slot() -> None:
@@ -109,7 +175,6 @@ def test_modality_word_is_classified_as_modality() -> None:
                 {"text": "防火墙", "slot": "projection"},
             ],
             modality_terms=["大概"],
-            target_concepts=["防火墙"],
             output_shape="scalar",
         )
     )
@@ -118,7 +183,6 @@ def test_modality_word_is_classified_as_modality() -> None:
 
     assert "大概" in result.modality_terms
     assert "防火墙" in _term_texts(result.substantive_terms)
-    assert "防火墙" in result.target_concepts
     assert result.literal_candidates == []
 
 
@@ -135,9 +199,6 @@ def test_prompt_example_1_accepts_attribute_query_without_literal() -> None:
                 {"text": "隧道", "slot": "path"},
                 {"text": "时延", "slot": "projection", "attached_to": "服务"},
             ],
-            stopword_terms=["查询", "及其", "的"],
-            target_concepts=["服务", "隧道", "时延"],
-            relation_phrases=["使用"],
             literal_candidates=[],
         )
     )
@@ -151,9 +212,6 @@ def test_prompt_example_1_accepts_attribute_query_without_literal() -> None:
         {"text": "隧道", "slot": "path"},
         {"text": "时延", "slot": "projection", "attached_to": "服务"},
     ]
-    assert result.stopword_terms == ["查询", "及其", "的"]
-    assert result.target_concepts == ["服务", "隧道", "时延"]
-    assert result.relation_phrases == ["使用"]
     assert result.literal_candidates == []
     assert "slot" + "_terms" not in result.model_dump()
     assert "轴" + "三：语义槽位" not in client.calls[0]["prompt"]
@@ -173,17 +231,12 @@ def test_prompt_example_2_accepts_literal_filter() -> None:
                 {"text": "使用", "slot": "path"},
                 {"text": "隧道", "slot": "projection"},
             ],
-            stopword_terms=["的", "了", "哪些"],
-            target_concepts=["服务", "隧道"],
-            relation_phrases=["使用"],
             literal_candidates=[{"text": "Gold", "kind_hint": "enum_or_name", "attached_to": "服务"}],
         )
     )
 
     result = QuestionDecomposer(client).decompose(question)
 
-    assert result.target_concepts == ["服务", "隧道"]
-    assert result.relation_phrases == ["使用"]
     assert result.literal_candidates[0].text == "Gold"
     assert result.literal_candidates[0].kind_hint == "enum_or_name"
     assert "Gold" in _term_texts(result.substantive_terms)
@@ -201,17 +254,14 @@ def test_prompt_example_3_treats_firewall_as_concept_not_literal() -> None:
                 {"text": "台", "slot": "projection"},
                 {"text": "防火墙", "slot": "projection"},
             ],
-            stopword_terms=["有"],
             modality_terms=["大概"],
             time_terms=["最近"],
-            target_concepts=["防火墙"],
             literal_candidates=[],
         )
     )
 
     result = QuestionDecomposer(client).decompose(question)
 
-    assert result.target_concepts == ["防火墙"]
     assert result.literal_candidates == []
     assert result.time_terms == ["最近"]
     assert result.modality_terms == ["大概"]
@@ -229,7 +279,6 @@ def test_prompt_defines_literals_by_filter_role_not_control_slots() -> None:
                 {"text": "3", "slot": "limit"},
                 {"text": "隧道", "slot": "projection"},
             ],
-            target_concepts=["隧道"],
             literal_candidates=[],
         )
     )
@@ -333,9 +382,6 @@ def _valid_payload(
     intent_type: str = "unknown",
     substantive_terms: list[dict[str, str]],
     literal_candidates: list[dict[str, str]] | None = None,
-    target_concepts: list[str] | None = None,
-    relation_phrases: list[str] | None = None,
-    stopword_terms: list[str] | None = None,
     modality_terms: list[str] | None = None,
     time_terms: list[str] | None = None,
     unparsed_terms: list[str] | None = None,
@@ -346,11 +392,8 @@ def _valid_payload(
         "result_type": "decomposition",
         "intent_type": intent_type,
         "original_question": question,
-        "target_concepts": target_concepts or [],
-        "relation_phrases": relation_phrases or [],
         "literal_candidates": literal_candidates or [],
         "substantive_terms": substantive_terms,
-        "stopword_terms": stopword_terms or [],
         "modality_terms": modality_terms or [],
         "time_terms": time_terms or [],
         "unparsed_terms": unparsed_terms or [],

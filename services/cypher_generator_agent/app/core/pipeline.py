@@ -1494,10 +1494,11 @@ def _decomposition_payload(result: Any) -> dict[str, Any]:
 
 def _normalize_decomposition_terms(payload: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(payload)
+    for redundant_field in ("target_concepts", "relation_phrases", "stopword_terms"):
+        normalized.pop(redundant_field, None)
     literal_objects = list(
         normalized.get("literal_candidate_objects") or normalized.get("literal_candidates") or []
     )
-    target_concepts = _string_list(normalized.get("target_concepts"))
     substantive_terms = _substantive_term_payloads(normalized.get("substantive_terms"))
 
     for literal in literal_objects:
@@ -1505,7 +1506,6 @@ def _normalize_decomposition_terms(payload: dict[str, Any]) -> dict[str, Any]:
             continue
         attached_to = str(literal.get("attached_to") or "").strip()
         if attached_to:
-            target_concepts = _append_unique_term(target_concepts, attached_to)
             substantive_terms = _append_unique_substantive_term(substantive_terms, attached_to)
         text = str(literal.get("text") or literal.get("raw_literal") or literal.get("value") or "").strip()
         if text:
@@ -1518,7 +1518,6 @@ def _normalize_decomposition_terms(payload: dict[str, Any]) -> dict[str, Any]:
 
     question = str(normalized.get("original_question") or normalized.get("question") or "")
     for classifier, concept in _classifier_surface_concepts(question).items():
-        target_concepts = _append_unique_term(target_concepts, concept)
         substantive_terms = _append_unique_substantive_term(
             substantive_terms,
             classifier,
@@ -1530,7 +1529,6 @@ def _normalize_decomposition_terms(payload: dict[str, Any]) -> dict[str, Any]:
             slot="projection",
         )
 
-    normalized["target_concepts"] = target_concepts
     normalized["substantive_terms"] = substantive_terms
     normalized.setdefault("coverage", _coverage(covered=_substantive_term_texts(normalized)))
     normalized["coverage"] = _coverage_seeded_with_projection_terms(normalized, normalized["coverage"])
@@ -1680,8 +1678,6 @@ def _mock_decompose(question: str) -> dict[str, Any]:
         return {
             "schema_version": "question_decomposition_v1",
             "original_question": question,
-            "target_concepts": ["Service", "Tunnel", "服务", "隧道"],
-            "relation_phrases": ["使用隧道", "SERVICE_USES_TUNNEL"],
             "literal_candidates": ["svc-gold-001"],
             "semantic_terms": ["Service.id", "SERVICE_USES_TUNNEL"],
             "substantive_terms": [
@@ -1707,8 +1703,6 @@ def _mock_decompose(question: str) -> dict[str, Any]:
         return {
             "schema_version": "question_decomposition_v1",
             "original_question": question,
-            "target_concepts": ["Service", "Tunnel", "服务", "隧道"],
-            "relation_phrases": ["使用隧道", "SERVICE_USES_TUNNEL"],
             "literal_candidates": [service_tier],
             "semantic_terms": ["Service.quality_of_service"],
             "substantive_terms": [
@@ -1733,8 +1727,6 @@ def _mock_decompose(question: str) -> dict[str, Any]:
         return {
             "schema_version": "question_decomposition_v1",
             "original_question": question,
-            "target_concepts": ["Tunnel", "NetworkElement", "隧道", "设备"],
-            "relation_phrases": ["经过", "PATH_THROUGH"],
             "literal_candidates": ["tun-mpls-001"],
             "semantic_terms": ["Tunnel.id", "tunnel_full_path"],
             "substantive_terms": [
@@ -1759,8 +1751,6 @@ def _mock_decompose(question: str) -> dict[str, Any]:
         return {
             "schema_version": "question_decomposition_v1",
             "original_question": question,
-            "target_concepts": ["Tunnel", "NetworkElement", "隧道", "设备"],
-            "relation_phrases": ["经过", "PATH_THROUGH"],
             "literal_candidates": ["ne-0001"],
             "semantic_terms": ["NetworkElement.id", "PATH_THROUGH"],
             "substantive_terms": [
@@ -1786,8 +1776,6 @@ def _mock_decompose(question: str) -> dict[str, Any]:
         return {
             "schema_version": "question_decomposition_v1",
             "original_question": question,
-            "target_concepts": ["NetworkElement", "Port", "设备", "端口"],
-            "relation_phrases": ["HAS_PORT"],
             "literal_candidates": [device_id],
             "semantic_terms": ["NetworkElement.id", "HAS_PORT"],
             "substantive_terms": [
@@ -1811,8 +1799,6 @@ def _mock_decompose(question: str) -> dict[str, Any]:
         return {
             "schema_version": "question_decomposition_v1",
             "original_question": question,
-            "target_concepts": ["Port", "端口"],
-            "relation_phrases": [],
             "literal_candidates": ["down"],
             "semantic_terms": ["Port.status"],
             "substantive_terms": [
@@ -1838,8 +1824,6 @@ def _mock_decompose(question: str) -> dict[str, Any]:
             "original_question": question,
             "intent_type": "count",
             "output_shape": "scalar",
-            "target_concepts": ["NetworkElement", "防火墙", "设备"],
-            "relation_phrases": [],
             "literal_candidates": ["防火墙"],
             "semantic_terms": ["device_count", "NetworkElement.elem_type"],
             "substantive_terms": [
@@ -1863,8 +1847,6 @@ def _mock_decompose(question: str) -> dict[str, Any]:
         return {
             "schema_version": "question_decomposition_v1",
             "original_question": question,
-            "target_concepts": ["NetworkElement", "设备"],
-            "relation_phrases": [],
             "literal_candidates": [],
             "semantic_terms": ["device_count", "NetworkElement.elem_type"],
             "substantive_terms": [
@@ -1881,8 +1863,6 @@ def _mock_decompose(question: str) -> dict[str, Any]:
         return {
             "schema_version": "question_decomposition_v1",
             "original_question": question,
-            "target_concepts": ["NetworkElement", "Port", "设备", "端口"],
-            "relation_phrases": ["HAS_PORT"],
             "literal_candidates": [],
             "semantic_terms": ["port_count", "NetworkElement.id"],
             "substantive_terms": [
@@ -1899,8 +1879,6 @@ def _mock_decompose(question: str) -> dict[str, Any]:
         return {
             "schema_version": "question_decomposition_v1",
             "original_question": question,
-            "target_concepts": ["Port", "端口"],
-            "relation_phrases": [],
             "literal_candidates": [],
             "semantic_terms": ["Port.status", "Port.id"],
             "substantive_terms": [
@@ -1917,8 +1895,6 @@ def _mock_decompose(question: str) -> dict[str, Any]:
         return {
             "schema_version": "question_decomposition_v1",
             "original_question": question,
-            "target_concepts": ["Port", "端口"],
-            "relation_phrases": [],
             "literal_candidates": [],
             "semantic_terms": ["Port.status", "Port.id"],
             "substantive_terms": [
@@ -1938,8 +1914,6 @@ def _mock_decompose(question: str) -> dict[str, Any]:
             "original_question": question,
             "intent_type": "list",
             "output_shape": "rows",
-            "target_concepts": ["服务", "ID", "名称", "元素类型", "服务质量等级", "带宽", "时延"],
-            "relation_phrases": [],
             "literal_candidates": [],
             "semantic_terms": ["Service"],
             "substantive_terms": [
@@ -1951,7 +1925,6 @@ def _mock_decompose(question: str) -> dict[str, Any]:
                 _term("带宽", "projection", attached_to="服务"),
                 _term("时延", "projection", attached_to="服务"),
             ],
-            "stopword_terms": ["查询", "所有", "的", "和"],
             "modality_terms": [],
             "time_terms": [],
             "unparsed_terms": [],
@@ -1966,8 +1939,6 @@ def _mock_decompose(question: str) -> dict[str, Any]:
             "original_question": question,
             "intent_type": "list",
             "output_shape": "rows",
-            "target_concepts": ["服务", "隧道", "ID", "名称", "带宽"],
-            "relation_phrases": ["使用"],
             "literal_candidates": [],
             "semantic_terms": ["Service", "Tunnel", "SERVICE_USES_TUNNEL"],
             "substantive_terms": [
@@ -1978,7 +1949,6 @@ def _mock_decompose(question: str) -> dict[str, Any]:
                 _term("名称", "projection", attached_to="隧道"),
                 _term("带宽", "projection", attached_to="隧道"),
             ],
-            "stopword_terms": ["查询", "所有", "的", "返回", "和"],
             "modality_terms": [],
             "time_terms": [],
             "unparsed_terms": [],
@@ -1993,8 +1963,6 @@ def _mock_decompose(question: str) -> dict[str, Any]:
             "original_question": question,
             "intent_type": "list",
             "output_shape": "rows",
-            "target_concepts": ["服务", "ID", "名称", "带宽"],
-            "relation_phrases": [],
             "literal_candidates": [
                 {"text": "金牌", "kind_hint": "enum_or_name", "attached_to": "服务质量等级"}
             ],
@@ -2007,7 +1975,6 @@ def _mock_decompose(question: str) -> dict[str, Any]:
                 _term("名称", "projection", attached_to="服务"),
                 _term("带宽", "projection", attached_to="服务"),
             ],
-            "stopword_terms": ["查询", "所有", "为", "的", "和"],
             "modality_terms": [],
             "time_terms": [],
             "unparsed_terms": [],
@@ -2025,8 +1992,6 @@ def _mock_decompose(question: str) -> dict[str, Any]:
     return {
         "schema_version": "question_decomposition_v1",
         "original_question": question,
-        "target_concepts": ["Service"],
-        "relation_phrases": [],
         "literal_candidates": [],
         "semantic_terms": ["Service"],
         "substantive_terms": [

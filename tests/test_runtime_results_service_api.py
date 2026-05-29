@@ -129,12 +129,12 @@ def test_runtime_results_detail_script_puts_cypher_comparison_in_overview():
     assert "projection_coverage_missing" in script
     assert "返回字段覆盖缺失" in script
     assert "relation_phrases" in script
-    assert "表示两个业务对象如何连接的关系短语" in script
-    assert "例如“服务使用隧道”中的“使用”" in script
+    assert "旧 trace 兼容字段" in script
+    assert "当前 schema 不再输出，关系词从 substantive_terms 中 slot=path 的词推导" in script
     assert "substantive_terms" in script
     assert "实义词对象数组，每项包含 text、slot 和可选 attached_to" in script
     assert "stopword_terms" in script
-    assert "覆盖分类轴字段：礼貌语、连接词、助词或查询引导词" in script
+    assert "当前 question_decomposer 不再输出 stopword 列表" in script
     assert "modality_terms" in script
     assert "表达近似、不确定或软约束的词" in script
     assert "time_terms" in script
@@ -1465,7 +1465,6 @@ def test_runtime_results_generator_section_parses_cga_graph_trace_v1(monkeypatch
             "schema_version": "question_decomposition_v1",
             "result_type": "decomposition",
             "intent_type": "list",
-            "target_concepts": ["服务", "隧道"],
         },
         "status": "success",
     }
@@ -1494,7 +1493,6 @@ def test_runtime_results_generator_section_parses_cga_graph_trace_v1(monkeypatch
                     "schema_version": "question_decomposition_v1",
                     "result_type": "decomposition",
                     "intent_type": "list",
-                    "target_concepts": ["服务", "隧道"],
                     "literal_candidates": ["Gold"],
                     "llm_calls": [llm_call],
                 },
@@ -1594,7 +1592,6 @@ def test_runtime_results_generator_section_parses_cga_graph_trace_v1(monkeypatch
                 "schema_version": "question_decomposition_v1",
                 "result_type": "decomposition",
                 "intent_type": "list",
-                "target_concepts": ["服务", "隧道"],
             },
             "status": "success",
             "error": None,
