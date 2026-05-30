@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -30,12 +32,15 @@ EXPECTED_STAGES = [
     "input_clarification_gate",
     "question_decomposer",
     "candidate_retrieval",
+    "candidate_reranker",
     "literal_resolver",
+    "deterministic_assembler",
     "grounded_understanding",
     "semantic_binder",
     "semantic_validator",
     "dsl_builder",
     "dsl_parser",
+    "dsl_structural_coverage_gate",
     "cypher_compiler",
     "cypher_self_validation",
     "output",
@@ -315,8 +320,11 @@ def test_pipeline_can_use_real_llm_mode_with_openai_compatible_client(
         get_settings.cache_clear()
 
     assert output.status == "generated"
-    assert len(fake_client.calls) == 1
-    assert [call["schema_name"] for call in fake_client.calls] == ["question_decomposition_v1"]
+    assert len(fake_client.calls) == 2
+    assert [call["schema_name"] for call in fake_client.calls] == [
+        "question_decomposition_v1",
+        "grounded_understanding_v1",
+    ]
     assert output.trace["semantic_model"]["name"] == "network_schema_v10"
     assert _compiler_parameters(output.trace)["quality_of_service"] == "Gold"
     decomposer_stage = next(
@@ -778,7 +786,7 @@ def test_llm_vertex_lookup_without_filter_or_projection_uses_selected_literal_an
     assert _compiler_parameters(output.trace)["status"] == "down"
 
 
-def test_llm_repair_loop_regrounds_after_repairable_validator_error(
+def test_llm_single_shot_fallback_does_not_reground_after_repairable_validator_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeStructuredClient:
@@ -806,8 +814,6 @@ def test_llm_repair_loop_regrounds_after_repairable_validator_error(
                     "unparsed_terms": [],
                     "output_shape": "rows",
                 },
-                _grounded_service_tunnel_payload(direction="backward"),
-                _grounded_service_tunnel_payload(direction="forward"),
             ]
 
         def generate_structured(
@@ -829,6 +835,22 @@ def test_llm_repair_loop_regrounds_after_repairable_validator_error(
             return self.responses.pop(0)
 
     fake_client = FakeStructuredClient()
+
+    class FakeGroundedSelector:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        def select(self, **_kwargs: Any) -> dict[str, object]:
+            fake_client.calls.append(
+                {
+                    "prompt": "",
+                    "schema_name": "grounded_understanding_v1",
+                    "schema": {},
+                    "attempt": 1,
+                }
+            )
+            return _grounded_service_tunnel_payload(direction="backward")
+
     monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_ENABLED", "true")
     monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_PROVIDER", "openai_compatible")
     monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
@@ -839,6 +861,7 @@ def test_llm_repair_loop_regrounds_after_repairable_validator_error(
         "_structured_llm_client_from_settings",
         lambda settings: fake_client,
     )
+    monkeypatch.setattr(pipeline_module, "GroundedUnderstandingSelector", FakeGroundedSelector)
     monkeypatch.setattr(
         pipeline_module,
         "_deterministic_grounding_from_slots",
@@ -854,16 +877,12 @@ def test_llm_repair_loop_regrounds_after_repairable_validator_error(
     finally:
         get_settings.cache_clear()
 
-    assert output.status == "generated"
-    assert output.cypher is not None
-    assert "SERVICE_USES_TUNNEL" in output.cypher
+    assert output.status == "generation_failed"
     assert [call["schema_name"] for call in fake_client.calls] == [
         "question_decomposition_v1",
         "grounded_understanding_v1",
-        "grounded_understanding_v1",
     ]
-    assert "edge_endpoint_mismatch" in fake_client.calls[2]["prompt"]
-    assert _stage_names(output.trace).count("grounded_understanding") == 2
+    assert _stage_names(output.trace).count("grounded_understanding") == 1
     assert _stage_names(output.trace).count("repair_controller") == 1
 
 
@@ -993,6 +1012,7 @@ def test_unresolved_literal_stops_before_dsl_or_cypher_generation() -> None:
         "input_clarification_gate",
         "question_decomposer",
         "candidate_retrieval",
+        "candidate_reranker",
         "literal_resolver",
         "repair_controller",
         "output",
@@ -1072,6 +1092,355 @@ def test_qa_c3_limit_number_does_not_trigger_literal_clarification(
         {"raw": "3", "slot": "limit", "reason": "slot=limit"}
     ]
     assert literal_stage["metrics"]["skipped_literal_candidate_count"] == 1
+
+
+def test_structural_coverage_gate_stops_qa_c3_single_hop_before_compiler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    question = "统计服务使用的隧道源节点所在位置的网元数量，按数量降序排列，返回前3名。"
+
+    def fake_decompose(raw_question: str) -> dict[str, Any]:
+        return {
+            "schema_version": "question_decomposition_v1",
+            "result_type": "decomposition",
+            "original_question": raw_question,
+            "intent_type": "top_n",
+            "output_shape": "grouped_rows",
+            "literal_candidates": [],
+            "literal_requests": [],
+            "substantive_terms": [
+                _decomp_term("服务", "path"),
+                _decomp_term("使用", "path"),
+                _decomp_term("隧道", "path"),
+                _decomp_term("源节点", "path"),
+                _decomp_term("位置", "group_by", attached_to="网元"),
+                _decomp_term("网元", "projection"),
+                _decomp_term("数量", "projection"),
+                _decomp_term("降序", "order_by"),
+                _decomp_term("前", "limit"),
+                _decomp_term("3", "limit"),
+            ],
+            "modality_terms": [],
+            "time_terms": [],
+            "unparsed_terms": [],
+            "coverage": _coverage_payload(
+                ["服务", "使用", "隧道", "源节点", "位置", "网元", "数量", "降序", "前", "3"]
+            ),
+        }
+
+    def bad_grounding(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "query_shape": "single_hop",
+            "selected_vertices": ["Tunnel", "NetworkElement"],
+            "selected_edges": ["TUNNEL_SRC"],
+            "selected_properties": [{"owner": "NetworkElement", "name": "id"}],
+            "projection": [
+                {
+                    "semantic_type": "property",
+                    "owner": "NetworkElement",
+                    "name": "id",
+                    "alias": "network_element_id",
+                    "projection_terms": ["网元", "数量"],
+                }
+            ],
+        }
+
+    monkeypatch.setattr(pipeline_module, "_mock_decompose", fake_decompose)
+    monkeypatch.setattr(pipeline_module, "_run_grounded_understanding_stage", bad_grounding)
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_ENABLED", "false")
+    get_settings.cache_clear()
+
+    try:
+        output = run_pipeline(
+            question=question,
+            qa_id="qa_c3e83dd7ad32",
+            generation_run_id="run-qa_c3e83dd7ad32-structural-gate",
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert output.status == "generation_failed"
+    assert output.failure is not None
+    assert output.failure.reason == "coverage_failure"
+    assert "dsl_parser" in _stage_names(output.trace)
+    assert "cypher_compiler" not in _stage_names(output.trace)
+    gate_stage = _stage(output.trace, "dsl_structural_coverage_gate")
+    assert gate_stage["status"] == "failed"
+    gate_output = gate_stage["output_ref"]["value"]
+    assert gate_output["coverage_result"]["is_valid"] is False
+    assert [item["code"] for item in gate_output["coverage_result"]["missing"]] == [
+        "aggregate_required",
+        "group_by_required",
+        "order_by_required",
+        "limit_required",
+        "path_hops_insufficient",
+    ]
+    assert "repair_controller" not in _stage_names(output.trace)
+
+
+def test_structural_coverage_gate_does_not_reground_repairable_missing_structure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    question = "按状态统计端口数量"
+
+    class FakeStructuredClient:
+        provider = "openai_compatible"
+
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+            self.responses = [
+                {
+                    "schema_version": "question_decomposition_v1",
+                    "result_type": "decomposition",
+                    "intent_type": "aggregate",
+                    "original_question": question,
+                    "literal_candidates": [],
+                    "substantive_terms": [
+                        _decomp_term("状态", "group_by", attached_to="端口"),
+                        _decomp_term("端口", "projection"),
+                        _decomp_term("数量", "projection"),
+                    ],
+                    "modality_terms": [],
+                    "time_terms": [],
+                    "unparsed_terms": [],
+                    "output_shape": "grouped_rows",
+                },
+                {
+                    "schema_version": "grounded_understanding_v1",
+                    "status": "grounded",
+                    "query_shape": "vertex_lookup",
+                    "selected_bindings": [
+                        _grounded_binding("target_vertex", "vertex", "Port"),
+                        _grounded_binding(
+                            "projection_property",
+                            "property",
+                            "Port.id",
+                            semantic_name="id",
+                            owner="Port",
+                        ),
+                    ],
+                    "selected_literals": [],
+                    "filters": [],
+                    "projection": [
+                        {"semantic_type": "property", "owner": "Port", "name": "id", "alias": "port_id"}
+                    ],
+                    "coverage": _coverage_payload(["状态", "端口", "数量"]),
+                    "unsupported": None,
+                    "confidence": 0.86,
+                },
+                {
+                    "schema_version": "grounded_understanding_v1",
+                    "status": "grounded",
+                    "query_shape": "ad_hoc_aggregate",
+                    "selected_bindings": [
+                        _grounded_binding("target_vertex", "vertex", "Port"),
+                        _grounded_binding(
+                            "group_property",
+                            "property",
+                            "Port.status",
+                            semantic_name="status",
+                            owner="Port",
+                        ),
+                        _grounded_binding(
+                            "measure_property",
+                            "property",
+                            "Port.id",
+                            semantic_name="id",
+                            owner="Port",
+                        ),
+                    ],
+                    "selected_literals": [],
+                    "filters": [],
+                    "group_by": [
+                        {
+                            "alias": "status",
+                            "target": "port",
+                            "property": {"owner": "Port", "name": "status"},
+                        }
+                    ],
+                    "measures": [
+                        {
+                            "alias": "port_count",
+                            "function": "count",
+                            "target": "port",
+                            "property": {"owner": "Port", "name": "id"},
+                        }
+                    ],
+                    "projection": [
+                        {"alias": "status", "source": "group.status"},
+                        {"alias": "port_count", "source": "measure.port_count"},
+                    ],
+                    "coverage": _coverage_payload(["状态", "端口", "数量"]),
+                    "unsupported": None,
+                    "confidence": 0.94,
+                },
+            ]
+
+        def generate_structured(
+            self,
+            *,
+            prompt: str,
+            schema_name: str,
+            schema: dict[str, Any],
+            attempt: int,
+        ) -> dict[str, Any]:
+            self.calls.append(
+                {
+                    "prompt": prompt,
+                    "schema_name": schema_name,
+                    "schema": schema,
+                    "attempt": attempt,
+                }
+            )
+            return self.responses.pop(0)
+
+    fake_client = FakeStructuredClient()
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_ENABLED", "true")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_API_KEY", "test-key")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        pipeline_module,
+        "_structured_llm_client_from_settings",
+        lambda settings: fake_client,
+    )
+    monkeypatch.setattr(
+        pipeline_module,
+        "_deterministic_grounding_from_slots",
+        lambda **kwargs: None,
+    )
+
+    try:
+        output = run_pipeline(
+            question=question,
+            qa_id="structural-repair-loop",
+            generation_run_id="run-structural-repair-loop",
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert output.status == "generation_failed"
+    assert output.failure is not None
+    assert output.failure.reason == "coverage_failure"
+    assert [call["schema_name"] for call in fake_client.calls] == [
+        "question_decomposition_v1",
+        "grounded_understanding_v1",
+    ]
+    assert _stage_names(output.trace).count("dsl_structural_coverage_gate") == 1
+    assert _stage(output.trace, "dsl_structural_coverage_gate")["status"] == "failed"
+    assert "repair_controller" not in _stage_names(output.trace)
+
+
+def test_llm_fallback_selector_is_single_shot_without_repair_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    class FakeGroundedSelector:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        def select(self, **kwargs: Any) -> dict[str, Any]:
+            calls.append(kwargs)
+            return {
+                "schema_version": "grounded_understanding_v1",
+                "status": "grounded",
+                "query_shape": "ad_hoc_aggregate",
+                "selected_bindings": [],
+                "selected_literals": [],
+                "filters": [],
+                "group_by": [{"property": {"owner": "NetworkElement", "name": "location"}}],
+                "measures": [{"function": "count", "target": "network_element"}],
+                "sort": [{"source": "cnt", "direction": "desc"}],
+                "limit": 3,
+                "projection": [{"alias": "location", "source": "group.location"}],
+                "coverage": _coverage_payload(["服务", "隧道", "位置", "数量", "降序", "前", "3"]),
+                "unsupported": None,
+                "confidence": 0.9,
+            }
+
+    monkeypatch.setattr(pipeline_module, "GroundedUnderstandingSelector", FakeGroundedSelector)
+
+    result = pipeline_module._select_grounded_understanding(
+        decomposition={
+            "schema_version": "question_decomposition_v1",
+            "original_question": "统计服务使用的隧道源节点所在位置的网元数量，按数量降序排列，返回前3名。",
+            "intent_type": "top_n",
+            "substantive_terms": [],
+            "structural_requirements": {
+                "schema_version": "structural_requirements_v1",
+                "requires_aggregate": True,
+                "requires_group_by": True,
+                "requires_order_by": True,
+                "order_direction": "desc",
+                "requires_limit": {"required": True, "value": 3},
+                "path_terms": [],
+                "path_order_confidence": "high",
+                "min_path_hops": 2,
+                "projection_terms": ["位置", "数量"],
+            },
+        },
+        retrieval_result=CandidateRetrievalResult(candidates=[]),
+        literal_results=[],
+        settings=SimpleNamespace(llm_max_schema_retries=0),
+        llm_client=object(),
+        registry=None,
+    )
+
+    assert calls
+    assert calls[0].get("repair_context") is None
+    assert result["_grounding_decision"]["grounding_source"] == "llm"
+    assert result["_grounding_decision"]["deterministic_decision"] == "not_applicable"
+    assert result["_grounding_decision"]["fallback_mode"] == "single_shot"
+
+
+def test_single_shot_fallback_failure_preserves_grounded_reason_without_binder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeGroundedSelector:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        def select(self, **_kwargs: Any) -> GroundedUnderstandingFailure:
+            return GroundedUnderstandingFailure(
+                status="generation_failed",
+                reason="grounded_understanding_schema_invalid",
+                message="LLM output did not satisfy grounded_understanding_v1.",
+                provider="fake-grounded-llm",
+                error_type="ValidationError",
+                attempts=1,
+                retry_count=0,
+            )
+
+    monkeypatch.setattr(pipeline_module, "GroundedUnderstandingSelector", FakeGroundedSelector)
+
+    result = pipeline_module._select_grounded_understanding(
+        decomposition={
+            "schema_version": "question_decomposition_v1",
+            "original_question": "查询服务使用的隧道名称",
+            "intent_type": "list",
+            "substantive_terms": [],
+        },
+        retrieval_result=CandidateRetrievalResult(candidates=[]),
+        literal_results=[],
+        settings=SimpleNamespace(llm_max_schema_retries=0),
+        llm_client=object(),
+        registry=None,
+    )
+
+    assert isinstance(result, GroundedUnderstandingFailure)
+    trace = pipeline_module.GraphTraceBuilder(
+        trace_id="trace-grounded-schema-invalid",
+        question_id="grounded-schema-invalid",
+        generation_run_id="run-grounded-schema-invalid",
+        source_question="查询服务使用的隧道名称",
+    )
+    output = pipeline_module._output_from_grounded_outcome(trace, result)
+    assert output is not None
+    assert output.status == "generation_failed"
+    assert output.failure is not None
+    assert output.failure.reason == "grounded_understanding_schema_invalid"
 
 
 def test_structural_limit_literal_candidate_is_skipped_while_filter_literal_resolves(
@@ -1202,8 +1571,9 @@ def test_self_validation_failure_records_self_validation_stage_without_final_cyp
     assert output.dsl is None
     assert output.failure is not None
     assert output.failure.reason == "cypher_readonly_violation"
-    assert _stage_names(output.trace)[-3:] == ["cypher_self_validation", "repair_controller", "output"]
-    self_validation_stage = output.trace["stages"][-3]
+    assert _stage_names(output.trace)[-2:] == ["cypher_self_validation", "output"]
+    assert "repair_controller" not in _stage_names(output.trace)
+    self_validation_stage = _stage(output.trace, "cypher_self_validation")
     assert self_validation_stage["status"] == "failed"
     assert self_validation_stage["output_ref"]["value"]["valid"] is False
 
@@ -1226,8 +1596,9 @@ def test_path_pattern_shape_mismatch_is_reported_by_self_validation_stage() -> N
     assert output.dsl is None
     assert output.failure is not None
     assert output.failure.reason == "compiler_shape_mismatch"
-    assert _stage_names(output.trace)[-3:] == ["cypher_self_validation", "repair_controller", "output"]
-    self_validation_stage = output.trace["stages"][-3]
+    assert _stage_names(output.trace)[-2:] == ["cypher_self_validation", "output"]
+    assert "repair_controller" not in _stage_names(output.trace)
+    self_validation_stage = _stage(output.trace, "cypher_self_validation")
     assert self_validation_stage["status"] == "failed"
     assert self_validation_stage["errors"][0]["code"] == "compiler_shape_mismatch"
 
@@ -1427,6 +1798,543 @@ def test_grounded_understanding_failure_outcome_stops_before_binding(
     assert _stage_names(output.trace)[-2:] == ["grounded_understanding", "output"]
 
 
+def test_f1_vertex_projection_uses_deterministic_main_path_without_llm() -> None:
+    output = run_pipeline(
+        question="查询所有服务的 ID、名称、元素类型、服务质量等级、带宽和时延",
+        qa_id="mir010-f1",
+        generation_run_id="run-mir010-f1",
+    )
+
+    assert output.status == "generated"
+    assert output.dsl is not None
+    assert output.dsl["query_shape"] == "vertex_lookup"
+    assert "deterministic_assembler" in _stage_names(output.trace)
+    assert "grounded_understanding" not in _stage_names(output.trace)
+    assert _total_llm_call_count(output.trace) == 0
+    assert [item["property"]["name"] for item in output.dsl["projection"]["items"]] == [
+        "id",
+        "name",
+        "elem_type",
+        "quality_of_service",
+        "bandwidth",
+        "latency",
+    ]
+
+
+def test_f2_vertex_filter_uses_deterministic_main_path_without_llm() -> None:
+    output = run_pipeline(
+        question="查询服务质量等级为金牌的服务ID、名称和带宽",
+        qa_id="mir010-f2",
+        generation_run_id="run-mir010-f2",
+    )
+
+    assert output.status == "generated"
+    assert output.dsl is not None
+    assert output.dsl["query_shape"] == "vertex_lookup"
+    assert "deterministic_assembler" in _stage_names(output.trace)
+    assert "grounded_understanding" not in _stage_names(output.trace)
+    assert _total_llm_call_count(output.trace) == 0
+    assert output.dsl["filters"][0]["property"] == {"owner": "Service", "name": "quality_of_service"}
+    assert output.dsl["filters"][0]["value"]["normalized"] == "Gold"
+
+
+def test_f3_vertex_count_uses_deterministic_main_path_without_llm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_decompose(question: str) -> dict[str, Any]:
+        return {
+            "schema_version": "question_decomposition_v1",
+            "result_type": "decomposition",
+            "original_question": question,
+            "intent_type": "count",
+            "output_shape": "scalar",
+            "literal_candidates": [],
+            "literal_requests": [],
+            "substantive_terms": [
+                _decomp_term("统计", "projection"),
+                _decomp_term("服务", "projection"),
+                _decomp_term("数量", "projection"),
+            ],
+            "modality_terms": [],
+            "time_terms": [],
+            "unparsed_terms": [],
+            "coverage": _coverage_payload(["统计", "服务", "数量"]),
+        }
+
+    monkeypatch.setattr(pipeline_module, "_mock_decompose", fake_decompose)
+
+    output = run_pipeline(
+        question="统计服务数量",
+        qa_id="mir010-f3",
+        generation_run_id="run-mir010-f3",
+    )
+
+    assert output.status == "generated"
+    assert output.dsl is not None
+    assert output.dsl["query_shape"] == "ad_hoc_aggregate"
+    assert "deterministic_assembler" in _stage_names(output.trace)
+    assert "grounded_understanding" not in _stage_names(output.trace)
+    assert _total_llm_call_count(output.trace) == 0
+    aggregate = output.dsl["operations"][0]
+    assert aggregate["op"] == "aggregate"
+    assert aggregate["measures"][0]["function"] == "count"
+    assert aggregate["measures"][0]["property"] == {"owner": "Service", "name": "id"}
+
+
+def test_f4_path_projection_uses_deterministic_multihop_without_llm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_decompose(question: str) -> dict[str, Any]:
+        return {
+            "schema_version": "question_decomposition_v1",
+            "result_type": "decomposition",
+            "intent_type": "list",
+            "output_shape": "rows",
+            "original_question": question,
+            "literal_candidates": [],
+            "literal_requests": [],
+            "substantive_terms": [
+                _decomp_term("服务", "path"),
+                _decomp_term("使用隧道", "path"),
+                _decomp_term("隧道", "path"),
+                _decomp_term("ID", "projection", attached_to="隧道"),
+                _decomp_term("名称", "projection", attached_to="隧道"),
+            ],
+            "modality_terms": [],
+            "time_terms": [],
+            "unparsed_terms": [],
+            "coverage": _coverage_payload(["服务", "使用隧道", "隧道", "ID", "名称"]),
+        }
+
+    monkeypatch.setattr(pipeline_module, "_mock_decompose", fake_decompose)
+
+    output = run_pipeline(
+        question="查询服务使用隧道的 ID 和名称",
+        qa_id="mir010-f4",
+        generation_run_id="run-mir010-f4",
+    )
+
+    assert output.status == "generated"
+    assert output.dsl is not None
+    assert output.dsl["query_shape"] == "single_hop_traversal"
+    assert "deterministic_assembler" in _stage_names(output.trace)
+    assert "grounded_understanding" not in _stage_names(output.trace)
+    assert _total_llm_call_count(output.trace) == 0
+    assert output.dsl["bindings"] == {
+        "v0": {"vertex_name": "Service"},
+        "edge_0": {"edge_name": "SERVICE_USES_TUNNEL"},
+        "v1": {"vertex_name": "Tunnel"},
+    }
+    assert [item["property"]["name"] for item in output.dsl["projection"]["items"]] == [
+        "id",
+        "name",
+    ]
+
+
+def test_f4_path_projection_does_not_default_to_id_when_explicit_terms_are_unresolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_decompose(question: str) -> dict[str, Any]:
+        return {
+            "schema_version": "question_decomposition_v1",
+            "result_type": "decomposition",
+            "intent_type": "list",
+            "output_shape": "rows",
+            "original_question": question,
+            "literal_candidates": [],
+            "literal_requests": [],
+            "substantive_terms": [
+                _decomp_term("业务", "path"),
+                _decomp_term("使用", "path"),
+                _decomp_term("隧道", "path"),
+                _decomp_term("ID", "projection"),
+                _decomp_term("名称", "projection"),
+                _decomp_term("带宽", "projection"),
+            ],
+            "modality_terms": [],
+            "time_terms": [],
+            "unparsed_terms": [],
+            "coverage": _coverage_payload(["业务", "使用", "隧道", "ID", "名称", "带宽"]),
+        }
+
+    monkeypatch.setattr(pipeline_module, "_mock_decompose", fake_decompose)
+
+    output = run_pipeline(
+        question="查询所有业务使用的隧道的ID、名称和带宽。",
+        qa_id="qa_65f6a2d6ec7a",
+        generation_run_id="run-qa_65f6a2d6ec7a",
+    )
+
+    assembler_output = _stage(output.trace, "deterministic_assembler")["output_ref"]["value"]
+    assert assembler_output["success"] is False
+    assert assembler_output["fallback_reason"] == "unresolved_projection_terms"
+    if output.cypher is not None:
+        assert "RETURN tun.id AS tunnel_id" not in output.cypher
+
+
+def test_f4_two_hop_path_projection_uses_deterministic_multihop_without_llm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_decompose(question: str) -> dict[str, Any]:
+        return {
+            "schema_version": "question_decomposition_v1",
+            "result_type": "decomposition",
+            "intent_type": "list",
+            "output_shape": "rows",
+            "original_question": question,
+            "literal_candidates": [],
+            "literal_requests": [],
+            "substantive_terms": [
+                _decomp_term("服务", "path"),
+                _decomp_term("使用", "path"),
+                _decomp_term("隧道", "path"),
+                _decomp_term("目的", "path"),
+                _decomp_term("网元", "path"),
+                _decomp_term("厂商名称", "projection", attached_to="网元"),
+                _decomp_term("带宽", "projection", attached_to="隧道"),
+            ],
+            "modality_terms": [],
+            "time_terms": [],
+            "unparsed_terms": [],
+            "coverage": _coverage_payload(["服务", "使用", "隧道", "目的", "网元", "厂商名称", "带宽"]),
+        }
+
+    monkeypatch.setattr(pipeline_module, "_mock_decompose", fake_decompose)
+
+    output = run_pipeline(
+        question="查询服务使用的隧道及其目的网元，返回厂商名称和隧道带宽。",
+        qa_id="mir010-f4-two-hop",
+        generation_run_id="run-mir010-f4-two-hop",
+    )
+
+    assert output.status == "generated"
+    assert output.dsl is not None
+    assert output.dsl["query_shape"] == "single_hop_traversal"
+    assert "grounded_understanding" not in _stage_names(output.trace)
+    assert _total_llm_call_count(output.trace) == 0
+    assert [operation["edge"] for operation in output.dsl["operations"]] == ["edge_0", "edge_1"]
+    assert "MATCH (svc:Service)-[:SERVICE_USES_TUNNEL]->(tun:Tunnel)-[:TUNNEL_DST]->(ne:NetworkElement)" in output.cypher
+    assert "ne.vendor AS network_element_vendor" in output.cypher
+    assert "tun.bandwidth AS tunnel_bandwidth" in output.cypher
+
+
+def test_f6_path_group_topn_uses_deterministic_multihop_without_llm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_decompose(question: str) -> dict[str, Any]:
+        return {
+            "schema_version": "question_decomposition_v1",
+            "result_type": "decomposition",
+            "intent_type": "top_n",
+            "output_shape": "rows",
+            "original_question": question,
+            "literal_candidates": [],
+            "literal_requests": [],
+            "substantive_terms": [
+                _decomp_term("服务", "path"),
+                _decomp_term("使用", "path"),
+                _decomp_term("隧道", "path"),
+                _decomp_term("隧道ID", "group_by", attached_to="隧道"),
+                _decomp_term("服务数量", "projection", attached_to="服务"),
+                _decomp_term("数量降序", "order_by"),
+                _decomp_term("前3", "limit"),
+            ],
+            "modality_terms": [],
+            "time_terms": [],
+            "unparsed_terms": [],
+            "coverage": _coverage_payload(["服务", "使用", "隧道", "隧道ID", "服务数量", "数量降序", "前3"]),
+        }
+
+    monkeypatch.setattr(pipeline_module, "_mock_decompose", fake_decompose)
+
+    output = run_pipeline(
+        question="按隧道ID统计使用该隧道的服务数量，按数量降序排列，返回前3名。",
+        qa_id="mir010-f6",
+        generation_run_id="run-mir010-f6",
+    )
+
+    assert output.status == "generated"
+    assert output.dsl is not None
+    assert output.dsl["query_shape"] == "top_n"
+    assert "grounded_understanding" not in _stage_names(output.trace)
+    assert _total_llm_call_count(output.trace) == 0
+    assert "MATCH (svc:Service)-[:SERVICE_USES_TUNNEL]->(tun:Tunnel)" in output.cypher
+    assert "RETURN tun.id AS tunnel_id, count(svc.id) AS service_count" in output.cypher
+    assert "ORDER BY service_count DESC" in output.cypher
+    assert "LIMIT 3" in output.cypher
+
+
+def test_single_shot_fallback_does_not_reground_after_structural_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeStructuredClient:
+        provider = "openai_compatible"
+
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+            self.responses = [
+                {
+                    "schema_version": "question_decomposition_v1",
+                    "result_type": "decomposition",
+                    "intent_type": "top_n",
+                    "original_question": "统计服务使用的隧道源节点所在位置的网元数量，按数量降序排列，返回前3名。",
+                    "literal_candidates": [],
+                    "substantive_terms": [
+                        _decomp_term("服务", "path"),
+                        _decomp_term("使用", "path"),
+                        _decomp_term("隧道", "path"),
+                        _decomp_term("源节点", "path"),
+                        _decomp_term("位置", "group_by", attached_to="网元"),
+                        _decomp_term("网元数量", "projection"),
+                        _decomp_term("数量", "order_by"),
+                        _decomp_term("3", "limit"),
+                    ],
+                    "modality_terms": [],
+                    "time_terms": [],
+                    "unparsed_terms": [],
+                    "output_shape": "rows",
+                },
+                {
+                    "schema_version": "grounded_understanding_v1",
+                    "status": "grounded",
+                    "query_shape": "single_hop",
+                    "selected_bindings": [
+                        _grounded_binding("source", "vertex", "Tunnel"),
+                        _grounded_binding("target", "vertex", "NetworkElement"),
+                        _grounded_binding("relation", "edge", "TUNNEL_SRC", direction="forward"),
+                    ],
+                    "selected_literals": [],
+                    "filters": [],
+                    "projection": [
+                        {
+                            "semantic_type": "property",
+                            "owner": "NetworkElement",
+                            "name": "id",
+                            "alias": "network_element_id",
+                        }
+                    ],
+                    "coverage": _coverage_payload(["隧道", "源节点", "网元数量"]),
+                    "unsupported": None,
+                    "confidence": 0.75,
+                },
+            ]
+
+        def generate_structured(
+            self,
+            *,
+            prompt: str,
+            schema_name: str,
+            schema: dict[str, Any],
+            attempt: int,
+        ) -> dict[str, Any]:
+            self.calls.append(schema_name)
+            if not self.responses:
+                raise AssertionError("fallback must be single-shot and must not call LLM again")
+            return self.responses.pop(0)
+
+    fake_client = FakeStructuredClient()
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_ENABLED", "true")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_API_KEY", "test-key")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_MODEL", "qwen3-32b")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        pipeline_module,
+        "_structured_llm_client_from_settings",
+        lambda settings: fake_client,
+    )
+
+    try:
+        output = run_pipeline(
+            question="统计服务使用的隧道源节点所在位置的网元数量，按数量降序排列，返回前3名。",
+            qa_id="mir010-fallback-single-shot",
+            generation_run_id="run-mir010-fallback-single-shot",
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert output.status == "generation_failed"
+    assert output.failure is not None
+    assert output.failure.reason == "coverage_failure"
+    assert fake_client.calls == ["question_decomposition_v1", "grounded_understanding_v1"]
+    assert _stage_names(output.trace).count("grounded_understanding") == 1
+    assert _stage_names(output.trace).count("repair_controller") == 0
+    grounded_stage = _stage(output.trace, "grounded_understanding")
+    assert grounded_stage["metrics"]["llm_call_count"] == 1
+
+
+def test_single_shot_fallback_failed_status_concedes_with_specific_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeStructuredClient:
+        provider = "openai_compatible"
+
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+            self.responses = [
+                {
+                    "schema_version": "question_decomposition_v1",
+                    "result_type": "decomposition",
+                    "intent_type": "list",
+                    "original_question": "查询服务绕行策略",
+                    "literal_candidates": [],
+                    "substantive_terms": [
+                        _decomp_term("服务", "path"),
+                        _decomp_term("绕行策略", "path"),
+                    ],
+                    "modality_terms": [],
+                    "time_terms": [],
+                    "unparsed_terms": [],
+                    "output_shape": "rows",
+                },
+                {
+                    "schema_version": "grounded_understanding_v1",
+                    "status": "failed",
+                    "query_shape": "unsupported",
+                    "selected_bindings": [],
+                    "ambiguities": [
+                        {
+                            "role": "path",
+                            "reason": "没有可用候选能表达绕行策略路径",
+                            "candidate_ids": ["vertex:Service", "property:Service.id"],
+                        }
+                    ],
+                },
+            ]
+
+        def generate_structured(
+            self,
+            *,
+            prompt: str,
+            schema_name: str,
+            schema: dict[str, Any],
+            attempt: int,
+        ) -> dict[str, Any]:
+            self.calls.append(schema_name)
+            if not self.responses:
+                raise AssertionError("single-shot fallback must not retry")
+            return self.responses.pop(0)
+
+    fake_client = FakeStructuredClient()
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_ENABLED", "true")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_API_KEY", "test-key")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_MODEL", "qwen3-32b")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        pipeline_module,
+        "_structured_llm_client_from_settings",
+        lambda settings: fake_client,
+    )
+
+    try:
+        output = run_pipeline(
+            question="查询服务绕行策略",
+            qa_id="mir010-fallback-concede",
+            generation_run_id="run-mir010-fallback-concede",
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert output.status == "generation_failed"
+    assert output.failure is not None
+    assert output.failure.reason == "single_shot_fallback_failed"
+    assert "没有可用候选能表达绕行策略路径" in (output.failure.message or "")
+    assert fake_client.calls == ["question_decomposition_v1", "grounded_understanding_v1"]
+    assert _stage_names(output.trace).count("grounded_understanding") == 1
+
+
+def test_single_shot_fallback_clarification_uses_ambiguity_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeStructuredClient:
+        provider = "openai_compatible"
+
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+            self.responses = [
+                {
+                    "schema_version": "question_decomposition_v1",
+                    "result_type": "decomposition",
+                    "intent_type": "list",
+                    "original_question": "查询服务关联对象",
+                    "literal_candidates": [],
+                    "substantive_terms": [
+                        _decomp_term("服务", "path"),
+                        _decomp_term("关联对象", "path"),
+                    ],
+                    "modality_terms": [],
+                    "time_terms": [],
+                    "unparsed_terms": [],
+                    "output_shape": "rows",
+                },
+                {
+                    "schema_version": "grounded_understanding_v1",
+                    "status": "clarification_required",
+                    "query_shape": "unsupported",
+                    "selected_bindings": [],
+                    "ambiguities": [
+                            {
+                                "role": "path",
+                                "reason": "关联对象可能指隧道或端口",
+                                "candidate_ids": ["vertex:Service", "property:Service.id"],
+                            }
+                        ],
+                    },
+            ]
+
+        def generate_structured(
+            self,
+            *,
+            prompt: str,
+            schema_name: str,
+            schema: dict[str, Any],
+            attempt: int,
+        ) -> dict[str, Any]:
+            self.calls.append(schema_name)
+            if not self.responses:
+                raise AssertionError("single-shot fallback must not retry")
+            return self.responses.pop(0)
+
+    fake_client = FakeStructuredClient()
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_ENABLED", "true")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_API_KEY", "test-key")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_MODEL", "qwen3-32b")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        pipeline_module,
+        "_structured_llm_client_from_settings",
+        lambda settings: fake_client,
+    )
+
+    try:
+        output = run_pipeline(
+            question="查询服务关联对象",
+            qa_id="mir010-fallback-clarification",
+            generation_run_id="run-mir010-fallback-clarification",
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert output.status == "clarification_required"
+    assert output.clarification is not None
+    assert "关联对象可能指隧道或端口" in output.clarification.question
+    assert fake_client.calls == ["question_decomposition_v1", "grounded_understanding_v1"]
+    assert _stage_names(output.trace).count("grounded_understanding") == 1
+
+
+def test_old_multi_round_repair_reground_loop_is_not_present() -> None:
+    source = inspect.getsource(pipeline_module._run_pipeline_steps)
+
+    assert "while True" not in source
+    assert "_can_reground_with_llm" not in source
+    assert "repair_context=decision.repair_prompt_delta" not in source
+
+
 @pytest.mark.asyncio
 async def test_semantic_parse_api_uses_pipeline_for_happy_path() -> None:
     result = await parse_semantics(
@@ -1487,6 +2395,15 @@ def _all_keys(value: object) -> set[str]:
             keys.update(_all_keys(item))
         return keys
     return set()
+
+
+def _total_llm_call_count(trace: dict[str, object]) -> int:
+    total = 0
+    for stage in trace["stages"]:
+        metrics = stage.get("metrics") or {}
+        if isinstance(metrics, dict):
+            total += int(metrics.get("llm_call_count") or 0)
+    return total
 
 
 def _grounded_binding(

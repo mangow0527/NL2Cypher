@@ -145,6 +145,30 @@ def test_registry_name_existing_outside_candidate_set_is_rejected() -> None:
     assert "candidate set" in result.message
 
 
+def test_compact_candidate_id_outside_candidate_set_is_rejected() -> None:
+    client = FakeGroundedLLMClient(
+        {
+            "schema_version": "grounded_understanding_v1",
+            "status": "grounded",
+            "query_shape": "lookup",
+            "selected_bindings": [{"candidate_id": "vertex:Tunnel"}],
+        }
+    )
+
+    result = GroundedUnderstandingSelector(client).select(
+        question_decomposition=_decomposition(),
+        candidates=_candidates(_candidate("vertex", "Service")),
+        literal_results=[],
+    )
+
+    assert isinstance(result, GroundedUnderstandingFailure)
+    assert result.status == "generation_failed"
+    assert result.reason == "semantic_match_rejected"
+    assert result.error_type == "CandidateBoundaryError"
+    assert "vertex:Tunnel" in result.message
+    assert "candidate set" in result.message
+
+
 def test_close_candidates_are_preserved_as_ambiguity_without_forced_selection() -> None:
     client = FakeGroundedLLMClient(
         {

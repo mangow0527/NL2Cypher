@@ -3,13 +3,13 @@ from __future__ import annotations
 import json
 import re
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
 import httpx
 from pydantic import ValidationError
 
-from services.repair_agent.app.models import RepairAnalysisRecord
 from services.testing_agent.app.models import IssueTicket
 
 
@@ -48,10 +48,21 @@ class RuntimeResultsService:
         "cga_trace_profile",
         "clarification",
     }
+    _LIGHTWEIGHT_QUESTION_RECEIPT_KEYS = {
+        "id",
+        "question",
+        "generation_run_id",
+        "generation_status",
+        "received_at",
+        "updated_at",
+        "trace_profile",
+        "cga_trace_profile",
+    }
     _LIGHTWEIGHT_GOLDEN_KEYS = {"id", "difficulty", "updated_at"}
     _DIFFICULTY_ORDER = ["L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8"]
     _GENERATION_STATUS_LABELS = {
         "generated": "生成成功",
+        "generation_pending": "生成中",
         "clarification_required": "需要澄清",
         "generation_failed": "生成失败",
         "unsupported_query_shape": "不支持的查询形态",
@@ -69,6 +80,7 @@ class RuntimeResultsService:
         "repair_controller": "修复与澄清决策",
         "dsl_builder": "受限 DSL 构建",
         "dsl_parser": "DSL 解析",
+        "dsl_structural_coverage_gate": "DSL 结构覆盖闸门",
         "cypher_compiler": "Cypher 编译",
         "cypher_self_validation": "Cypher 自校验",
         "output": "服务输出",
@@ -76,6 +88,8 @@ class RuntimeResultsService:
     _FINAL_VERDICT_LABELS = {
         "pass": "通过",
         "fail": "失败",
+        "clarification_required": "需要澄清",
+        "unsupported_query_shape": "不支持",
         "pending": "待定",
     }
 
@@ -83,26 +97,26 @@ class RuntimeResultsService:
         self,
         *,
         testing_data_dir: str,
-        repair_data_dir: str,
         cypher_generator_agent_base_url: str,
         testing_service_base_url: str,
-        repair_service_base_url: str,
-        knowledge_agent_base_url: str,
         qa_generator_base_url: str,
         cga_trace_profile: str = "all",
+        task_index_cache_ttl_seconds: float = 10.0,
         health_client: ServiceHealthClient | None = None,
     ) -> None:
         self._goldens_dir = Path(testing_data_dir) / "goldens"
+        self._question_receipts_dir = Path(testing_data_dir) / "question_receipts"
         self._submissions_dir = Path(testing_data_dir) / "submissions"
         self._attempt_submissions_dir = Path(testing_data_dir) / "submission_attempts"
         self._generation_failures_dir = Path(testing_data_dir) / "generation_failures"
         self._tickets_dir = Path(testing_data_dir) / "issue_tickets"
-        self._analyses_dir = Path(repair_data_dir) / "analyses"
         self._cga_trace_profile = cga_trace_profile
         self._health_client = health_client or ServiceHealthClient()
         self._task_index_lock = threading.RLock()
         self._task_index_cache_signature: tuple[tuple[str, int, float], ...] | None = None
         self._task_index_cache: list[dict[str, Any]] | None = None
+        self._task_index_cache_checked_at = 0.0
+        self._task_index_cache_ttl_seconds = max(0.0, float(task_index_cache_ttl_seconds))
         self._service_cards = [
             {
                 "service_key": "cypher-generator-agent",
@@ -119,22 +133,6 @@ class RuntimeResultsService:
                 "base_url": testing_service_base_url,
                 "port": "8003",
                 "description_zh": "执行 TuGraph、评测结果并触发失败闭环。",
-            },
-            {
-                "service_key": "repair-agent",
-                "label_zh": "知识修复建议服务",
-                "label_en": "repair-agent",
-                "base_url": repair_service_base_url,
-                "port": "8002",
-                "description_zh": "分析失败样本并生成知识修复建议。",
-            },
-            {
-                "service_key": "knowledge-agent",
-                "label_zh": "知识运营服务",
-                "label_en": "knowledge-agent",
-                "base_url": knowledge_agent_base_url,
-                "port": "8010",
-                "description_zh": "提供提示词包并接收知识修复建议。",
             },
             {
                 "service_key": "qa-agent",
@@ -190,8 +188,8 @@ class RuntimeResultsService:
         start = (page - 1) * page_size
         end = start + page_size
         return {
-            "title_zh": "运行结果中心",
-            "title_en": "Runtime Results Center",
+            "title_zh": "NL2Cypher 工作台",
+            "title_en": "NL2Cypher Workbench",
             "tasks": tasks[start:end],
             "pagination": {
                 "page": page,
@@ -210,6 +208,8 @@ class RuntimeResultsService:
                 "total": 0,
                 "pass": 0,
                 "fail": 0,
+                "clarification_required": 0,
+                "unsupported_query_shape": 0,
                 "pending": 0,
             }
             for difficulty in self._DIFFICULTY_ORDER
@@ -235,9 +235,18 @@ class RuntimeResultsService:
         }
 
     def _task_index(self) -> list[dict[str, Any]]:
+        now = time.monotonic()
+        with self._task_index_lock:
+            if (
+                self._task_index_cache is not None
+                and self._task_index_cache_ttl_seconds > 0
+                and now - self._task_index_cache_checked_at <= self._task_index_cache_ttl_seconds
+            ):
+                return [dict(task) for task in self._task_index_cache]
         signature = self._task_index_signature()
         with self._task_index_lock:
             if self._task_index_cache_signature == signature and self._task_index_cache is not None:
+                self._task_index_cache_checked_at = now
                 return [dict(task) for task in self._task_index_cache]
             tasks: list[dict[str, Any]] = []
             for task_id in self._recent_task_ids():
@@ -247,11 +256,13 @@ class RuntimeResultsService:
             tasks.sort(key=lambda item: item["updated_at"], reverse=True)
             self._task_index_cache_signature = signature
             self._task_index_cache = [dict(task) for task in tasks]
+            self._task_index_cache_checked_at = now
             return [dict(task) for task in tasks]
 
     def _task_index_signature(self) -> tuple[tuple[str, int, float], ...]:
         return (
             self._directory_signature("goldens", self._goldens_dir, "*.json"),
+            self._directory_signature("question_receipts", self._question_receipts_dir, "*.json"),
             self._directory_signature("submissions", self._submissions_dir, "*.json"),
             self._directory_signature("submission_attempts", self._attempt_submissions_dir, "*.json"),
             self._directory_signature("generation_failures", self._generation_failures_dir, "*.json"),
@@ -272,48 +283,57 @@ class RuntimeResultsService:
     def get_task_detail(self, id: str) -> dict[str, Any] | None:
         submission = self._read_submission(id)
         submission, generation_failure = self._select_profile_records(id, submission)
-        if submission is None and generation_failure is None:
+        question_receipt = self._read_question_receipt(id)
+        if submission is None and generation_failure is None and question_receipt is None:
             return None
         golden = self._read_json(self._goldens_dir / f"{id}.json")
-        if not self._is_contract_task(golden=golden, submission=submission, generation_failure=generation_failure):
+        if not self._is_contract_task(
+            golden=golden,
+            submission=submission,
+            generation_failure=generation_failure,
+            question_receipt=question_receipt,
+        ):
             return None
         ticket = self._read_ticket(submission)
-        analysis = self._read_analysis(submission, id)
-        stages = self._build_stages(submission, generation_failure, ticket, analysis)
-        summary = self._build_summary(id, golden, submission, generation_failure, stages, ticket, analysis)
+        stages = self._build_stages(submission, generation_failure, ticket)
+        summary = self._build_summary(id, golden, submission, generation_failure, question_receipt, stages, ticket)
         return {
             "id": id,
             "source": "testing_agent",
-            "title_zh": "运行结果中心",
-            "title_en": "Runtime Results Center",
+            "title_zh": "NL2Cypher 工作台",
+            "title_en": "NL2Cypher Workbench",
             "summary": summary,
             "question": summary["question"],
             "difficulty": summary["difficulty"],
             "attempt_no": summary["attempt_no"],
-            "received_at": (submission or generation_failure or {}).get("received_at"),
-            "updated_at": self._latest_timestamp(golden, submission, ticket, analysis),
+            "received_at": (submission or generation_failure or question_receipt or {}).get("received_at"),
+            "updated_at": self._latest_timestamp(golden, submission, generation_failure, question_receipt, ticket),
             "final_verdict": self._final_verdict(stages),
             "stages": stages,
             "timeline": self._build_timeline(stages),
             "pipeline": {
-                "cypher_generator_agent": self._build_generation_section(golden, submission, generation_failure),
+                "cypher_generator_agent": self._build_generation_section(golden, submission, generation_failure, question_receipt),
                 "testing_agent": self._build_testing_section(golden, submission, ticket),
-                "repair_agent": self._build_repair_section(submission, ticket, analysis),
             },
         }
 
     def _build_task_summary(self, id: str) -> dict[str, Any] | None:
         submission = self._read_submission(id)
         submission, generation_failure = self._select_profile_records(id, submission)
-        if submission is None and generation_failure is None:
+        question_receipt = self._read_question_receipt(id)
+        if submission is None and generation_failure is None and question_receipt is None:
             return None
         golden = self._read_json(self._goldens_dir / f"{id}.json")
-        if not self._is_contract_task(golden=golden, submission=submission, generation_failure=generation_failure):
+        if not self._is_contract_task(
+            golden=golden,
+            submission=submission,
+            generation_failure=generation_failure,
+            question_receipt=question_receipt,
+        ):
             return None
         ticket = self._read_ticket(submission)
-        analysis = self._read_analysis(submission, id)
-        stages = self._build_stages(submission, generation_failure, ticket, analysis)
-        summary = self._build_summary(id, golden, submission, generation_failure, stages, ticket, analysis)
+        stages = self._build_stages(submission, generation_failure, ticket)
+        summary = self._build_summary(id, golden, submission, generation_failure, question_receipt, stages, ticket)
         return {
             "id": id,
             "source": "testing_agent",
@@ -323,8 +343,8 @@ class RuntimeResultsService:
             "generation_status": summary["generation_status"],
             "clarification": summary["clarification"],
             "clarification_summary": self._clarification_summary(summary["clarification"]),
-            "received_at": (submission or generation_failure or {}).get("received_at"),
-            "updated_at": self._latest_timestamp(golden, submission, generation_failure, ticket, analysis),
+            "received_at": (submission or generation_failure or question_receipt or {}).get("received_at"),
+            "updated_at": self._latest_timestamp(golden, submission, generation_failure, question_receipt, ticket),
             "current_stage": self._current_stage(stages),
             "final_verdict": self._final_verdict(stages),
         }
@@ -332,12 +352,18 @@ class RuntimeResultsService:
     def _build_task_summary_lightweight(self, id: str) -> dict[str, Any] | None:
         submission = self._read_submission_metadata(id)
         submission, generation_failure = self._select_profile_records_lightweight(id, submission)
-        if submission is None and generation_failure is None:
+        question_receipt = self._read_question_receipt_metadata(id)
+        if submission is None and generation_failure is None and question_receipt is None:
             return None
         golden = self._read_json_metadata(self._goldens_dir / f"{id}.json", self._LIGHTWEIGHT_GOLDEN_KEYS)
-        if not self._is_contract_task(golden=golden, submission=submission, generation_failure=generation_failure):
+        if not self._is_contract_task(
+            golden=golden,
+            submission=submission,
+            generation_failure=generation_failure,
+            question_receipt=question_receipt,
+        ):
             return None
-        record = submission or generation_failure or {}
+        record = submission or generation_failure or question_receipt or {}
         trace_profile = self._record_trace_profile(record)
         state = str((submission or {}).get("state") or "")
         evaluation = (submission or {}).get("evaluation") or {}
@@ -355,14 +381,18 @@ class RuntimeResultsService:
             "clarification": clarification,
             "clarification_summary": self._clarification_summary(clarification),
             "received_at": record.get("received_at"),
-            "updated_at": self._latest_timestamp(golden, submission, generation_failure),
-            "current_stage": self._current_stage_from_state(state=state, generation_failure=generation_failure),
+            "updated_at": self._latest_timestamp(golden, submission, generation_failure, question_receipt),
+            "current_stage": "query_generation"
+            if question_receipt is not None and submission is None and generation_failure is None
+            else self._current_stage_from_state(state=state, generation_failure=generation_failure),
             "final_verdict": final_verdict,
         }
 
     def _recent_task_ids(self) -> list[str]:
         task_candidates: dict[str, float] = {}
         for path in self._submissions_dir.glob("*.json"):
+            task_candidates[path.stem] = max(task_candidates.get(path.stem, 0), path.stat().st_mtime)
+        for path in self._question_receipts_dir.glob("*.json"):
             task_candidates[path.stem] = max(task_candidates.get(path.stem, 0), path.stat().st_mtime)
         for path in self._generation_failures_dir.glob("*.json"):
             task_id = path.stem.split("__", 1)[0]
@@ -392,10 +422,11 @@ class RuntimeResultsService:
         golden: dict[str, Any] | None,
         submission: dict[str, Any] | None,
         generation_failure: dict[str, Any] | None,
+        question_receipt: dict[str, Any] | None = None,
     ) -> bool:
         if (golden or {}).get("difficulty") not in self._DIFFICULTY_ORDER:
             return False
-        status = (submission or generation_failure or {}).get("generation_status")
+        status = (submission or generation_failure or question_receipt or {}).get("generation_status")
         return status in self._GENERATION_STATUS_LABELS
 
     def _current_stage_from_state(self, *, state: str, generation_failure: dict[str, Any] | None) -> str:
@@ -404,7 +435,7 @@ class RuntimeResultsService:
         if state in {"passed", "tugraph_execution_failed", "semantic_review_invalid"}:
             return "evaluation"
         if state in {"repair_pending", "repair_submission_failed", "issue_ticket_created"}:
-            return "knowledge_repair"
+            return "evaluation"
         if state in {"received_golden_only", "received_submission_only", "ready_to_evaluate"}:
             return "evaluation"
         return "pending"
@@ -417,6 +448,9 @@ class RuntimeResultsService:
         if state in {"tugraph_execution_failed", "semantic_review_invalid", "repair_submission_failed", "issue_ticket_created"}:
             return "fail"
         if generation_failure is not None:
+            generation_status = str(generation_failure.get("generation_status") or "")
+            if generation_status in {"clarification_required", "unsupported_query_shape"}:
+                return generation_status
             return "pending"
         return "pending"
 
@@ -508,6 +542,15 @@ class RuntimeResultsService:
             return None
         return self._read_generation_failure_metadata(id, submission.get("generation_run_id"))
 
+    def _read_question_receipt(self, id: str) -> dict[str, Any] | None:
+        return self._read_json(self._question_receipts_dir / f"{id}.json")
+
+    def _read_question_receipt_metadata(self, id: str) -> dict[str, Any] | None:
+        return self._read_json_metadata(
+            self._question_receipts_dir / f"{id}.json",
+            self._LIGHTWEIGHT_QUESTION_RECEIPT_KEYS,
+        )
+
     def _select_profile_records(
         self,
         id: str,
@@ -578,11 +621,11 @@ class RuntimeResultsService:
         golden: dict[str, Any] | None,
         submission: dict[str, Any] | None,
         generation_failure: dict[str, Any] | None,
+        question_receipt: dict[str, Any] | None,
         stages: dict[str, dict[str, str]],
         ticket: dict[str, Any] | None,
-        analysis: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        record = submission or generation_failure or {}
+        record = submission or generation_failure or question_receipt or {}
         clarification = self._clarification_from(record, generation_failure)
         snapshot = self._decode_generation_snapshot(record.get("input_prompt_snapshot") or "")
         if self._is_cga_graph_trace(snapshot):
@@ -598,7 +641,7 @@ class RuntimeResultsService:
             "current_stage": self._current_stage(stages),
             "final_verdict": self._final_verdict(stages),
             "received_at": record.get("received_at"),
-            "updated_at": self._latest_timestamp(golden, submission, generation_failure, ticket, analysis),
+            "updated_at": self._latest_timestamp(golden, submission, generation_failure, question_receipt, ticket),
         }
 
     def _clarification_from(
@@ -676,8 +719,9 @@ class RuntimeResultsService:
         golden: dict[str, Any] | None,
         submission: dict[str, Any] | None,
         generation_failure: dict[str, Any] | None,
+        question_receipt: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        source = submission or generation_failure or {}
+        source = submission or generation_failure or question_receipt or {}
         generation_status = source.get("generation_status")
         generated_cypher = (submission or {}).get("generated_cypher") or ""
         parsed_cypher = ""
@@ -1138,6 +1182,8 @@ class RuntimeResultsService:
         return self._record_trace_profile(record) == profile
 
     def _record_trace_profile(self, record: dict[str, Any]) -> str:
+        if record.get("generation_status") == "generation_pending":
+            return "graph"
         explicit_profile = str(record.get("trace_profile") or record.get("cga_trace_profile") or "").strip().lower()
         if explicit_profile in {"graph", "ontology", "legacy"}:
             return explicit_profile
@@ -2638,212 +2684,14 @@ class RuntimeResultsService:
             "improvement": (submission or {}).get("improvement_assessment"),
         }
 
-    def _build_repair_section(
-        self,
-        submission: dict[str, Any] | None,
-        ticket: dict[str, Any] | None,
-        analysis: dict[str, Any] | None,
-    ) -> dict[str, Any]:
-        repair_response = self._read_repair_response(submission)
-        request = (analysis or {}).get("knowledge_repair_request") or {}
-        status = (analysis or {}).get("status") or (repair_response or {}).get("status")
-        knowledge_agent_response = (analysis or {}).get("knowledge_agent_response")
-        non_repairable_reason = str((analysis or {}).get("non_repairable_reason") or "")
-        not_repairable_request = None
-        not_repairable_response = None
-        if status == "not_repairable":
-            request_message = "不修复"
-            if non_repairable_reason:
-                request_message = f"不修复：{non_repairable_reason}"
-            not_repairable_request = {
-                "status": "not_sent",
-                "reason": "not_repairable",
-                "message": request_message,
-            }
-            not_repairable_response = {
-                "status": "not_sent",
-                "reason": "not_repairable",
-                "message": "不修复：repair-agent 判定该问题不是 knowledge-agent 知识缺口，因此没有发送请求。",
-            }
-        if knowledge_agent_response is None:
-            knowledge_agent_response = not_repairable_response
-        return {
-            "issue_ticket_id": (ticket or {}).get("ticket_id") or (submission or {}).get("issue_ticket_id"),
-            "analysis_id": (analysis or {}).get("analysis_id") or (repair_response or {}).get("analysis_id"),
-            "status": status,
-            "repair_state": self._repair_state(status=status, analysis=analysis, knowledge_agent_response=knowledge_agent_response),
-            "knowledge_apply_state": self._knowledge_apply_state(
-                status=status,
-                analysis=analysis,
-                knowledge_agent_response=knowledge_agent_response,
-                request=request or not_repairable_request,
-            ),
-            "redispatch_state": self._redispatch_state(knowledge_agent_response),
-            "non_repairable_reason": non_repairable_reason,
-            "llm_prompt_markdown": self._repair_llm_prompt_markdown(analysis),
-            "raw_output": (analysis or {}).get("raw_output"),
-            "suggestion": request.get("suggestion"),
-            "knowledge_types": request.get("knowledge_types") or [],
-            "knowledge_agent_request": request or not_repairable_request,
-            "knowledge_agent_response": knowledge_agent_response,
-            "applied": (analysis or {}).get("applied") if analysis is not None else None,
-        }
-
-    def _repair_state(
-        self,
-        *,
-        status: Any,
-        analysis: dict[str, Any] | None,
-        knowledge_agent_response: dict[str, Any] | None,
-    ) -> dict[str, Any]:
-        if analysis is None:
-            return self._state_item("not_recorded", "未记录", raw_status=status, message="未读取到 repair-agent 诊断记录。")
-        status_text = str(status or "")
-        decision = self._knowledge_agent_decision(knowledge_agent_response)
-        if decision == "human_review":
-            return self._state_item(
-                "waiting_human_review",
-                "等待人工审核",
-                raw_status=status,
-                message="knowledge-agent 已把修复建议转换为人工审核任务，尚不能视为知识已落库。",
-            )
-        if decision == "reject":
-            return self._state_item(
-                "rejected",
-                "候选修复被拒绝",
-                raw_status=status,
-                message="knowledge-agent 校验拒绝了 repair-agent 候选变更。",
-            )
-        if status_text == "not_repairable":
-            return self._state_item("not_repairable", "无需知识修复", raw_status=status, message=analysis.get("non_repairable_reason") or "repair-agent 判定该问题不是知识缺口。")
-        if status_text == "repair_apply_paused":
-            return self._state_item("apply_paused", "知识应用已暂停", raw_status=status, message="repair-agent 已生成建议，但知识应用当前被配置为暂停。")
-        if status_text == "apply_failed":
-            return self._state_item("apply_failed", "知识应用失败", raw_status=status, message="repair-agent 诊断完成，但提交 knowledge-agent 失败。")
-        if status_text == "analysis_pending":
-            return self._state_item("analysis_pending", "诊断中", raw_status=status, message="repair-agent 诊断尚未完成。")
-        if status_text == "applied":
-            applied = analysis.get("applied")
-            return self._state_item(
-                "applied" if applied else "suggestion_recorded",
-                "知识修复已应用" if applied else "修复建议已记录",
-                raw_status=status,
-                message="repair-agent 原始状态为 applied；请结合 knowledge apply 与 redispatch 状态判断闭环是否完成。",
-            )
-        return self._state_item(status_text or "unknown", status_text or "未知状态", raw_status=status)
-
-    def _knowledge_apply_state(
-        self,
-        *,
-        status: Any,
-        analysis: dict[str, Any] | None,
-        knowledge_agent_response: dict[str, Any] | None,
-        request: dict[str, Any] | None,
-    ) -> dict[str, Any]:
-        if analysis is None:
-            return self._state_item("not_started", "未开始", raw_status=status, message="没有可绑定的 repair analysis，无法判断知识应用状态。")
-        status_text = str(status or "")
-        response_status = str((knowledge_agent_response or {}).get("status") or "")
-        response_code = str((knowledge_agent_response or {}).get("code") or "")
-        decision = self._knowledge_agent_decision(knowledge_agent_response)
-        if status_text == "not_repairable":
-            return self._state_item("not_sent", "未发送", raw_status=status, message="该问题被判定为不需要 knowledge-agent 知识应用。")
-        if status_text == "apply_failed":
-            return self._state_item("apply_failed", "知识应用失败", raw_status=status, message="knowledge-agent 应用请求失败。")
-        if status_text == "repair_apply_paused" or response_status == "paused" or response_code == "KNOWLEDGE_REPAIR_APPLY_DISABLED":
-            return self._state_item("apply_paused", "知识应用已暂停", raw_status=status, message="knowledge-agent 当前不执行自动落库。")
-        if decision == "human_review":
-            return self._state_item(
-                "waiting_human_review",
-                "等待人工审核后落库",
-                raw_status=status,
-                message="修复建议进入人工审核；通过审核前不视为知识已落库。",
-            )
-        if decision == "reject":
-            return self._state_item(
-                "rejected",
-                "候选变更被拒绝",
-                raw_status=status,
-                message="knowledge-agent schema-aware validation 拒绝了候选知识变更。",
-            )
-        if response_status == "ok" and analysis.get("applied"):
-            return self._state_item("applied", "知识应用已确认", raw_status=status, message="knowledge-agent 返回 ok，且 repair analysis 标记为 applied。")
-        if request:
-            return self._state_item("pending", "等待 knowledge-agent 响应", raw_status=status)
-        return self._state_item("not_sent", "未发送", raw_status=status)
-
-    def _redispatch_state(self, knowledge_agent_response: dict[str, Any] | None) -> dict[str, Any]:
-        response = knowledge_agent_response if isinstance(knowledge_agent_response, dict) else {}
-        redispatch = response.get("redispatch") if isinstance(response.get("redispatch"), dict) else {}
-        dispatch = redispatch.get("dispatch") if isinstance(redispatch.get("dispatch"), dict) else {}
-        status = str(redispatch.get("status") or dispatch.get("status") or "")
-        reason = str(dispatch.get("reason") or redispatch.get("reason") or "")
-        if reason == "knowledge_agent_no_longer_redispatches_qa":
-            return self._state_item(
-                "cancelled",
-                "QA 自动重派发已取消",
-                raw_status=status or None,
-                reason=reason,
-                message="redispatch 不再由 knowledge-agent 触发；未重派发不代表知识修复失败。",
-            )
-        if not redispatch:
-            return self._state_item("not_recorded", "未记录", message="knowledge-agent 响应中没有 redispatch 记录。")
-        if status == "skipped":
-            return self._state_item("skipped", "未重派发", raw_status=status, reason=reason or None)
-        if status:
-            return self._state_item(status, status, raw_status=status, reason=reason or None)
-        return self._state_item("unknown", "未知状态", reason=reason or None)
-
-    def _knowledge_agent_decision(self, knowledge_agent_response: dict[str, Any] | None) -> str:
-        response = knowledge_agent_response if isinstance(knowledge_agent_response, dict) else {}
-        agent_run = response.get("agent_run") if isinstance(response.get("agent_run"), dict) else {}
-        decision = agent_run.get("decision") if isinstance(agent_run.get("decision"), dict) else {}
-        return str(decision.get("action") or "")
-
-    def _state_item(
-        self,
-        value: str,
-        label_zh: str,
-        *,
-        raw_status: Any | None = None,
-        reason: str | None = None,
-        message: str = "",
-    ) -> dict[str, Any]:
-        return {
-            "value": value,
-            "label_zh": label_zh,
-            "raw_status": raw_status,
-            "reason": reason,
-            "message": message,
-        }
-
-    def _repair_llm_prompt_markdown(self, analysis: dict[str, Any] | None) -> str:
-        if analysis is None:
-            return ""
-        system_prompt = str(analysis.get("system_prompt_snapshot") or "")
-        user_prompt = str(analysis.get("user_prompt_snapshot") or "")
-        if not system_prompt and not user_prompt:
-            return ""
-        return "\n\n".join(
-            part
-            for part in [
-                system_prompt,
-                user_prompt,
-            ]
-            if part
-        )
-
     def _build_stages(
         self,
         submission: dict[str, Any] | None,
         generation_failure: dict[str, Any] | None,
         ticket: dict[str, Any] | None,
-        analysis: dict[str, Any] | None,
     ) -> dict[str, dict[str, str]]:
         generation_status = self._generation_stage_status(submission, generation_failure)
         evaluation_status = self._evaluation_stage_status(submission, ticket)
-        repair_status = self._repair_stage_status(evaluation_status, submission, analysis)
-        apply_status = self._apply_stage_status(repair_status, submission, analysis)
         return {
             "query_generation": {
                 "label_zh": "Cypher 生成",
@@ -2855,16 +2703,6 @@ class RuntimeResultsService:
                 "label_en": "Evaluation",
                 "status": evaluation_status,
             },
-            "knowledge_repair": {
-                "label_zh": "知识修复",
-                "label_en": "Knowledge Repair",
-                "status": repair_status,
-            },
-            "knowledge_apply": {
-                "label_zh": "知识运营接收",
-                "label_en": "Knowledge Apply",
-                "status": apply_status,
-            },
         }
 
     def _generation_stage_status(
@@ -2873,6 +2711,9 @@ class RuntimeResultsService:
         generation_failure: dict[str, Any] | None,
     ) -> str:
         if generation_failure is not None:
+            generation_status = str(generation_failure.get("generation_status") or "")
+            if generation_status in {"clarification_required", "unsupported_query_shape"}:
+                return generation_status
             return "failed"
         if submission is None:
             return "pending"
@@ -2899,60 +2740,6 @@ class RuntimeResultsService:
         if status == "repair_pending":
             return "failed"
         return "pending"
-
-    def _repair_stage_status(
-        self,
-        evaluation_status: str,
-        submission: dict[str, Any] | None,
-        analysis: dict[str, Any] | None,
-    ) -> str:
-        if analysis is not None:
-            return "passed"
-        if (submission or {}).get("repair_response") is not None:
-            return "failed"
-        status = str((submission or {}).get("state") or "")
-        if status == "repair_pending":
-            return "running"
-        if status == "repair_submission_failed":
-            return "failed"
-        if evaluation_status == "passed":
-            return "not_started"
-        if evaluation_status == "failed":
-            return "failed"
-        return "pending"
-
-    def _apply_stage_status(
-        self,
-        repair_status: str,
-        submission: dict[str, Any] | None,
-        analysis: dict[str, Any] | None,
-    ) -> str:
-        if analysis is None:
-            if repair_status in {"failed", "pending"}:
-                return repair_status
-            if repair_status == "passed":
-                return "running"
-            return "not_started"
-        response = (analysis or {}).get("knowledge_agent_response")
-        apply_state = self._knowledge_apply_state(
-            status=(analysis or {}).get("status"),
-            analysis=analysis,
-            knowledge_agent_response=response,
-            request=(analysis or {}).get("knowledge_repair_request"),
-        )
-        if apply_state["value"] == "applied":
-            return "passed"
-        if apply_state["value"] in {"waiting_human_review", "pending", "apply_paused"}:
-            return "running"
-        if apply_state["value"] in {"apply_failed", "rejected"}:
-            return "failed"
-        if apply_state["value"] in {"not_sent", "not_started"}:
-            return "not_started"
-        if repair_status == "passed":
-            return "running"
-        if repair_status in {"failed", "pending"}:
-            return repair_status
-        return "not_started"
 
     def _build_timeline(self, stages: dict[str, dict[str, str]]) -> list[dict[str, str]]:
         return [
@@ -3002,7 +2789,7 @@ class RuntimeResultsService:
         }
 
     def _current_stage(self, stages: dict[str, dict[str, str]]) -> str:
-        for stage_key in ["query_generation", "evaluation", "knowledge_repair", "knowledge_apply"]:
+        for stage_key in ["query_generation", "evaluation"]:
             status = stages[stage_key]["status"]
             if status in {"pending", "running", "failed"}:
                 return stage_key
@@ -3014,6 +2801,9 @@ class RuntimeResultsService:
             return "pass"
         if evaluation == "failed":
             return "fail"
+        generation = stages["query_generation"]["status"]
+        if generation in {"clarification_required", "unsupported_query_shape"}:
+            return generation
         return "pending"
 
     def _read_ticket(self, submission: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -3029,31 +2819,6 @@ class RuntimeResultsService:
             return IssueTicket.model_validate(payload).model_dump(mode="json")
         except ValidationError:
             return None
-
-    def _read_analysis(self, submission: dict[str, Any] | None, id: str) -> dict[str, Any] | None:
-        repair_response = self._read_repair_response(submission) or {}
-        analysis_id = repair_response.get("analysis_id")
-        if analysis_id:
-            return self._read_analysis_record_by_id(analysis_id)
-        return None
-
-    def _read_analysis_record_by_id(self, analysis_id: str) -> dict[str, Any] | None:
-        analysis = self._read_json(self._analyses_dir / f"{analysis_id}.json")
-        if analysis is None:
-            return None
-        try:
-            return RepairAnalysisRecord.model_validate(analysis).model_dump(mode="json")
-        except ValidationError:
-            return None
-
-    def _read_repair_response(self, submission: dict[str, Any] | None) -> dict[str, Any] | None:
-        payload = (submission or {}).get("repair_response")
-        if not isinstance(payload, dict):
-            return None
-        analysis_id = payload.get("analysis_id")
-        if analysis_id is not None and not isinstance(analysis_id, str):
-            return None
-        return payload
 
     def _latest_timestamp(self, *records: dict[str, Any] | None) -> str:
         timestamps: list[str] = []

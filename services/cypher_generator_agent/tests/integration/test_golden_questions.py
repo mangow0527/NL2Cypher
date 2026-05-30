@@ -268,10 +268,10 @@ def _synthetic_repair_issue(case: dict[str, Any]) -> dict[str, Any]:
             "message": "Write clause is not allowed.",
             "details": {},
         },
-        "repair_binding_oscillation": {
+        "edge_endpoint_mismatch": {
             "source": "validator",
             "code": "edge_endpoint_mismatch",
-            "message": "Binding keeps returning to the same illegal edge endpoints.",
+            "message": "Binding selected illegal edge endpoints.",
             "repairable": True,
             "details": {},
         },
@@ -316,7 +316,7 @@ def _unsupported_issue(reason: str) -> dict[str, Any]:
 
 
 def _selected_bindings_for_contract(case: dict[str, Any]) -> dict[str, Any]:
-    if case["expected_reason_code"] != "repair_binding_oscillation":
+    if case["expected_reason_code"] != "edge_endpoint_mismatch":
         return {}
     return {
         "query_shape": "single_hop_traversal",
@@ -326,15 +326,4 @@ def _selected_bindings_for_contract(case: dict[str, Any]) -> dict[str, Any]:
 
 
 def _history_for_contract(case: dict[str, Any]) -> list[dict[str, Any]]:
-    if case["expected_reason_code"] != "repair_binding_oscillation":
-        return []
-    from services.cypher_generator_agent.app.repair.fingerprint import from_binding_plan
-
-    selected_bindings = _selected_bindings_for_contract(case)
-    return [
-        {
-            "attempt_no": 1,
-            "fingerprint": from_binding_plan(selected_bindings),
-            "error_code": "edge_endpoint_mismatch",
-        }
-    ]
+    return []

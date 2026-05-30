@@ -177,6 +177,8 @@ class SemanticValidator:
             missing.append("to_vertex")
         if not plan.edge_bindings:
             missing.append("edge_bindings")
+        if len(plan.edge_bindings) > 1 and len(plan.vertex_bindings) != len(plan.edge_bindings) + 1:
+            missing.append("traversal_chain_vertices")
         if missing:
             errors.append(
                 SemanticValidationIssue(
@@ -190,9 +192,9 @@ class SemanticValidator:
             )
             return
 
-        from_vertex = plan.vertex_bindings[0].name
-        to_vertex = plan.vertex_bindings[1].name
-        for edge_binding in plan.edge_bindings:
+        for edge_index, edge_binding in enumerate(plan.edge_bindings):
+            from_vertex = plan.vertex_bindings[edge_index].name
+            to_vertex = plan.vertex_bindings[edge_index + 1].name
             try:
                 edge = self.registry.get_edge(edge_binding.name)
             except RegistryLookupError:
@@ -203,7 +205,7 @@ class SemanticValidator:
                         severity="error",
                         recoverability="repairable",
                         action="repair_binding",
-                        details={"edge": edge_binding.name},
+                        details={"edge": edge_binding.name, "edge_index": edge_index},
                     )
                 )
                 continue
@@ -227,6 +229,7 @@ class SemanticValidator:
                     action="repair_binding",
                     details={
                         "edge": edge_binding.name,
+                        "edge_index": edge_index,
                         "direction": edge_binding.direction,
                         "expected_from": expected_from,
                         "expected_to": expected_to,

@@ -45,6 +45,15 @@ class GeneratedCypherSubmissionRequest(BaseModel):
     input_prompt_snapshot: str
 
 
+class CgaQuestionReceivedReport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    question: str
+    generation_run_id: str
+    generation_status: Literal["generation_pending"] = "generation_pending"
+
+
 class CgaGenerationNonSuccessReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

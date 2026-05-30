@@ -13,12 +13,14 @@ from services.cypher_generator_agent.app.dsl.ast import (
     Dimension,
     Filter,
     FilterSubqueryOperation,
+    LimitOperation,
     Measure,
     MetricAggregateOperation,
     Projection,
     ProjectionItem,
     RestrictedQueryAst,
     RoleReference,
+    SortOperation,
     SubqueryOperation,
     TraverseEdgeOperation,
     UsePathPatternOperation,
@@ -238,6 +240,8 @@ class CypherCompiler:
         return "\n".join(clauses), parameters.result
 
     def _compile_top_n(self, ast: RestrictedQueryAst) -> tuple[str, "_CompiledParameters"]:
+        if ast.operations and isinstance(ast.operations[0], TraverseEdgeOperation):
+            return self._compile_path_top_n(ast)
         primary_operation = ast.operations[0] if ast.operations else None
         if isinstance(primary_operation, MetricAggregateOperation):
             return self._compile_metric_aggregate(ast)
@@ -245,8 +249,42 @@ class CypherCompiler:
             return self._compile_ad_hoc_aggregate(ast)
         raise CypherCompilerError("top_n requires aggregate or metric_aggregate operation")
 
+    def _compile_path_top_n(self, ast: RestrictedQueryAst) -> tuple[str, "_CompiledParameters"]:
+        traverse_operations: list[TraverseEdgeOperation] = []
+        aggregate: AggregateOperation | None = None
+        for operation in ast.operations:
+            if isinstance(operation, TraverseEdgeOperation) and aggregate is None:
+                traverse_operations.append(operation)
+                continue
+            if isinstance(operation, AggregateOperation) and aggregate is None:
+                aggregate = operation
+                continue
+            if isinstance(operation, SortOperation | LimitOperation):
+                continue
+            raise CypherCompilerError("path top_n requires traverse_edge chain, aggregate, sort, and limit")
+        if not traverse_operations or aggregate is None:
+            raise CypherCompilerError("path top_n requires traverse_edge chain and aggregate operation")
+
+        role_variables = _traverse_chain_role_variables(traverse_operations)
+        clauses = [_compile_traverse_chain_match(traverse_operations, role_variables)]
+        parameters = _ParameterBuilder()
+        where = _compile_filters(ast.filters, role_variables, parameters)
+        if where:
+            clauses.append(f"WHERE {' AND '.join(where)}")
+
+        source_expressions = _aggregate_source_expressions(
+            aggregate.group_by,
+            aggregate.measures,
+            role_variables,
+        )
+        clauses.append(_compile_source_return(ast.projection, source_expressions))
+        _append_order_limit(clauses, ast, source_expressions)
+        return "\n".join(clauses), parameters.result
+
     def _compile_two_step_aggregate(self, ast: RestrictedQueryAst) -> tuple[str, "_CompiledParameters"]:
         subquery = _single_operation(ast, SubqueryOperation)
+        if subquery.operations:
+            return self._compile_two_step_path_aggregate(ast, subquery)
         roles = _aggregate_roles_from_parts(subquery.group_by, subquery.measures, [])
         role_variables = _role_variables(roles.values())
         parameters = _ParameterBuilder()
@@ -276,33 +314,80 @@ class CypherCompiler:
         _append_order_limit(clauses, ast, subquery_sources)
         return "\n".join(clauses), parameters.result
 
-    def _compile_single_hop(self, ast: RestrictedQueryAst) -> tuple[str, "_CompiledParameters"]:
-        operation = _single_operation(ast, TraverseEdgeOperation)
-        used: set[str] = set()
-        from_var = _variable_for_owner(operation.from_role.vertex_name, used=used)
-        to_var = _variable_for_owner(operation.to_role.vertex_name, used=used)
-        role_variables = {
-            operation.from_role.alias: from_var,
-            operation.to_role.alias: to_var,
-        }
+    def _compile_two_step_path_aggregate(
+        self,
+        ast: RestrictedQueryAst,
+        subquery: SubqueryOperation,
+    ) -> tuple[str, "_CompiledParameters"]:
+        second_traverses: list[TraverseEdgeOperation] = []
+        second_aggregate: AggregateOperation | None = None
+        seen_subquery = False
+        for operation in ast.operations:
+            if operation is subquery:
+                seen_subquery = True
+                continue
+            if not seen_subquery:
+                continue
+            if isinstance(operation, TraverseEdgeOperation) and second_aggregate is None:
+                second_traverses.append(operation)
+                continue
+            if isinstance(operation, AggregateOperation) and second_aggregate is None:
+                second_aggregate = operation
+                continue
+            if isinstance(operation, SortOperation | LimitOperation):
+                continue
+            raise CypherCompilerError("two_step path aggregate supports subquery, traverse chain, aggregate, sort, limit")
+        if not second_traverses or second_aggregate is None:
+            raise CypherCompilerError("two_step path aggregate requires second traverse chain and aggregate")
+
+        role_variables = _traverse_chain_role_variables([*subquery.operations, *second_traverses])
         parameters = _ParameterBuilder()
 
-        if operation.direction == "forward":
-            match_clause = (
-                f"MATCH ({from_var}:{operation.from_role.vertex_name})"
-                f"-[:{operation.edge_role.edge_name}]->"
-                f"({to_var}:{operation.to_role.vertex_name})"
+        first_source_expressions = _aggregate_source_expressions(
+            subquery.group_by,
+            subquery.measures,
+            role_variables,
+        )
+        clauses = [_compile_traverse_chain_match(subquery.operations, role_variables)]
+        first_where = _compile_filters(ast.filters, role_variables, parameters)
+        if first_where:
+            clauses.append(f"WHERE {' AND '.join(first_where)}")
+        clauses.append(
+            _compile_path_aggregate_with(
+                subquery,
+                role_variables,
+                first_source_expressions,
             )
-        elif operation.direction == "backward":
-            match_clause = (
-                f"MATCH ({from_var}:{operation.from_role.vertex_name})"
-                f"<-[:{operation.edge_role.edge_name}]-"
-                f"({to_var}:{operation.to_role.vertex_name})"
-            )
-        else:
-            raise CypherCompilerError(f"unsupported traversal direction: {operation.direction}")
+        )
 
-        clauses = [match_clause]
+        clauses.append(_compile_traverse_chain_match(second_traverses, role_variables))
+        second_source_expressions = _aggregate_source_expressions(
+            second_aggregate.group_by,
+            second_aggregate.measures,
+            role_variables,
+        )
+        source_expressions = {
+            **{
+                (subquery.bind_as, dimension.alias): dimension.alias
+                for dimension in subquery.group_by
+            },
+            **{
+                (subquery.bind_as, measure.alias): measure.alias
+                for measure in subquery.measures
+            },
+            **second_source_expressions,
+        }
+        clauses.append(_compile_mixed_return(ast.projection, role_variables, source_expressions))
+        _append_order_limit(clauses, ast, source_expressions)
+        return "\n".join(clauses), parameters.result
+
+    def _compile_single_hop(self, ast: RestrictedQueryAst) -> tuple[str, "_CompiledParameters"]:
+        operations = [operation for operation in ast.operations if isinstance(operation, TraverseEdgeOperation)]
+        if not operations:
+            raise CypherCompilerError("single_hop_traversal requires at least one traverse_edge operation")
+        role_variables = _traverse_chain_role_variables(operations)
+        parameters = _ParameterBuilder()
+        clauses = [_compile_traverse_chain_match(operations, role_variables)]
         where = _compile_filters(ast.filters, role_variables, parameters)
         if where:
             clauses.append(f"WHERE {' AND '.join(where)}")
@@ -508,6 +593,20 @@ def _compile_source_projection_item(
     return f"{expression} AS {alias}"
 
 
+def _compile_mixed_return(
+    projection: Projection,
+    role_variables: Mapping[str, str],
+    source_expressions: Mapping[tuple[str, str], str],
+) -> str:
+    items = [
+        _compile_source_projection_item(item, source_expressions)
+        if item.source is not None
+        else _compile_projection_item(item, role_variables)
+        for item in projection.items
+    ]
+    return f"RETURN {', '.join(items)}"
+
+
 def _append_order_limit(
     clauses: list[str],
     ast: RestrictedQueryAst,
@@ -570,6 +669,21 @@ def _compile_with(
     return f"WITH {', '.join(items)}"
 
 
+def _compile_path_aggregate_with(
+    subquery: SubqueryOperation,
+    role_variables: Mapping[str, str],
+    source_expressions: Mapping[tuple[str, str], str],
+) -> str:
+    items = [role_variables[role.alias] for role in subquery.carry_roles]
+    for dimension in subquery.group_by:
+        items.append(f"{source_expressions[('group', dimension.alias)]} AS {dimension.alias}")
+    for measure in subquery.measures:
+        items.append(f"{source_expressions[('measure', measure.alias)]} AS {measure.alias}")
+    if not items:
+        raise CypherCompilerError("two_step path aggregate WITH requires carry role or aggregate output")
+    return f"WITH {', '.join(items)}"
+
+
 def _compile_filter_subqueries(
     ast: RestrictedQueryAst,
     subquery: SubqueryOperation,
@@ -627,6 +741,47 @@ def _role_variables(roles: object) -> dict[str, str]:
         role.alias: _variable_for_owner(role.vertex_name, used=used)
         for role in roles
     }
+
+
+def _traverse_chain_role_variables(operations: list[TraverseEdgeOperation]) -> dict[str, str]:
+    used: set[str] = set()
+    role_variables: dict[str, str] = {}
+    for operation in operations:
+        if operation.from_role.alias not in role_variables:
+            role_variables[operation.from_role.alias] = _variable_for_owner(
+                operation.from_role.vertex_name,
+                used=used,
+            )
+        if operation.to_role.alias not in role_variables:
+            role_variables[operation.to_role.alias] = _variable_for_owner(
+                operation.to_role.vertex_name,
+                used=used,
+            )
+    return role_variables
+
+
+def _compile_traverse_chain_match(
+    operations: list[TraverseEdgeOperation],
+    role_variables: Mapping[str, str],
+) -> str:
+    first = operations[0]
+    parts = [f"({role_variables[first.from_role.alias]}:{first.from_role.vertex_name})"]
+    current_alias = first.from_role.alias
+    for operation in operations:
+        if operation.from_role.alias != current_alias:
+            raise CypherCompilerError(
+                "traverse_edge operations must form one contiguous chain"
+            )
+        to_var = role_variables[operation.to_role.alias]
+        to_node = f"({to_var}:{operation.to_role.vertex_name})"
+        if operation.direction == "forward":
+            parts.append(f"-[:{operation.edge_role.edge_name}]->{to_node}")
+        elif operation.direction == "backward":
+            parts.append(f"<-[:{operation.edge_role.edge_name}]-{to_node}")
+        else:
+            raise CypherCompilerError(f"unsupported traversal direction: {operation.direction}")
+        current_alias = operation.to_role.alias
+    return f"MATCH {''.join(parts)}"
 
 
 def _aggregate_source_expressions(

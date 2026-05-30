@@ -175,6 +175,57 @@ def test_single_hop_uses_backward_edge_direction(registry: GraphSemanticRegistry
     assert dsl["bindings"]["end"] == {"vertex_name": "Service"}
 
 
+def test_single_hop_builder_emits_multihop_traversal_chain(
+    registry: GraphSemanticRegistry,
+) -> None:
+    plan = BindingPlan(
+        query_shape="single_hop_traversal",
+        vertex_bindings=[
+            VertexBinding(name="Service", candidate=_candidate("vertex", "Service")),
+            VertexBinding(name="Tunnel", candidate=_candidate("vertex", "Tunnel")),
+            VertexBinding(name="NetworkElement", candidate=_candidate("vertex", "NetworkElement")),
+        ],
+        edge_bindings=[
+            EdgeBinding(name="SERVICE_USES_TUNNEL", candidate=_candidate("edge", "SERVICE_USES_TUNNEL")),
+            EdgeBinding(name="PATH_THROUGH", candidate=_candidate("edge", "PATH_THROUGH")),
+        ],
+        projection=[
+            {
+                "semantic_type": "property",
+                "owner": "NetworkElement",
+                "name": "name",
+                "alias": "network_element_name",
+            }
+        ],
+    )
+
+    dsl = RestrictedDslBuilder(registry).build(
+        plan,
+        source_question="查询服务经过隧道穿过的网元IP地址",
+        query_id="q-multihop-chain",
+    )
+
+    assert dsl["bindings"] == {
+        "v0": {"vertex_name": "Service"},
+        "v1": {"vertex_name": "Tunnel"},
+        "v2": {"vertex_name": "NetworkElement"},
+        "e0": {"edge_name": "SERVICE_USES_TUNNEL"},
+        "e1": {"edge_name": "PATH_THROUGH"},
+    }
+    assert dsl["operations"] == [
+        {"op": "traverse_edge", "from": "v0", "edge": "e0", "to": "v1", "direction": "forward"},
+        {"op": "traverse_edge", "from": "v1", "edge": "e1", "to": "v2", "direction": "forward"},
+    ]
+    assert dsl["projection"]["items"] == [
+        {
+            "alias": "network_element_name",
+            "target": "v2",
+            "property": {"owner": "NetworkElement", "name": "name"},
+        }
+    ]
+    parse_restricted_query_dsl(dsl, registry)
+
+
 def test_builder_rejects_bare_vertex_projection_instead_of_guessing_id(
     registry: GraphSemanticRegistry,
 ) -> None:

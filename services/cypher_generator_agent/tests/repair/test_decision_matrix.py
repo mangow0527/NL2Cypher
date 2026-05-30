@@ -1,17 +1,15 @@
 from __future__ import annotations
 
-from copy import deepcopy
 from typing import Any
 
 from services.cypher_generator_agent.app.core.errors import GenerationFailureReason
 from services.cypher_generator_agent.app.core.result import ClarificationRequest, GenerationFailure
 from services.cypher_generator_agent.app.cypher_validation.models import validation_error
 from services.cypher_generator_agent.app.repair.controller import RepairController
-from services.cypher_generator_agent.app.repair.fingerprint import from_binding_plan
 from services.cypher_generator_agent.app.validation.models import SemanticValidationIssue
 
 
-def test_edge_endpoint_mismatch_enters_repair_with_llm() -> None:
+def test_edge_endpoint_mismatch_concedes_without_second_repair_llm() -> None:
     issue = SemanticValidationIssue(
         code="edge_endpoint_mismatch",
         message="SERVICE_USES_TUNNEL cannot connect Service to NetworkElement",
@@ -28,21 +26,21 @@ def test_edge_endpoint_mismatch_enters_repair_with_llm() -> None:
         )
     )
 
-    assert decision.decision == "repair_with_llm"
+    assert decision.decision == "generation_failed"
     assert decision.reason_code == "edge_endpoint_mismatch"
-    assert decision.repair_prompt_delta["question"] == "Gold 级别的服务都用了哪些 MPLS-TE 隧道"
-    assert decision.repair_prompt_delta["validator_errors"][0]["code"] == "edge_endpoint_mismatch"
+    assert decision.stop_reason == "edge_endpoint_mismatch"
+    assert decision.repair_prompt_delta == {}
     assert decision.clarification is None
 
 
-def test_a_b_a_binding_oscillation_stops_repair_with_generation_failed() -> None:
+def test_history_no_longer_drives_binding_oscillation_stop() -> None:
     plan_a = _binding_plan("SERVICE_USES_TUNNEL")
     plan_b = _binding_plan("DEVICE_HAS_PORT")
 
     decision = RepairController().decide(
         _controller_input(
             attempt_no=3,
-            selected_bindings=deepcopy(plan_a),
+            selected_bindings=plan_a,
             validator_errors=[
                 {
                     "code": "edge_endpoint_mismatch",
@@ -52,18 +50,52 @@ def test_a_b_a_binding_oscillation_stops_repair_with_generation_failed() -> None
                 }
             ],
             history=[
-                {"attempt_no": 1, "fingerprint": from_binding_plan(plan_a)},
-                {"attempt_no": 2, "fingerprint": from_binding_plan(plan_b)},
+                {"attempt_no": 1, "fingerprint": "plan-a"},
+                {"attempt_no": 2, "fingerprint": "plan-b"},
             ],
         )
     )
 
     assert decision.decision == "generation_failed"
-    assert decision.reason_code == "repair_binding_oscillation"
-    assert decision.stop_reason == "repair_binding_oscillation"
+    assert decision.reason_code == "edge_endpoint_mismatch"
+    assert decision.stop_reason == "edge_endpoint_mismatch"
 
 
-def test_repair_attempt_above_limit_stops_generation() -> None:
+def test_alternating_missing_requirements_no_longer_drive_repair_loop_stop() -> None:
+    plan_a = _binding_plan("SERVICE_USES_TUNNEL")
+    plan_b = _binding_plan("DEVICE_HAS_PORT")
+    plan_c = _binding_plan("PATH_THROUGH")
+
+    decision = RepairController().decide(
+        _controller_input(
+            attempt_no=3,
+            selected_bindings=plan_c,
+            validator_errors=[
+                _structural_missing_issue(["aggregate_required"])
+            ],
+            history=[
+                {
+                    "attempt_no": 1,
+                    "fingerprint": "plan-a",
+                    "error_code": "structural_coverage_missing",
+                    "missing_requirements": ["aggregate_required"],
+                },
+                {
+                    "attempt_no": 2,
+                    "fingerprint": "plan-b",
+                    "error_code": "structural_coverage_missing",
+                    "missing_requirements": ["path_hops_insufficient"],
+                },
+            ],
+        )
+    )
+
+    assert decision.decision == "generation_failed"
+    assert decision.reason_code == "structural_coverage_missing"
+    assert decision.stop_reason == "structural_coverage_missing"
+
+
+def test_attempt_count_no_longer_controls_single_shot_fallback() -> None:
     decision = RepairController().decide(
         _controller_input(
             attempt_no=4,
@@ -80,9 +112,9 @@ def test_repair_attempt_above_limit_stops_generation() -> None:
     )
 
     assert decision.decision == "generation_failed"
-    assert decision.reason_code == "max_repair_attempts_exceeded"
-    assert decision.stop_reason == "max_repair_attempts_exceeded"
-    GenerationFailure(reason=decision.reason_code)
+    assert decision.reason_code == "edge_endpoint_mismatch"
+    assert decision.stop_reason == "edge_endpoint_mismatch"
+    GenerationFailure(reason="max_repair_attempts_exceeded")
     assert "max_repair_attempts_exceeded" in GenerationFailureReason.__args__
 
 
@@ -354,4 +386,23 @@ def _binding_plan(edge_name: str) -> dict[str, Any]:
                 },
             }
         ],
+    }
+
+
+def _structural_missing_issue(codes: list[str]) -> dict[str, Any]:
+    return {
+        "code": "structural_coverage_missing",
+        "message": "DSL does not cover all structural requirements.",
+        "severity": "error",
+        "repairable": True,
+        "action": "repair_binding",
+        "details": {
+            "missing": [
+                {
+                    "code": code,
+                    "message": f"{code} missing",
+                }
+                for code in codes
+            ]
+        },
     }

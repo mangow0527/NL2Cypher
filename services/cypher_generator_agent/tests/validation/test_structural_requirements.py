@@ -1,0 +1,303 @@
+from __future__ import annotations
+
+from services.cypher_generator_agent.app.validation.structural_requirements import (
+    derive_structural_requirements,
+    validate_dsl_structural_coverage,
+)
+
+
+def test_derives_structural_requirements_from_existing_decomposition_slots() -> None:
+    requirements = derive_structural_requirements(
+        {
+            "schema_version": "question_decomposition_v1",
+            "original_question": "统计服务使用的隧道源节点所在位置的网元数量，按数量降序排列，返回前3名。",
+            "intent_type": "top_n",
+            "output_shape": "grouped_rows",
+            "substantive_terms": [
+                {"text": "3", "slot": "limit"},
+                {"text": "降序", "slot": "order_by"},
+                {"text": "位置", "slot": "group_by", "attached_to": "网元"},
+                {"text": "数量", "slot": "projection"},
+                {"text": "隧道", "slot": "path"},
+                {"text": "服务", "slot": "path"},
+                {"text": "使用", "slot": "path"},
+                {"text": "源节点", "slot": "path"},
+            ],
+        }
+    )
+
+    payload = requirements.model_dump(mode="json")
+    assert payload["requires_aggregate"] is True
+    assert payload["requires_group_by"] is True
+    assert payload["requires_order_by"] is True
+    assert payload["order_direction"] == "desc"
+    assert payload["requires_limit"] == {"required": True, "value": 3}
+    assert [term["text"] for term in payload["path_terms"]] == ["服务", "使用", "隧道", "源节点"]
+    assert payload["path_order_confidence"] == "high"
+    assert payload["min_path_hops"] == 2
+    assert payload["projection_terms"] == ["数量"]
+
+
+def test_top_n_with_group_order_limit_requires_aggregate_even_when_output_shape_is_rows() -> None:
+    requirements = derive_structural_requirements(
+        {
+            "schema_version": "question_decomposition_v1",
+            "original_question": "按隧道ID统计服务数量，按数量降序排列，返回前3名。",
+            "intent_type": "top_n",
+            "output_shape": "rows",
+            "substantive_terms": [
+                {"text": "隧道ID", "slot": "group_by", "attached_to": "隧道"},
+                {"text": "服务数量", "slot": "projection", "attached_to": "服务"},
+                {"text": "数量降序", "slot": "order_by"},
+                {"text": "前3", "slot": "limit"},
+            ],
+        }
+    )
+
+    assert requirements.requires_aggregate is True
+
+
+def test_path_term_positions_prefer_longer_non_overlapping_surface_matches() -> None:
+    requirements = derive_structural_requirements(
+        {
+            "original_question": "查询服务质量等级为Gold的服务使用的隧道",
+            "intent_type": "list",
+            "output_shape": "rows",
+            "substantive_terms": [
+                {"text": "隧道", "slot": "path"},
+                {"text": "服务", "slot": "path"},
+                {"text": "服务质量等级", "slot": "filter", "attached_to": "服务"},
+                {"text": "使用", "slot": "path"},
+            ],
+        }
+    )
+
+    payload = requirements.model_dump(mode="json")
+    assert [term["text"] for term in payload["path_terms"]] == ["服务", "使用", "隧道"]
+    service_position = payload["path_terms"][0]["position"]
+    assert service_position is not None
+    assert service_position > "查询服务质量等级为Gold的".find("服务质量等级")
+    assert payload["path_order_confidence"] == "high"
+
+
+def test_missing_path_positions_mark_low_confidence_and_gate_still_checks_hop_count() -> None:
+    requirements = derive_structural_requirements(
+        {
+            "original_question": "查询服务使用的隧道",
+            "intent_type": "list",
+            "output_shape": "rows",
+            "substantive_terms": [
+                {"text": "服务", "slot": "path"},
+                {"text": "穿过", "slot": "path"},
+                {"text": "隧道", "slot": "path"},
+                {"text": "不可见路径词", "slot": "path"},
+            ],
+        }
+    )
+
+    result = validate_dsl_structural_coverage(
+        requirements,
+        {
+            "schema_version": "restricted_query_dsl_v1",
+            "query_id": "low-confidence-path",
+            "query_shape": "vertex_lookup",
+            "source_question": "查询服务使用的隧道",
+            "bindings": {"target": {"vertex_name": "Service"}},
+            "operations": [],
+            "projection": {"items": [{"target": "target", "property": {"owner": "Service", "name": "id"}}]},
+        },
+    )
+
+    assert requirements.path_order_confidence == "low"
+    assert result.is_valid is False
+    assert result.missing[0]["code"] == "path_hops_insufficient"
+    assert result.missing[0]["details"]["order_checked"] is False
+
+
+def test_gate_reports_missing_aggregate_sort_limit_and_path_hops_without_checking_aliases() -> None:
+    requirements = derive_structural_requirements(
+        {
+            "original_question": "统计服务使用的隧道源节点所在位置的网元数量，按数量降序排列，返回前3名。",
+            "intent_type": "top_n",
+            "output_shape": "grouped_rows",
+            "substantive_terms": [
+                {"text": "服务", "slot": "path"},
+                {"text": "使用", "slot": "path"},
+                {"text": "隧道", "slot": "path"},
+                {"text": "源节点", "slot": "path"},
+                {"text": "位置", "slot": "group_by", "attached_to": "网元"},
+                {"text": "数量", "slot": "projection"},
+                {"text": "降序", "slot": "order_by"},
+                {"text": "3", "slot": "limit"},
+            ],
+        }
+    )
+
+    result = validate_dsl_structural_coverage(
+        requirements,
+        {
+            "schema_version": "restricted_query_dsl_v1",
+            "query_id": "qa_c3e83dd7ad32",
+            "query_shape": "single_hop_traversal",
+            "source_question": "统计服务使用的隧道源节点所在位置的网元数量，按数量降序排列，返回前3名。",
+            "bindings": {
+                "start": {"vertex_name": "Tunnel"},
+                "edge": {"edge_name": "TUNNEL_SRC"},
+                "end": {"vertex_name": "NetworkElement"},
+            },
+            "operations": [
+                {
+                    "op": "traverse_edge",
+                    "from": "start",
+                    "edge": "edge",
+                    "to": "end",
+                    "direction": "forward",
+                }
+            ],
+            "projection": {
+                "items": [
+                    {
+                        "alias": "network_element_id",
+                        "target": "end",
+                        "property": {"owner": "NetworkElement", "name": "id"},
+                    }
+                ]
+            },
+        },
+    )
+
+    assert result.is_valid is False
+    assert [item["code"] for item in result.missing] == [
+        "aggregate_required",
+        "group_by_required",
+        "order_by_required",
+        "limit_required",
+        "path_hops_insufficient",
+        "projection_terms_uncovered",
+    ]
+
+
+def test_gate_reports_uncovered_projection_terms_when_projection_is_partial() -> None:
+    requirements = derive_structural_requirements(
+        {
+            "original_question": "查询所有业务使用的隧道的ID、名称和带宽。",
+            "intent_type": "list",
+            "output_shape": "rows",
+            "substantive_terms": [
+                {"text": "业务", "slot": "path"},
+                {"text": "使用", "slot": "path"},
+                {"text": "隧道", "slot": "path"},
+                {"text": "ID", "slot": "projection"},
+                {"text": "名称", "slot": "projection"},
+                {"text": "带宽", "slot": "projection"},
+            ],
+        }
+    )
+
+    result = validate_dsl_structural_coverage(
+        requirements,
+        {
+            "schema_version": "restricted_query_dsl_v1",
+            "query_id": "qa_65f6a2d6ec7a",
+            "query_shape": "single_hop_traversal",
+            "source_question": "查询所有业务使用的隧道的ID、名称和带宽。",
+            "bindings": {
+                "v0": {"vertex_name": "Service"},
+                "edge_0": {"edge_name": "SERVICE_USES_TUNNEL"},
+                "v1": {"vertex_name": "Tunnel"},
+            },
+            "operations": [
+                {"op": "traverse_edge", "from": "v0", "edge": "edge_0", "to": "v1", "direction": "forward"}
+            ],
+            "projection": {
+                "items": [
+                    {
+                        "alias": "tunnel_id",
+                        "target": "v1",
+                        "property": {"owner": "Tunnel", "name": "id"},
+                        "projection_terms": ["ID"],
+                    }
+                ]
+            },
+        },
+    )
+
+    assert result.is_valid is False
+    projection_missing = [item for item in result.missing if item["code"] == "projection_terms_uncovered"]
+    assert projection_missing
+    assert projection_missing[0]["details"]["uncovered"] == ["名称", "带宽"]
+
+
+def test_gate_accepts_matching_structure_without_requiring_specific_edge_or_alias() -> None:
+    requirements = derive_structural_requirements(
+        {
+            "original_question": "统计服务使用的隧道源节点所在位置的网元数量，按数量降序排列，返回前3名。",
+            "intent_type": "top_n",
+            "output_shape": "grouped_rows",
+            "substantive_terms": [
+                {"text": "服务", "slot": "path"},
+                {"text": "使用", "slot": "path"},
+                {"text": "隧道", "slot": "path"},
+                {"text": "源节点", "slot": "path"},
+                {"text": "位置", "slot": "group_by", "attached_to": "网元"},
+                {"text": "数量", "slot": "projection"},
+                {"text": "降序", "slot": "order_by"},
+                {"text": "3", "slot": "limit"},
+            ],
+        }
+    )
+
+    result = validate_dsl_structural_coverage(
+        requirements,
+        {
+            "schema_version": "restricted_query_dsl_v1",
+            "query_id": "qa_c3e83dd7ad32",
+            "query_shape": "ad_hoc_aggregate",
+            "source_question": "统计服务使用的隧道源节点所在位置的网元数量，按数量降序排列，返回前3名。",
+            "bindings": {
+                "svc": {"vertex_name": "Service"},
+                "tun": {"vertex_name": "Tunnel"},
+                "ne": {"vertex_name": "NetworkElement"},
+            },
+            "operations": [
+                {
+                    "op": "aggregate",
+                    "group_by": [
+                        {
+                            "alias": "location",
+                            "target": "ne",
+                            "property": {"owner": "NetworkElement", "name": "location"},
+                        }
+                    ],
+                    "measures": [
+                        {
+                            "alias": "cnt",
+                            "function": "count",
+                            "target": "ne",
+                            "property": {"owner": "NetworkElement", "name": "id"},
+                        }
+                    ],
+                },
+                {"op": "sort", "by": [{"source": "measure.cnt", "direction": "desc"}]},
+                {"op": "limit", "value": 3},
+                {
+                    "op": "variable_path",
+                    "bind_as": "path",
+                    "start": "svc",
+                    "through": {"vertex_ref": "ne", "filters": []},
+                    "allowed_edges": ["SERVICE_USES_TUNNEL", "TUNNEL_SRC"],
+                    "min_hops": 2,
+                    "max_hops": 8,
+                },
+            ],
+            "projection": {
+                "items": [
+                    {"alias": "whatever_alias", "source": "group.location"},
+                        {"alias": "cnt", "source": "measure.cnt", "projection_terms": ["数量"]},
+                    ]
+                },
+            },
+        )
+
+    assert result.is_valid is True
+    assert result.missing == []

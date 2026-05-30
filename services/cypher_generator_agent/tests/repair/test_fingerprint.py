@@ -66,14 +66,14 @@ def test_binding_plan_vertex_order_changes_fingerprint_when_roles_are_absent() -
     assert from_binding_plan(plan) != from_binding_plan(swapped)
 
 
-def test_real_binding_plan_literal_binding_values_change_fingerprint() -> None:
+def test_real_binding_plan_literal_binding_values_do_not_change_structural_fingerprint() -> None:
     plan = BindingPlan.model_validate(_binding_plan() | {"literal_bindings": [_literal_binding("ne-0001")]})
     changed = BindingPlan.model_validate(_binding_plan() | {"literal_bindings": [_literal_binding("ne-0002")]})
 
-    assert from_binding_plan(plan) != from_binding_plan(changed)
+    assert from_binding_plan(plan) == from_binding_plan(changed)
 
 
-def test_real_restricted_dsl_traverse_endpoints_and_projection_order_change_fingerprint() -> None:
+def test_real_restricted_dsl_traverse_endpoints_change_but_projection_order_does_not_change_fingerprint() -> None:
     base = RestrictedQueryDslModel.model_validate(_single_hop_dsl())
 
     endpoint_changed_payload = _single_hop_dsl()
@@ -88,7 +88,31 @@ def test_real_restricted_dsl_traverse_endpoints_and_projection_order_change_fing
     projection_changed = RestrictedQueryDslModel.model_validate(projection_changed_payload)
 
     assert from_dsl(base) != from_dsl(endpoint_changed)
-    assert from_dsl(base) != from_dsl(projection_changed)
+    assert from_dsl(base) == from_dsl(projection_changed)
+
+
+def test_dsl_fingerprint_ignores_edge_direction_for_same_structural_skeleton() -> None:
+    base = _single_hop_dsl()
+    direction_changed = deepcopy(base)
+    direction_changed["operations"][0]["direction"] = "backward"
+
+    assert from_dsl(direction_changed) == from_dsl(base)
+
+
+def test_dsl_fingerprint_ignores_group_by_property_and_sort_target_identity() -> None:
+    base = _two_step_aggregate_dsl()
+
+    group_property_changed = deepcopy(base)
+    group_property_changed["operations"][0]["group_by"][0]["property"] = {
+        "owner": "NetworkElement",
+        "name": "location",
+    }
+
+    sort_target_changed = deepcopy(base)
+    sort_target_changed["operations"][2]["by"][0]["source"] = "device_port_counts.other_count"
+
+    assert from_dsl(group_property_changed) == from_dsl(base)
+    assert from_dsl(sort_target_changed) == from_dsl(base)
 
 
 def test_two_step_aggregate_subquery_payload_keeps_nested_aggregate_fields_inside_subquery() -> None:
@@ -115,7 +139,7 @@ def test_two_step_aggregate_subquery_payload_keeps_nested_aggregate_fields_insid
     ]
 
 
-def test_two_step_aggregate_subquery_fingerprint_distinguishes_substantive_changes() -> None:
+def test_two_step_aggregate_value_changes_do_not_change_structural_fingerprint() -> None:
     base = _two_step_aggregate_dsl()
 
     measure_changed = deepcopy(base)
@@ -132,13 +156,13 @@ def test_two_step_aggregate_subquery_fingerprint_distinguishes_substantive_chang
 
     base_fingerprint = from_dsl(base)
 
-    assert from_dsl(measure_changed) != base_fingerprint
-    assert from_dsl(filter_subquery_changed) != base_fingerprint
-    assert from_dsl(sort_changed) != base_fingerprint
-    assert from_dsl(limit_changed) != base_fingerprint
+    assert from_dsl(measure_changed) == base_fingerprint
+    assert from_dsl(filter_subquery_changed) == base_fingerprint
+    assert from_dsl(sort_changed) == base_fingerprint
+    assert from_dsl(limit_changed) == base_fingerprint
 
 
-def test_two_step_aggregate_subquery_fingerprint_distinguishes_measure_identity() -> None:
+def test_two_step_aggregate_measure_identity_does_not_change_structural_fingerprint() -> None:
     base = _two_step_aggregate_dsl()
     service_count_changed = deepcopy(base)
     service_count_changed["operations"][0]["measures"][0]["alias"] = "service_count"
@@ -148,7 +172,7 @@ def test_two_step_aggregate_subquery_fingerprint_distinguishes_measure_identity(
     }
     service_count_changed["operations"][0]["measures"][0]["target"] = "service"
 
-    assert from_dsl(service_count_changed) != from_dsl(base)
+    assert from_dsl(service_count_changed) == from_dsl(base)
 
 
 def test_use_path_pattern_parameters_change_fingerprint() -> None:
@@ -159,12 +183,12 @@ def test_use_path_pattern_parameters_change_fingerprint() -> None:
     assert from_dsl(base) != from_dsl(changed)
 
 
-def test_variable_path_through_filters_change_fingerprint() -> None:
+def test_variable_path_through_filters_do_not_change_structural_fingerprint() -> None:
     base = _variable_path_dsl()
     changed = deepcopy(base)
     changed["operations"][0]["through"]["filters"][0]["value"] = "ne-0002"
 
-    assert from_dsl(base) != from_dsl(changed)
+    assert from_dsl(base) == from_dsl(changed)
 
 
 def test_real_restricted_dsl_variable_path_parameters_change_fingerprint() -> None:
@@ -191,7 +215,7 @@ def test_real_restricted_dsl_variable_path_parameters_change_fingerprint() -> No
     max_hops_changed = RestrictedQueryDslModel.model_validate(changed_payload)
 
     base_fingerprint = from_dsl(base)
-    assert from_dsl(bind_changed) != base_fingerprint
+    assert from_dsl(bind_changed) == base_fingerprint
     assert from_dsl(start_changed) != base_fingerprint
     assert from_dsl(through_changed) != base_fingerprint
     assert from_dsl(min_hops_changed) != base_fingerprint

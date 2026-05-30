@@ -27,70 +27,12 @@ IGNORED_KEYS = frozenset(
 
 def from_binding_plan(plan: Mapping[str, Any] | object) -> str:
     payload = _dump_mapping(plan)
-    canonical = {
-        "query_shape": payload.get("query_shape"),
-        "vertices": [
-            {"role": item.get("role") or f"vertex_{index}", "name": item.get("name")}
-            for index, item in enumerate(_as_list(payload.get("vertex_bindings")))
-            if isinstance(item, Mapping)
-        ],
-        "edges": [
-            {
-                "role": item.get("role") or f"edge_{index}",
-                "name": item.get("name"),
-                "direction": item.get("direction", "forward"),
-            }
-            for index, item in enumerate(_as_list(payload.get("edge_bindings")))
-            if isinstance(item, Mapping)
-        ],
-        "properties": [
-            {
-                "owner": item.get("owner"),
-                "name": item.get("name"),
-                "role": item.get("role"),
-            }
-            for item in _as_list(payload.get("property_bindings"))
-            if isinstance(item, Mapping)
-        ],
-        "filters": [
-            {
-                "target": item.get("target") or item.get("owner"),
-                "property": item.get("property"),
-                "operator": item.get("operator"),
-                "value": _literal_value(item),
-            }
-            for item in _as_list(payload.get("filters"))
-            if isinstance(item, Mapping)
-        ],
-        "literals": [
-            _binding_literal_payload(index, item)
-            for index, item in enumerate(_as_list(payload.get("literal_bindings")))
-            if isinstance(item, Mapping)
-        ],
-        "path_patterns": [
-            {"name": item.get("name")}
-            for item in _as_list(payload.get("path_pattern_bindings"))
-            if isinstance(item, Mapping)
-        ],
-        "projections": _with_positions(_as_list(payload.get("projection"))),
-        "groups": _with_positions(_as_list(payload.get("group_by"))),
-        "metrics": [
-            {"name": item.get("name")}
-            for item in _as_list(payload.get("metric_bindings"))
-            if isinstance(item, Mapping)
-        ],
-        "measures": _with_positions(_as_list(payload.get("measures"))),
-        "sorts": _with_positions(_as_list(payload.get("sort"))),
-        "limits": [{"value": payload.get("limit")}] if payload.get("limit") is not None else [],
-        "subqueries": payload.get("subqueries", []),
-    }
-    return canonicalize_state(canonical)
+    return canonicalize_state(_binding_plan_structural_payload(payload))
 
 
 def from_dsl(dsl: Mapping[str, Any] | object) -> str:
     payload = _dump_mapping(dsl)
-    canonical = _dsl_payload(payload)
-    return canonicalize_state(canonical)
+    return canonicalize_state(_dsl_structural_payload(payload))
 
 
 def canonicalize_state(payload: Mapping[str, Any] | object) -> str:
@@ -101,6 +43,192 @@ def canonicalize_state(payload: Mapping[str, Any] | object) -> str:
 
 def canonical_payload(payload: Mapping[str, Any] | object) -> dict[str, Any]:
     return _canonicalize(_dump_mapping(payload))
+
+
+def _binding_plan_structural_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    query_shape = payload.get("query_shape")
+    vertices = [
+        str(item.get("name") or "")
+        for item in _as_list(payload.get("vertex_bindings"))
+        if isinstance(item, Mapping) and item.get("name")
+    ]
+    edge_count = len(
+        [
+            item
+            for item in _as_list(payload.get("edge_bindings"))
+            if isinstance(item, Mapping) and item.get("name")
+        ]
+    )
+    return {
+        "query_shape": query_shape,
+        "path": {
+            "hop_count": edge_count,
+            "vertex_labels": _positioned_values(vertices),
+        },
+        "ops": {
+            "aggregate": _binding_has_aggregate(payload),
+            "group_by": bool(_as_list(payload.get("group_by"))),
+            "order_by": bool(_as_list(payload.get("sort"))),
+            "limit": payload.get("limit") is not None,
+        },
+        "projection_fields": _projection_field_set(_as_list(payload.get("projection"))),
+        "subqueries": [
+            _binding_plan_structural_payload(item)
+            for item in _as_list(payload.get("subqueries"))
+            if isinstance(item, Mapping)
+        ],
+    }
+
+
+def _dsl_structural_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    operations = _as_list(payload.get("operations"))
+    local_operations = [
+        op
+        for op in operations
+        if isinstance(op, Mapping) and op.get("op") != "subquery"
+    ]
+    return {
+        "query_shape": payload.get("query_shape"),
+        "path": _dsl_path_skeleton(payload, local_operations),
+        "ops": {
+            "aggregate": _dsl_has_aggregate(payload, local_operations),
+            "group_by": _dsl_has_group_by(payload, local_operations),
+            "order_by": _dsl_has_order_by(payload, local_operations),
+            "limit": bool(_dsl_limits(payload, local_operations)),
+        },
+        "projection_fields": _projection_field_set(_projection_items(payload)),
+        "subqueries": [
+            _dsl_structural_payload(op)
+            for op in operations
+            if isinstance(op, Mapping) and op.get("op") == "subquery"
+        ],
+    }
+
+
+def _binding_has_aggregate(payload: Mapping[str, Any]) -> bool:
+    query_shape = str(payload.get("query_shape") or "")
+    if query_shape in {"metric_aggregate", "ad_hoc_aggregate", "top_n", "two_step_aggregate"}:
+        return True
+    return bool(
+        _as_list(payload.get("metric_bindings"))
+        or _as_list(payload.get("measures"))
+    )
+
+
+def _dsl_has_aggregate(payload: Mapping[str, Any], operations: list[Any]) -> bool:
+    query_shape = str(payload.get("query_shape") or "")
+    if query_shape in {"metric_aggregate", "ad_hoc_aggregate", "top_n", "two_step_aggregate"}:
+        return True
+    if _as_list(payload.get("measures")):
+        return True
+    return any(
+        isinstance(op, Mapping)
+        and op.get("op") in {"aggregate", "metric_aggregate"}
+        for op in operations
+    )
+
+
+def _dsl_has_group_by(payload: Mapping[str, Any], operations: list[Any]) -> bool:
+    return bool(_as_list(payload.get("group_by")) or _collect_operation_values(operations, "group_by"))
+
+
+def _dsl_has_order_by(payload: Mapping[str, Any], operations: list[Any]) -> bool:
+    return bool(_as_list(payload.get("order_by")) or _collect_operation_values(operations, "by"))
+
+
+def _dsl_path_skeleton(payload: Mapping[str, Any], operations: list[Any]) -> dict[str, Any]:
+    bindings = payload.get("bindings", {})
+    role_to_vertex = _role_to_vertex_label(bindings)
+    vertex_labels: list[str] = []
+    hop_count = 0
+    variable_paths: list[dict[str, Any]] = []
+    path_patterns: list[dict[str, Any]] = []
+
+    for op in operations:
+        if not isinstance(op, Mapping):
+            continue
+        if op.get("op") == "traverse_edge":
+            hop_count += 1
+            start = role_to_vertex.get(str(op.get("from") or op.get("from_ref") or ""))
+            end = role_to_vertex.get(str(op.get("to") or ""))
+            if start and (not vertex_labels or vertex_labels[-1] != start):
+                vertex_labels.append(start)
+            if end:
+                vertex_labels.append(end)
+        elif op.get("op") == "variable_path":
+            hop_count += int(op.get("min_hops") or 0)
+            through = op.get("through")
+            variable_paths.append(
+                {
+                    "start": role_to_vertex.get(str(op.get("start") or "")),
+                    "through": role_to_vertex.get(str(through.get("vertex_ref") or ""))
+                    if isinstance(through, Mapping)
+                    else None,
+                    "min_hops": op.get("min_hops"),
+                    "max_hops": op.get("max_hops"),
+                }
+            )
+        elif op.get("op") == "use_path_pattern":
+            parameters = op.get("parameters")
+            path_patterns.append(
+                {
+                    "min_hops": parameters.get("min_hops") if isinstance(parameters, Mapping) else None,
+                    "max_hops": parameters.get("max_hops") if isinstance(parameters, Mapping) else None,
+                }
+            )
+
+    return {
+        "hop_count": hop_count,
+        "vertex_labels": _positioned_values(vertex_labels),
+        "variable_paths": variable_paths,
+        "path_patterns": path_patterns,
+    }
+
+
+def _role_to_vertex_label(bindings: Any) -> dict[str, str]:
+    if not isinstance(bindings, Mapping):
+        return {}
+    return {
+        str(role): str(binding.get("vertex_name"))
+        for role, binding in bindings.items()
+        if isinstance(binding, Mapping) and binding.get("vertex_name")
+    }
+
+
+def _projection_field_set(items: list[Any]) -> list[str]:
+    fields = {_projection_field_key(item) for item in items}
+    return sorted(field for field in fields if field)
+
+
+def _projection_field_key(item: Any) -> str:
+    if not isinstance(item, Mapping):
+        return str(item)
+    property_ref = item.get("property")
+    if isinstance(property_ref, Mapping):
+        owner = property_ref.get("owner")
+        name = property_ref.get("name") or property_ref.get("property_name")
+        if owner and name:
+            return f"{owner}.{name}"
+    owner = item.get("owner")
+    name = item.get("name") or item.get("property") or item.get("property_name")
+    if owner and name:
+        return f"{owner}.{name}"
+    source = item.get("source")
+    if source:
+        return str(source)
+    alias = item.get("alias")
+    if alias:
+        return str(alias)
+    semantic_id = item.get("semantic_id")
+    return str(semantic_id or "")
+
+
+def _positioned_values(values: list[str]) -> list[dict[str, Any]]:
+    return [
+        {"position": index, "label": value}
+        for index, value in enumerate(values)
+        if value
+    ]
 
 
 def _dsl_payload(payload: Mapping[str, Any]) -> dict[str, Any]:

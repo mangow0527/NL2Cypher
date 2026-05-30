@@ -204,11 +204,11 @@ def test_golden_questions_have_required_contract_fields_and_coverage() -> None:
         "literal",
         "coverage_failure",
         "aggregate",
-        "projection_slot",
-        "unsupported_query",
-        "repair_oscillation",
-        "readonly_violation",
-        "shape_mismatch",
+            "projection_slot",
+            "unsupported_query",
+            "single_shot_concede",
+            "readonly_violation",
+            "shape_mismatch",
     } <= coverage
 
     for case in golden_questions:

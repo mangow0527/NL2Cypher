@@ -169,6 +169,8 @@ class SubqueryOperation:
     query_shape: QueryShape
     group_by: list[Dimension]
     measures: list[Measure]
+    carry_roles: list[RoleReference] = field(default_factory=list)
+    operations: list[TraverseEdgeOperation] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

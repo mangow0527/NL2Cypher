@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
+import pytest
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -23,8 +24,8 @@ def test_runtime_results_center_html_exposes_pipeline_sections(monkeypatch, tmp_
     response = client.get("/console")
 
     assert response.status_code == 200
-    assert "运行结果中心" in response.text
-    assert "Runtime Results Center" in response.text
+    assert "NL2Cypher 工作台" in response.text
+    assert "NL2Cypher Workbench" in response.text
     assert "只展示符合 testing-agent 新契约的正式运行索引" not in response.text
     assert "点击任务后进入独立详情页查看" not in response.text
     assert "Cypher 结果与质量" not in response.text
@@ -34,6 +35,9 @@ def test_runtime_results_center_html_exposes_pipeline_sections(monkeypatch, tmp_
     assert "Runtime Service Status" not in response.text
     assert "难度结论概览" in response.text
     assert "任务明细表" in response.text
+    assert "用户查询" in response.text
+    assert "user-query-view" in response.text
+    assert "query-question" in response.text
     assert "按难度过滤" in response.text
     assert "按 ID 搜索" in response.text
     assert "service-grid" not in response.text
@@ -42,6 +46,544 @@ def test_runtime_results_center_html_exposes_pipeline_sections(monkeypatch, tmp_
     assert "pipeline-view" not in response.text
     assert "Agent 落盘信息" not in response.text
     assert "开始联调" not in response.text
+
+
+def test_runtime_results_center_assets_have_file_open_fallbacks():
+    html = (Path(__file__).resolve().parents[1] / "console" / "runtime_console" / "ui" / "index.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'href="/ui/styles.css?v=' in html
+    assert "this.href='styles.css?v=" in html
+    assert 'src="/ui/app.js?v=' in html
+    assert "this.src='app.js?v=" in html
+
+
+def test_user_query_history_opens_separate_detail_page(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(tmp_path / "testing"))
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_REPAIR_DATA_DIR", str(tmp_path / "repair"))
+
+    from console.runtime_console.app.main import create_app
+
+    root = Path(__file__).resolve().parents[1]
+    html = (root / "console" / "runtime_console" / "ui" / "index.html").read_text(encoding="utf-8")
+    script = (root / "console" / "runtime_console" / "ui" / "app.js").read_text(encoding="utf-8")
+    detail_html = (root / "console" / "runtime_console" / "ui" / "user_query_detail.html").read_text(encoding="utf-8")
+    detail_script = (root / "console" / "runtime_console" / "ui" / "user_query_detail.js").read_text(encoding="utf-8")
+    client = TestClient(create_app())
+
+    assert "历史详情" not in html
+    assert 'id="user-query-history-detail"' not in html
+    assert "window.location.href = `/console/user-queries/${encodeURIComponent(row.dataset.userQueryId)}`" in script
+    assert "renderUserQueryRecord(record, userQueryHistoryDetail)" not in script
+    assert "用户查询详情" in detail_html
+    assert "用户查询详情 - NL2Cypher 工作台" in detail_html
+    assert "NL2Cypher 工作台 / 用户查询详情" in detail_html
+    assert "返回用户查询" in detail_html
+    assert "user_query_detail.js" in detail_html
+    assert "fetch(`/api/v1/user-queries/${encodeURIComponent(userQueryId)}`)" in detail_script
+    assert "TuGraph 查询结果" in detail_script
+
+    response = client.get("/console/user-queries/uq_contract_001")
+
+    assert response.status_code == 200
+    assert "用户查询详情" in response.text
+    assert "用户查询详情 - NL2Cypher 工作台" in response.text
+    assert "user_query_detail.js" in response.text
+
+
+def test_user_query_scripts_render_customer_diagnostic_and_folded_cga_evidence():
+    root = Path(__file__).resolve().parents[1]
+    app_script = (root / "console" / "runtime_console" / "ui" / "app.js").read_text(encoding="utf-8")
+    detail_script = (root / "console" / "runtime_console" / "ui" / "user_query_detail.js").read_text(encoding="utf-8")
+
+    for script in (app_script, detail_script):
+        assert "renderCgaDiagnostic" in script
+        assert "结果诊断" in script
+        assert "主要原因" in script
+        assert "建议改问" in script
+        assert "诊断生成失败" in script
+        assert "CGA 落盘信息" in script
+        assert "CGA 全流程" in script
+        assert "GraphTrace v1 阶段明细" in script
+        assert "cga-evidence-block" in script
+        assert "CGA 反馈信息" not in script
+
+
+def test_user_query_scripts_disable_download_when_tugraph_response_is_missing():
+    root = Path(__file__).resolve().parents[1]
+    app_script = (root / "console" / "runtime_console" / "ui" / "app.js").read_text(encoding="utf-8")
+    detail_script = (root / "console" / "runtime_console" / "ui" / "user_query_detail.js").read_text(encoding="utf-8")
+
+    for script in (app_script, detail_script):
+        assert "renderTugraphDownloadLink" in script
+        assert "has_tugraph_response" in script
+        assert "下载 TuGraph JSON" in script
+        assert "无 TuGraph 结果" in script
+    assert "renderTugraphDownloadLink(item, 'history-download')" in app_script
+    assert "下载 JSON" not in app_script
+    assert "下载 JSON" not in detail_script
+
+    styles = (root / "console" / "runtime_console" / "ui" / "styles.css").read_text(encoding="utf-8")
+    assert "background: linear-gradient(135deg, #177245, #0f5d39);" in styles
+    assert "box-shadow: 0 12px 22px rgba(23, 114, 69, 0.22);" in styles
+    assert ".download-link:hover" in styles
+
+
+def test_user_query_form_exposes_generation_progress_steps():
+    root = Path(__file__).resolve().parents[1]
+    html = (root / "console" / "runtime_console" / "ui" / "index.html").read_text(encoding="utf-8")
+    script = (root / "console" / "runtime_console" / "ui" / "app.js").read_text(encoding="utf-8")
+    styles = (root / "console" / "runtime_console" / "ui" / "styles.css").read_text(encoding="utf-8")
+
+    assert 'id="user-query-progress"' in html
+    assert 'id="user-query-progress-fill"' in html
+    assert 'id="user-query-progress-steps"' in html
+    assert "queryProgressSteps" in script
+    assert "CGA 生成 Cypher" in script
+    assert "TuGraph 查询" in script
+    assert "诊断生成" in script
+    assert "反馈整理" in script
+    assert "updateQueryProgress" in script
+    assert "updateQueryProgressFromRecord" in script
+    assert "pollUserQueryDiagnostic" in script
+    assert "查询结果已返回，诊断生成中。" in script
+    assert "activeKey === 'idle' ? -1" in script
+    assert "is-complete" in script
+    assert "is-done" not in script
+    assert ".query-progress" in styles
+    assert "grid-template-columns: repeat(5, minmax(0, 1fr));" in styles
+    assert ".query-progress-step.is-active" in styles
+
+
+class FakeCgaClient:
+    def __init__(self) -> None:
+        self.requests = []
+
+    async def generate(self, *, user_query_id: str, question: str, generation_run_id: str) -> dict:
+        self.requests.append(
+            {
+                "id": user_query_id,
+                "question": question,
+                "generation_run_id": generation_run_id,
+            }
+        )
+        return {
+            "status": "generated",
+            "cypher": "MATCH (n) RETURN n.name AS name",
+            "dsl": {"schema_version": "restricted_query_dsl_v1"},
+            "trace": {
+                "trace_schema_version": "cga_graph_trace_v1",
+                "trace_id": generation_run_id,
+                "question_id": user_query_id,
+                "generation_run_id": generation_run_id,
+                "source_question": question,
+                "started_at": "2026-05-30T00:00:00+00:00",
+                "finished_at": "2026-05-30T00:00:01.200000+00:00",
+                "final_status": "generated",
+                "stages": [],
+                "final_outputs": {"cypher": "MATCH (n) RETURN n.name AS name"},
+            },
+            "user_visible_notices": [],
+        }
+
+
+class FakeTuGraphQueryClient:
+    def __init__(self, row_count: int = 105) -> None:
+        self.requests = []
+        self.row_count = row_count
+
+    async def execute(self, *, user_query_id: str, cypher: str) -> dict:
+        self.requests.append({"user_query_id": user_query_id, "cypher": cypher})
+        rows = [[f"device-{index}"] for index in range(self.row_count)]
+        return {
+            "header": [{"name": "name"}],
+            "result": rows,
+        }
+
+
+class FakeCgaUnsupportedClient:
+    def __init__(self) -> None:
+        self.requests = []
+
+    async def generate(self, *, user_query_id: str, question: str, generation_run_id: str) -> dict:
+        self.requests.append(
+            {
+                "id": user_query_id,
+                "question": question,
+                "generation_run_id": generation_run_id,
+            }
+        )
+        return {
+            "status": "unsupported_query_shape",
+            "cypher": None,
+            "failure": {
+                "reason": "unsupported_query_shape",
+                "message": "无法找到与查询中实体和属性匹配的语义绑定。",
+                "suggested_rewrites": ["请确认图模型中存在表示'香蕉'、'今天'和'开心'的节点或属性。"],
+                "details": {
+                    "grounded_understanding": {
+                        "coverage": {
+                            "substantive_terms": {
+                                "total": 3,
+                                "covered": 0,
+                                "uncovered": ["香蕉", "今天", "开心"],
+                            }
+                        },
+                        "unsupported": {
+                            "reason_code": "missing_candidate_bindings",
+                            "message": "无法找到与查询中实体和属性匹配的语义绑定。",
+                            "suggested_rewrites": ["请确认图模型中存在表示'香蕉'、'今天'和'开心'的节点或属性。"],
+                        },
+                    }
+                },
+            },
+            "trace": {
+                "trace_schema_version": "cga_graph_trace_v1",
+                "trace_id": generation_run_id,
+                "question_id": user_query_id,
+                "generation_run_id": generation_run_id,
+                "source_question": question,
+                "started_at": "2026-05-30T00:00:00+00:00",
+                "finished_at": "2026-05-30T00:00:00.300000+00:00",
+                "final_status": "unsupported_query_shape",
+                "stages": [
+                    {
+                        "stage": "output",
+                        "status": "failed",
+                        "duration_ms": 0,
+                        "errors": [
+                            {
+                                "code": "unsupported_query_shape",
+                                "message": "无法找到与查询中实体和属性匹配的语义绑定。",
+                            }
+                        ],
+                    }
+                ],
+                "final_outputs": {
+                    "failure": {
+                        "reason": "unsupported_query_shape",
+                        "message": "无法找到与查询中实体和属性匹配的语义绑定。",
+                        "details": {
+                            "grounded_understanding": {
+                                "coverage": {"substantive_terms": {"uncovered": ["香蕉", "今天", "开心"]}},
+                            }
+                        },
+                    },
+                    "user_visible_notices": [],
+                },
+            },
+            "user_visible_notices": [],
+        }
+
+
+class FakeDiagnosticClient:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.requests = []
+
+    async def generate(self, *, facts: dict) -> dict:
+        self.requests.append(facts)
+        if self.fail:
+            raise RuntimeError("glm timeout")
+        return {
+            "title": "未能完成查询",
+            "summary": "这个问题里的部分内容没有匹配到当前网络资源图谱。",
+            "main_reason": "系统没有识别出“香蕉”“今天”“开心”这些查询内容对应的网络对象或条件。",
+            "suggested_questions": ["请改为查询服务、隧道、设备、端口等网络资源。"],
+        }
+
+
+def test_cga_diagnostic_fact_pack_is_business_readable():
+    from console.runtime_console.app.diagnostics import build_cga_diagnostic_facts
+
+    cga_generation = {
+        "status": "unsupported_query_shape",
+        "failure": {
+            "reason": "unsupported_query_shape",
+            "message": "无法找到与查询中实体和属性匹配的语义绑定。",
+            "details": {
+                "grounded_understanding": {
+                    "coverage": {"substantive_terms": {"uncovered": ["香蕉", "今天", "开心"]}},
+                    "unsupported": {
+                        "reason_code": "missing_candidate_bindings",
+                        "message": "无法找到与查询中实体和属性匹配的语义绑定。",
+                        "suggested_rewrites": ["请确认图模型中存在表示'香蕉'、'今天'和'开心'的节点或属性。"],
+                    },
+                }
+            },
+        },
+        "trace": {
+            "final_status": "unsupported_query_shape",
+            "stages": [
+                {
+                    "stage": "output",
+                    "status": "failed",
+                    "errors": [{"code": "unsupported_query_shape", "message": "无法找到与查询中实体和属性匹配的语义绑定。"}],
+                }
+            ],
+        },
+    }
+
+    facts = build_cga_diagnostic_facts(
+        user_query_id="uq-fact-pack",
+        question="查询香蕉今天开心吗",
+        status="unsupported_query_shape",
+        generation_status="unsupported_query_shape",
+        cga_generation=cga_generation,
+        cga_error=None,
+        tugraph_response=None,
+        generated_cypher=None,
+    )
+
+    assert facts["task"] == "请面向业务用户解释这次自然语言图查询为什么没有完成，并给出可执行的改问建议。"
+    assert facts["domain"] == "网络资源图谱查询，常见对象包括服务、隧道、设备、端口、链路等。"
+    assert facts["user_question"] == "查询香蕉今天开心吗"
+    assert facts["primary_failure"]["reason_code"] == "unsupported_query_shape"
+    assert facts["question_understanding"]["unrecognized_terms"] == ["香蕉", "今天", "开心"]
+    assert facts["cga_suggested_rewrites"] == ["请确认图模型中存在表示'香蕉'、'今天'和'开心'的节点或属性。"]
+    assert "不要提到 Cypher、trace、schema、错误码、阶段名。" in facts["constraints"]
+    assert facts["output_schema"]["title"] == "string"
+
+
+@pytest.mark.asyncio
+async def test_cga_diagnostic_llm_client_requires_explicit_runtime_configuration():
+    from console.runtime_console.app.diagnostics import RuntimeCgaDiagnosticLLMClient
+
+    client = RuntimeCgaDiagnosticLLMClient(
+        base_url=None,
+        api_key=None,
+        model=None,
+        timeout_seconds=1,
+        temperature=0.1,
+    )
+
+    with pytest.raises(RuntimeError, match="诊断 LLM 配置缺失"):
+        await client.generate(facts={"user_question": "查询香蕉今天开心吗"})
+
+
+@pytest.mark.asyncio
+async def test_user_query_service_uses_user_query_ids_and_full_result_preview(tmp_path: Path):
+    from console.runtime_console.app.user_queries import RuntimeUserQueryService
+
+    cga_client = FakeCgaClient()
+    tugraph_client = FakeTuGraphQueryClient(row_count=105)
+    service = RuntimeUserQueryService(
+        data_dir=tmp_path / "user_queries",
+        cga_client=cga_client,
+        tugraph_client=tugraph_client,
+        diagnostic_client=FakeDiagnosticClient(),
+        history_limit=20,
+        preview_row_limit=100,
+    )
+
+    record = await service.create_user_query(question="查询网络设备名称")
+
+    assert record["schema_version"] == "runtime_user_query_v1"
+    assert record["user_query_id"].startswith("uq-")
+    assert "qa_id" not in record
+    assert "id" not in record
+    assert cga_client.requests == [
+        {
+            "id": record["user_query_id"],
+            "question": "查询网络设备名称",
+            "generation_run_id": record["generation_run_id"],
+        }
+    ]
+    assert tugraph_client.requests == [
+        {
+            "user_query_id": record["user_query_id"],
+            "cypher": "MATCH (n) RETURN n.name AS name",
+        }
+    ]
+    assert record["status"] == "completed"
+    assert record["generated_cypher"] == "MATCH (n) RETURN n.name AS name"
+    assert record["cga_elapsed_ms"] == 1200
+    assert "tugraph_execution" not in record
+    assert record["tugraph_response"]["header"] == [{"name": "name"}]
+    assert len(record["tugraph_response"]["result"]) == 105
+    assert record["result_preview"]["preview_row_limit"] == 100
+    assert len(record["result_preview"]["rows"]) == 100
+    assert record["result_preview"]["rows"][0] == {"name": "device-0"}
+    assert record["result_preview"]["row_count"] == 105
+    assert record["result_preview"]["truncated"] is True
+    assert record["cga_diagnostic"]["status"] == "not_required"
+    payload, error = service.get_tugraph_download_payload(record["user_query_id"])
+    assert error is None
+    assert payload == record["tugraph_response"]
+
+
+@pytest.mark.asyncio
+async def test_user_query_service_persists_llm_generated_cga_diagnostic(tmp_path: Path):
+    from console.runtime_console.app.user_queries import RuntimeUserQueryService
+
+    diagnostic_client = FakeDiagnosticClient()
+    service = RuntimeUserQueryService(
+        data_dir=tmp_path / "user_queries",
+        cga_client=FakeCgaUnsupportedClient(),
+        tugraph_client=FakeTuGraphQueryClient(row_count=1),
+        diagnostic_client=diagnostic_client,
+        history_limit=20,
+        preview_row_limit=100,
+    )
+
+    record = await service.create_user_query(question="查询香蕉今天开心吗")
+
+    assert record["status"] == "unsupported_query_shape"
+    assert record["generated_cypher"] is None
+    assert record["tugraph_response"] is None
+    assert len(diagnostic_client.requests) == 1
+    assert diagnostic_client.requests[0]["question_understanding"]["unrecognized_terms"] == ["香蕉", "今天", "开心"]
+    assert record["cga_diagnostic"] == {
+        "schema_version": "runtime_cga_diagnostic_v1",
+        "status": "generated",
+        "title": "未能完成查询",
+        "summary": "这个问题里的部分内容没有匹配到当前网络资源图谱。",
+        "main_reason": "系统没有识别出“香蕉”“今天”“开心”这些查询内容对应的网络对象或条件。",
+        "suggested_questions": ["请改为查询服务、隧道、设备、端口等网络资源。"],
+    }
+    persisted = service.get_user_query(record["user_query_id"])
+    assert persisted is not None
+    assert persisted["cga_diagnostic"]["status"] == "generated"
+    payload, error = service.get_tugraph_download_payload(record["user_query_id"])
+    assert payload is None
+    assert error == "no_tugraph_response"
+
+
+def test_user_query_download_endpoint_returns_raw_tugraph_response_only(monkeypatch, tmp_path: Path):
+    data_dir = tmp_path / "user_queries"
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(tmp_path / "testing"))
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_USER_QUERY_DATA_DIR", str(data_dir))
+    _write_json(
+        data_dir / "uq-download-ok.json",
+        {
+            "schema_version": "runtime_user_query_v1",
+            "user_query_id": "uq-download-ok",
+            "question": "查询设备",
+            "status": "completed",
+            "generation_status": "generated",
+            "generated_cypher": "MATCH (n) RETURN n",
+            "tugraph_response": {"header": [{"name": "name"}], "result": [["device-1"]]},
+            "result_preview": {"row_count": 1, "truncated": False},
+        },
+    )
+
+    from console.runtime_console.app.main import create_app
+
+    client = TestClient(create_app())
+
+    response = client.get("/api/v1/user-queries/uq-download-ok/download")
+
+    assert response.status_code == 200
+    assert response.json() == {"header": [{"name": "name"}], "result": [["device-1"]]}
+    assert "question" not in response.json()
+    assert response.headers["content-disposition"] == 'attachment; filename="uq-download-ok-tugraph.json"'
+
+
+def test_user_query_download_endpoint_rejects_records_without_tugraph_response(monkeypatch, tmp_path: Path):
+    data_dir = tmp_path / "user_queries"
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(tmp_path / "testing"))
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_USER_QUERY_DATA_DIR", str(data_dir))
+    _write_json(
+        data_dir / "uq-download-empty.json",
+        {
+            "schema_version": "runtime_user_query_v1",
+            "user_query_id": "uq-download-empty",
+            "question": "查询香蕉今天开心吗",
+            "status": "unsupported_query_shape",
+            "generation_status": "unsupported_query_shape",
+            "generated_cypher": None,
+            "tugraph_response": None,
+            "result_preview": {"row_count": 0, "truncated": False},
+        },
+    )
+
+    from console.runtime_console.app.main import create_app
+
+    client = TestClient(create_app())
+
+    response = client.get("/api/v1/user-queries/uq-download-empty/download")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "No TuGraph response is available for this user query."
+
+
+@pytest.mark.asyncio
+async def test_user_query_service_can_return_before_diagnostic_and_backfill(tmp_path: Path):
+    from console.runtime_console.app.user_queries import RuntimeUserQueryService
+
+    diagnostic_client = FakeDiagnosticClient()
+    service = RuntimeUserQueryService(
+        data_dir=tmp_path / "user_queries",
+        cga_client=FakeCgaUnsupportedClient(),
+        tugraph_client=FakeTuGraphQueryClient(row_count=1),
+        diagnostic_client=diagnostic_client,
+        history_limit=20,
+        preview_row_limit=100,
+    )
+
+    record = await service.create_user_query(question="查询香蕉今天开心吗", defer_diagnostic=True)
+
+    assert record["cga_diagnostic"]["status"] == "pending"
+    assert record["cga_diagnostic"]["title"] == "诊断生成中"
+    assert diagnostic_client.requests == []
+
+    updated = await service.complete_cga_diagnostic(record["user_query_id"])
+
+    assert updated is not None
+    assert len(diagnostic_client.requests) == 1
+    assert updated["cga_diagnostic"]["status"] == "generated"
+    persisted = service.get_user_query(record["user_query_id"])
+    assert persisted is not None
+    assert persisted["cga_diagnostic"]["title"] == "未能完成查询"
+
+
+@pytest.mark.asyncio
+async def test_user_query_service_records_diagnostic_llm_failure_without_rule_fallback(tmp_path: Path):
+    from console.runtime_console.app.user_queries import RuntimeUserQueryService
+
+    service = RuntimeUserQueryService(
+        data_dir=tmp_path / "user_queries",
+        cga_client=FakeCgaUnsupportedClient(),
+        tugraph_client=FakeTuGraphQueryClient(row_count=1),
+        diagnostic_client=FakeDiagnosticClient(fail=True),
+        history_limit=20,
+        preview_row_limit=100,
+    )
+
+    record = await service.create_user_query(question="查询香蕉今天开心吗")
+
+    assert record["cga_diagnostic"]["schema_version"] == "runtime_cga_diagnostic_v1"
+    assert record["cga_diagnostic"]["status"] == "failed"
+    assert record["cga_diagnostic"]["title"] == "诊断生成失败"
+    assert "glm timeout" in record["cga_diagnostic"]["error_message"]
+    assert "suggested_questions" not in record["cga_diagnostic"]
+
+
+@pytest.mark.asyncio
+async def test_user_query_history_keeps_recent_twenty_and_deletes_expired_files(tmp_path: Path):
+    from console.runtime_console.app.user_queries import RuntimeUserQueryService
+
+    service = RuntimeUserQueryService(
+        data_dir=tmp_path / "user_queries",
+        cga_client=FakeCgaClient(),
+        tugraph_client=FakeTuGraphQueryClient(row_count=1),
+        diagnostic_client=FakeDiagnosticClient(),
+        history_limit=20,
+        preview_row_limit=100,
+    )
+
+    first = await service.create_user_query(question="查询第 1 条")
+    for index in range(2, 22):
+        await service.create_user_query(question=f"查询第 {index} 条")
+
+    history = service.list_user_queries()
+
+    assert len(history["items"]) == 20
+    assert history["items"][0]["question"] == "查询第 21 条"
+    assert history["items"][-1]["question"] == "查询第 2 条"
+    assert not (tmp_path / "user_queries" / f"{first['user_query_id']}.json").exists()
+    assert service.get_user_query(first["user_query_id"]) is None
 
 
 def test_runtime_results_task_detail_page_is_separate_from_main_table(monkeypatch, tmp_path: Path):
@@ -56,6 +598,8 @@ def test_runtime_results_task_detail_page_is_separate_from_main_table(monkeypatc
 
     assert response.status_code == 200
     assert "任务详情" in response.text
+    assert "任务详情 - NL2Cypher 工作台" in response.text
+    assert "NL2Cypher 工作台 / 任务详情" in response.text
     assert "Agent 落盘信息" in response.text
     assert "pipeline-view" in response.text
     assert "task-table-body" not in response.text
@@ -189,6 +733,21 @@ def test_runtime_results_generated_cypher_overview_card_has_no_status_pill():
     assert "cypherOverviewCard('生成 Cypher', generationCypherText({ ...generator, generated_cypher: generatedCypher }), summary.generation_status)" not in script
 
 
+def test_runtime_results_detail_ui_omits_retired_repair_and_knowledge_sections():
+    root = Path(__file__).resolve().parents[1]
+    html = (root / "console" / "runtime_console" / "ui" / "detail.html").read_text(encoding="utf-8")
+    script = (root / "console" / "runtime_console" / "ui" / "detail.js").read_text(encoding="utf-8")
+
+    assert "cypher-generator-agent、testing-agent" in html
+    assert "repair-agent 展示" not in html
+    assert "正在加载两个 agent 的落盘信息" in html
+    assert "正在加载三个 agent 的落盘信息" not in html
+    assert "function renderRepairAgent" not in script
+    assert "pipeline.repair_agent" not in script
+    assert "发送给 knowledge-agent 的报文" not in script
+    assert "knowledge-agent 响应" not in script
+
+
 def test_runtime_results_task_table_uses_chinese_clarification_status():
     script = (Path(__file__).resolve().parents[1] / "console" / "runtime_console" / "ui" / "app.js").read_text(encoding="utf-8")
 
@@ -216,7 +775,7 @@ def test_runtime_results_tables_have_stable_column_widths():
     assert "min-width: max(100%, 960px)" in styles
 
 
-def test_runtime_results_service_status_endpoint_returns_five_service_cards(monkeypatch, tmp_path: Path):
+def test_runtime_results_service_status_endpoint_returns_active_service_cards_only(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(tmp_path / "testing"))
     monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_REPAIR_DATA_DIR", str(tmp_path / "repair"))
 
@@ -226,8 +785,6 @@ def test_runtime_results_service_status_endpoint_returns_five_service_cards(monk
     mock_cards = [
         {"service_key": "cypher-generator-agent", "label_zh": "Cypher 生成服务", "status": "online"},
         {"service_key": "testing-agent", "label_zh": "测试服务", "status": "online"},
-        {"service_key": "repair-agent", "label_zh": "知识修复建议服务", "status": "offline"},
-        {"service_key": "knowledge-agent", "label_zh": "知识运营服务", "status": "online"},
         {"service_key": "qa-agent", "label_zh": "问答生成服务", "status": "online"},
     ]
     monkeypatch.setattr(
@@ -246,8 +803,33 @@ def test_runtime_results_service_status_endpoint_returns_five_service_cards(monk
     assert [service["service_key"] for service in payload["services"]] == [
         "cypher-generator-agent",
         "testing-agent",
-        "repair-agent",
-        "knowledge-agent",
+        "qa-agent",
+    ]
+    assert "repair-agent" not in {service["service_key"] for service in payload["services"]}
+    assert "knowledge-agent" not in {service["service_key"] for service in payload["services"]}
+
+
+@pytest.mark.asyncio
+async def test_runtime_results_service_cards_omit_retired_repair_and_knowledge_agents(tmp_path: Path):
+    from console.runtime_console.app.service import RuntimeResultsService
+
+    class OfflineHealthClient:
+        async def read_health(self, base_url: str, timeout_seconds: float) -> dict:
+            raise RuntimeError("offline")
+
+    service = RuntimeResultsService(
+        testing_data_dir=str(tmp_path / "testing"),
+        cypher_generator_agent_base_url="http://127.0.0.1:8000",
+        testing_service_base_url="http://127.0.0.1:8003",
+        qa_generator_base_url="http://127.0.0.1:8020",
+        health_client=OfflineHealthClient(),
+    )
+
+    payload = await service.get_runtime_services()
+
+    assert [service["service_key"] for service in payload["services"]] == [
+        "cypher-generator-agent",
+        "testing-agent",
         "qa-agent",
     ]
 
@@ -314,7 +896,8 @@ def test_runtime_results_tasks_include_every_persisted_submission(monkeypatch, t
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["title_zh"] == "运行结果中心"
+    assert payload["title_zh"] == "NL2Cypher 工作台"
+    assert payload["title_en"] == "NL2Cypher Workbench"
     assert [task["id"] for task in payload["tasks"]] == ["qa-console-manual", "qa_new", "qa_old"]
     assert payload["pagination"] == {
         "page": 1,
@@ -325,6 +908,42 @@ def test_runtime_results_tasks_include_every_persisted_submission(monkeypatch, t
         "has_next": False,
     }
     assert all(task["source"] == "testing_agent" for task in payload["tasks"])
+
+
+def test_runtime_results_tasks_include_generation_pending_question_receipts(monkeypatch, tmp_path: Path):
+    testing_dir = tmp_path / "testing"
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(testing_dir))
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_REPAIR_DATA_DIR", str(tmp_path / "repair"))
+    _write_json(testing_dir / "goldens" / "qa_pending.json", {"id": "qa_pending", "difficulty": "L3"})
+    _write_json(
+        testing_dir / "question_receipts" / "qa_pending.json",
+        {
+            "id": "qa_pending",
+            "question": "查询服务使用的隧道",
+            "generation_run_id": "run-pending",
+            "generation_status": "generation_pending",
+            "received_at": "2026-05-30T02:00:00+00:00",
+        },
+    )
+
+    from console.runtime_console.app.main import create_app
+
+    client = TestClient(create_app())
+
+    response = client.get("/api/v1/tasks")
+    detail_response = client.get("/api/v1/tasks/qa_pending")
+
+    assert response.status_code == 200
+    tasks = response.json()["tasks"]
+    assert len(tasks) == 1
+    assert tasks[0]["id"] == "qa_pending"
+    assert tasks[0]["generation_status"] == "generation_pending"
+    assert tasks[0]["current_stage"] == "query_generation"
+    assert tasks[0]["final_verdict"] == "pending"
+    assert detail_response.status_code == 200
+    detail = detail_response.json()
+    assert detail["summary"]["generation_status"] == "generation_pending"
+    assert detail["pipeline"]["cypher_generator_agent"]["generation_run_id"] == "run-pending"
 
 
 def test_runtime_results_tasks_support_server_side_pagination_and_filters(monkeypatch, tmp_path: Path):
@@ -395,11 +1014,8 @@ def test_runtime_results_task_index_does_not_decode_full_prompt_snapshots(tmp_pa
 
     service = RuntimeResultsService(
         testing_data_dir=str(testing_dir),
-        repair_data_dir=str(repair_dir),
         cypher_generator_agent_base_url="http://127.0.0.1:8000",
         testing_service_base_url="http://127.0.0.1:8003",
-        repair_service_base_url="http://127.0.0.1:8002",
-        knowledge_agent_base_url="http://127.0.0.1:8010",
         qa_generator_base_url="http://127.0.0.1:8020",
     )
 
@@ -416,6 +1032,44 @@ def test_runtime_results_task_index_does_not_decode_full_prompt_snapshots(tmp_pa
     l2_bucket = next(bucket for bucket in summary_payload["buckets"] if bucket["difficulty"] == "L2")
     assert l2_bucket["total"] == 1
     assert l2_bucket["pass"] == 1
+
+
+def test_runtime_results_task_index_reuses_warm_cache_without_rescanning(tmp_path: Path, monkeypatch):
+    testing_dir = tmp_path / "testing"
+    _write_json(testing_dir / "goldens" / "qa_cached.json", {"id": "qa_cached", "difficulty": "L2"})
+    _write_json(
+        testing_dir / "submissions" / "qa_cached.json",
+        {
+            "id": "qa_cached",
+            "question": "缓存样本",
+            "generated_cypher": "MATCH (n) RETURN n",
+            "generation_status": "generated",
+            "state": "passed",
+            "updated_at": "2026-05-30T06:00:00+00:00",
+        },
+    )
+
+    from console.runtime_console.app.service import RuntimeResultsService
+
+    service = RuntimeResultsService(
+        testing_data_dir=str(testing_dir),
+        cypher_generator_agent_base_url="http://127.0.0.1:8000",
+        testing_service_base_url="http://127.0.0.1:8003",
+        qa_generator_base_url="http://127.0.0.1:8020",
+        task_index_cache_ttl_seconds=30,
+    )
+
+    first = service.list_tasks()
+
+    def fail_rescan():
+        raise AssertionError("warm task index should be served without rescanning source directories")
+
+    monkeypatch.setattr(service, "_task_index_signature", fail_rescan)
+    second = service.get_task_summary()
+
+    assert [task["id"] for task in first["tasks"]] == ["qa_cached"]
+    l2_bucket = next(bucket for bucket in second["buckets"] if bucket["difficulty"] == "L2")
+    assert l2_bucket["total"] == 1
 
 
 def test_runtime_results_tasks_exclude_legacy_or_non_contract_records(monkeypatch, tmp_path: Path):
@@ -481,6 +1135,8 @@ def test_runtime_results_task_summary_groups_final_verdict_by_difficulty(monkeyp
     _write_json(testing_dir / "goldens" / "qa_l1_ok.json", {"id": "qa_l1_ok", "difficulty": "L1"})
     _write_json(testing_dir / "goldens" / "qa_l1_fail.json", {"id": "qa_l1_fail", "difficulty": "L1"})
     _write_json(testing_dir / "goldens" / "qa_l2_pending.json", {"id": "qa_l2_pending", "difficulty": "L2"})
+    _write_json(testing_dir / "goldens" / "qa_l2_clarify.json", {"id": "qa_l2_clarify", "difficulty": "L2"})
+    _write_json(testing_dir / "goldens" / "qa_l3_unsupported.json", {"id": "qa_l3_unsupported", "difficulty": "L3"})
     _write_json(testing_dir / "goldens" / "qa_l8_ok.json", {"id": "qa_l8_ok", "difficulty": "L8"})
     _write_json(
         testing_dir / "submissions" / "qa_l1_ok.json",
@@ -506,14 +1162,38 @@ def test_runtime_results_task_summary_groups_final_verdict_by_difficulty(monkeyp
         },
     )
     _write_json(
-        testing_dir / "generation_failures" / "qa_l2_pending__run-2.json",
+        testing_dir / "question_receipts" / "qa_l2_pending.json",
         {
             "id": "qa_l2_pending",
             "question": "L2 待定问题",
             "generation_run_id": "run-2",
-            "generation_status": "service_failed",
+            "generation_status": "generation_pending",
             "received_at": "2026-04-26T12:02:00+00:00",
             "updated_at": "2026-04-26T12:02:00+00:00",
+        },
+    )
+    _write_json(
+        testing_dir / "generation_failures" / "qa_l2_clarify__run-clarify.json",
+        {
+            "id": "qa_l2_clarify",
+            "question": "L2 澄清问题",
+            "generation_run_id": "run-clarify",
+            "generation_status": "clarification_required",
+            "clarification": {"question_zh": "请补充服务名称。"},
+            "received_at": "2026-04-26T12:02:30+00:00",
+            "updated_at": "2026-04-26T12:02:30+00:00",
+        },
+    )
+    _write_json(
+        testing_dir / "generation_failures" / "qa_l3_unsupported__run-unsupported.json",
+        {
+            "id": "qa_l3_unsupported",
+            "question": "L3 不支持问题",
+            "generation_run_id": "run-unsupported",
+            "generation_status": "unsupported_query_shape",
+            "failure_reason": "unsupported_query_shape",
+            "received_at": "2026-04-26T12:02:40+00:00",
+            "updated_at": "2026-04-26T12:02:40+00:00",
         },
     )
     _write_json(
@@ -538,20 +1218,118 @@ def test_runtime_results_task_summary_groups_final_verdict_by_difficulty(monkeyp
     payload = response.json()
     assert payload["title_zh"] == "难度结论概览"
     assert payload["difficulty_order"] == ["L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8"]
-    assert [status["key"] for status in payload["statuses"]] == ["pass", "fail", "pending"]
+    assert [status["key"] for status in payload["statuses"]] == [
+        "pass",
+        "fail",
+        "clarification_required",
+        "unsupported_query_shape",
+        "pending",
+    ]
     buckets = {bucket["difficulty"]: bucket for bucket in payload["buckets"]}
     assert buckets["L1"] == {
         "difficulty": "L1",
         "total": 2,
         "pass": 1,
         "fail": 1,
+        "clarification_required": 0,
+        "unsupported_query_shape": 0,
         "pending": 0,
     }
-    assert buckets["L2"]["total"] == 1
+    assert buckets["L2"]["total"] == 2
+    assert buckets["L2"]["clarification_required"] == 1
     assert buckets["L2"]["pending"] == 1
+    assert buckets["L3"]["total"] == 1
+    assert buckets["L3"]["unsupported_query_shape"] == 1
     assert buckets["L8"]["total"] == 1
     assert buckets["L8"]["pass"] == 1
-    assert buckets["L3"]["total"] == 0
+
+
+def test_runtime_results_task_detail_omits_retired_repair_and_knowledge_pipeline(monkeypatch, tmp_path: Path):
+    testing_dir = tmp_path / "testing"
+    repair_dir = tmp_path / "repair"
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(testing_dir))
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_REPAIR_DATA_DIR", str(repair_dir))
+    _write_json(testing_dir / "goldens" / "qa_retired_agents.json", {"id": "qa_retired_agents", "difficulty": "L4"})
+    _write_json(
+        testing_dir / "submissions" / "qa_retired_agents.json",
+        {
+            "id": "qa_retired_agents",
+            "attempt_no": 1,
+            "question": "查询旧修复链路样本",
+            "generation_run_id": "run-retired-agents",
+            "generated_cypher": "MATCH (n) RETURN n",
+            "input_prompt_snapshot": "generator prompt",
+            "generation_status": "generated",
+            "state": "issue_ticket_created",
+            "issue_ticket_id": "ticket-qa_retired_agents-attempt-1",
+            "repair_response": {
+                "status": "applied",
+                "analysis_id": "analysis-ticket-qa_retired_agents-attempt-1",
+                "knowledge_agent_response": {"status": "ok"},
+            },
+            "updated_at": "2026-04-26T09:03:00+00:00",
+        },
+    )
+    _write_json(
+        testing_dir / "issue_tickets" / "ticket-qa_retired_agents-attempt-1.json",
+        {
+            "ticket_id": "ticket-qa_retired_agents-attempt-1",
+            "id": "qa_retired_agents",
+            "difficulty": "L4",
+            "question": "查询旧修复链路样本",
+            "expected": {"cypher": "MATCH (n) RETURN n", "answer": []},
+            "actual": {"generated_cypher": "MATCH (n) RETURN n", "execution": None},
+            "evaluation": {
+                "verdict": "fail",
+                "primary_metrics": {
+                    "grammar": {"score": 1, "parser_error": None, "message": None},
+                    "execution_accuracy": {
+                        "score": 0,
+                        "reason": "not_equivalent",
+                        "strict_check": {"status": "fail", "message": "结果未严格一致。"},
+                    },
+                },
+                "secondary_signals": {},
+            },
+            "generation_evidence": {
+                "generation_run_id": "run-retired-agents",
+                "attempt_no": 1,
+                "input_prompt_snapshot": "generator prompt",
+            },
+        },
+    )
+    _write_json(
+        repair_dir / "analyses" / "analysis-ticket-qa_retired_agents-attempt-1.json",
+        {
+            "analysis_id": "analysis-ticket-qa_retired_agents-attempt-1",
+            "ticket_id": "ticket-qa_retired_agents-attempt-1",
+            "id": "qa_retired_agents",
+            "status": "applied",
+            "system_prompt_snapshot": "repair system",
+            "user_prompt_snapshot": "repair user",
+            "raw_output": "{\"repairable\": true}",
+            "knowledge_repair_request": {"id": "qa_retired_agents", "suggestion": "old repair"},
+            "knowledge_agent_response": {"status": "ok"},
+            "applied": True,
+        },
+    )
+
+    from console.runtime_console.app.main import create_app
+
+    client = TestClient(create_app())
+
+    response = client.get("/api/v1/tasks/qa_retired_agents")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert list(payload["pipeline"]) == ["cypher_generator_agent", "testing_agent"]
+    assert list(payload["stages"]) == ["query_generation", "evaluation"]
+    assert [item["stage_key"] for item in payload["timeline"]] == ["query_generation", "evaluation"]
+    assert payload["summary"]["current_stage"] == "evaluation"
+    assert payload["final_verdict"] == "fail"
+    assert "repair_agent" not in payload["pipeline"]
+    assert "knowledge_repair" not in payload["stages"]
+    assert "knowledge_apply" not in payload["stages"]
 
 
 def test_runtime_results_task_detail_reads_current_testing_and_repair_artifacts(monkeypatch, tmp_path: Path):
@@ -780,7 +1558,9 @@ def test_runtime_results_task_detail_reads_current_testing_and_repair_artifacts(
     assert "improvement_assessment" not in payload
     assert payload["attempt_no"] == 2
     assert payload["stages"]["evaluation"]["status"] == "failed"
-    assert payload["stages"]["knowledge_repair"]["status"] == "passed"
+    assert list(payload["stages"]) == ["query_generation", "evaluation"]
+    assert "knowledge_repair" not in payload["stages"]
+    assert "knowledge_apply" not in payload["stages"]
     generator = payload["pipeline"]["cypher_generator_agent"]
     assert generator["question"] == "查询长度最长的5条光纤"
     assert generator["difficulty"] == "L4"
@@ -798,22 +1578,8 @@ def test_runtime_results_task_detail_reads_current_testing_and_repair_artifacts(
     assert testing["secondary_metrics"]["gleu"] == 0.22
     assert testing["secondary_metrics"]["similarity"] == 0.41
     assert testing["improvement"]["previous_attempt_no"] == 1
-    repair = payload["pipeline"]["repair_agent"]
-    assert repair["issue_ticket_id"] == "ticket-qa_fiber_001-attempt-2"
-    assert repair["analysis_id"] == "analysis-ticket-qa_fiber_001"
-    assert repair["llm_prompt_markdown"] == "repair system prompt\n\nrepair user prompt with DiagnosisContext"
-    assert repair["raw_output"] == "{\"repairable\": true, \"primary_knowledge_type\": \"few_shot\"}"
-    assert "generation_prompt_evidence" not in repair
-    assert repair["suggestion"] == "Add a few-shot example for top-N fiber ranking questions."
-    assert repair["knowledge_types"] == ["few_shot"]
-    assert repair["knowledge_agent_request"] == {
-        "id": "qa_fiber_001",
-        "suggestion": "Add a few-shot example for top-N fiber ranking questions.",
-        "knowledge_types": ["few_shot"],
-    }
-    assert repair["knowledge_agent_response"] == {"status": "ok"}
-    assert "knowledge_ops_response" not in repair
-    assert "repair_response" not in repair
+    assert list(payload["pipeline"]) == ["cypher_generator_agent", "testing_agent"]
+    assert "repair_agent" not in payload["pipeline"]
 
 
 def test_runtime_results_ignores_malformed_repair_response_artifacts(monkeypatch, tmp_path: Path):
@@ -913,9 +1679,10 @@ def test_runtime_results_ignores_malformed_repair_response_artifacts(monkeypatch
     assert response.status_code == 200
     payload = response.json()
     assert payload["stages"]["evaluation"]["status"] == "failed"
-    assert payload["stages"]["knowledge_repair"]["status"] == "failed"
-    assert payload["stages"]["knowledge_apply"]["status"] == "failed"
-    assert payload["pipeline"]["repair_agent"]["analysis_id"] is None
+    assert list(payload["stages"]) == ["query_generation", "evaluation"]
+    assert "knowledge_repair" not in payload["stages"]
+    assert "knowledge_apply" not in payload["stages"]
+    assert "repair_agent" not in payload["pipeline"]
 
 
 def test_runtime_results_marks_knowledge_agent_fields_as_not_repairable(monkeypatch, tmp_path: Path):
@@ -1015,19 +1782,10 @@ def test_runtime_results_marks_knowledge_agent_fields_as_not_repairable(monkeypa
     response = client.get("/api/v1/tasks/qa_not_repairable")
 
     assert response.status_code == 200
-    repair = response.json()["pipeline"]["repair_agent"]
-    assert repair["status"] == "not_repairable"
-    assert repair["non_repairable_reason"] == "当前失败来自 golden answer 与数据库数据不一致。"
-    assert repair["knowledge_agent_request"] == {
-        "status": "not_sent",
-        "reason": "not_repairable",
-        "message": "不修复：当前失败来自 golden answer 与数据库数据不一致。",
-    }
-    assert repair["knowledge_agent_response"] == {
-        "status": "not_sent",
-        "reason": "not_repairable",
-        "message": "不修复：repair-agent 判定该问题不是 knowledge-agent 知识缺口，因此没有发送请求。",
-    }
+    payload = response.json()
+    assert list(payload["pipeline"]) == ["cypher_generator_agent", "testing_agent"]
+    assert list(payload["stages"]) == ["query_generation", "evaluation"]
+    assert "repair_agent" not in payload["pipeline"]
 
 
 def test_runtime_results_separates_repair_review_and_cancelled_redispatch(monkeypatch, tmp_path: Path):
@@ -1173,17 +1931,10 @@ def test_runtime_results_separates_repair_review_and_cancelled_redispatch(monkey
 
     assert response.status_code == 200
     payload = response.json()
-    repair = payload["pipeline"]["repair_agent"]
-    assert repair["status"] == "applied"
-    assert repair["repair_state"]["value"] == "waiting_human_review"
-    assert repair["repair_state"]["label_zh"] == "等待人工审核"
-    assert repair["knowledge_apply_state"]["value"] == "waiting_human_review"
-    assert repair["knowledge_apply_state"]["label_zh"] == "等待人工审核后落库"
-    assert repair["redispatch_state"]["value"] == "cancelled"
-    assert repair["redispatch_state"]["label_zh"] == "QA 自动重派发已取消"
-    assert repair["redispatch_state"]["reason"] == "knowledge_agent_no_longer_redispatches_qa"
-    assert payload["stages"]["knowledge_repair"]["status"] == "passed"
-    assert payload["stages"]["knowledge_apply"]["status"] == "running"
+    assert payload["stages"]["evaluation"]["status"] == "failed"
+    assert list(payload["pipeline"]) == ["cypher_generator_agent", "testing_agent"]
+    assert list(payload["stages"]) == ["query_generation", "evaluation"]
+    assert "repair_agent" not in payload["pipeline"]
 
 
 def test_runtime_results_do_not_require_cypher_generator_agent_local_storage(monkeypatch, tmp_path: Path):
@@ -2071,6 +2822,7 @@ def test_runtime_results_generator_section_parses_cga_trace_v2_clarification_req
     list_response = client.get("/api/v1/tasks")
     assert list_response.status_code == 200
     task = list_response.json()["tasks"][0]
+    assert task["final_verdict"] == "clarification_required"
     assert task["clarification"]["question_zh"] == "你说的对应网元是指源网元还是目的网元？"
     assert task["clarification_summary"] == "你说的对应网元是指源网元还是目的网元？"
 
@@ -2682,12 +3434,9 @@ def test_runtime_results_does_not_bind_repair_analysis_without_submission_analys
     response = client.get("/api/v1/tasks/qa_repair_unlinked")
 
     assert response.status_code == 200
-    repair = response.json()["pipeline"]["repair_agent"]
-    assert repair["analysis_id"] is None
-    assert repair["llm_prompt_markdown"] == ""
-    assert repair["raw_output"] is None
-    assert repair["knowledge_agent_request"] is None
-    assert repair["knowledge_agent_response"] is None
+    payload = response.json()
+    assert list(payload["pipeline"]) == ["cypher_generator_agent", "testing_agent"]
+    assert "repair_agent" not in payload["pipeline"]
 
 
 def test_runtime_results_does_not_bind_repair_analysis_by_ticket_id_without_submission_analysis_id(monkeypatch, tmp_path: Path):
@@ -2762,12 +3511,9 @@ def test_runtime_results_does_not_bind_repair_analysis_by_ticket_id_without_subm
     response = client.get("/api/v1/tasks/qa_ticket_bound")
 
     assert response.status_code == 200
-    repair = response.json()["pipeline"]["repair_agent"]
-    assert repair["analysis_id"] is None
-    assert repair["issue_ticket_id"] == "ticket-qa_ticket_bound-attempt-3"
-    assert repair["llm_prompt_markdown"] == ""
-    assert repair["knowledge_agent_request"] is None
-    assert repair["knowledge_agent_response"] is None
+    payload = response.json()
+    assert list(payload["pipeline"]) == ["cypher_generator_agent", "testing_agent"]
+    assert "repair_agent" not in payload["pipeline"]
 
 
 def test_runtime_results_does_not_fallback_to_other_generation_failure_run(monkeypatch, tmp_path: Path):

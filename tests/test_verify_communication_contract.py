@@ -3,8 +3,10 @@ from __future__ import annotations
 from contracts.models import GenerationEvidence
 from services.cypher_generator_agent.app.api.models import GenerationFailureReason as GeneratorGenerationFailureReason
 from services.cypher_generator_agent.app.api.models import CgaGenerationNonSuccessReport as GeneratorNonSuccessReport
+from services.cypher_generator_agent.app.api.models import CgaQuestionReceivedReport as GeneratorQuestionReceivedReport
 from services.testing_agent.app.models import (
     CgaGenerationNonSuccessReport as ReceiverNonSuccessReport,
+    CgaQuestionReceivedReport as ReceiverQuestionReceivedReport,
     GeneratedCypherSubmissionRequest,
     GenerationFailureReason as ReceiverGenerationFailureReason,
 )
@@ -147,6 +149,17 @@ def test_unsupported_query_shape_report_contract_is_compatible_between_services(
     assert GeneratorNonSuccessReport(**payload).model_dump() == ReceiverNonSuccessReport(**payload).model_dump()
 
 
+def test_question_received_report_contract_is_compatible_between_services():
+    payload = {
+        "id": "qa-pending",
+        "question": "查询服务使用的隧道",
+        "generation_run_id": "run-pending",
+        "generation_status": "generation_pending",
+    }
+
+    assert GeneratorQuestionReceivedReport(**payload).model_dump() == ReceiverQuestionReceivedReport(**payload).model_dump()
+
+
 def test_graph_generation_failure_reasons_are_compatible_between_services():
     for reason in [
         "cypher_syntax_invalid",
@@ -157,6 +170,7 @@ def test_graph_generation_failure_reasons_are_compatible_between_services():
         "coverage_failure",
         "literal_unresolved",
         "repair_binding_oscillation",
+        "repair_requirements_unsatisfiable",
         "max_repair_attempts_exceeded",
     ]:
         payload = {

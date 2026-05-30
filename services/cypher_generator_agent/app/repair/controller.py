@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from .fingerprint import from_binding_plan, from_dsl
 from .models import (
     ClarificationOption,
     ClarificationQuestion,
@@ -55,13 +54,6 @@ class RepairController:
         if issue is None:
             return self._continue_with_input_assumptions(controller_input)
 
-        current_fingerprint = _current_fingerprint(controller_input)
-        if _is_repairable(issue) and current_fingerprint in {item.fingerprint for item in controller_input.history}:
-            return _failure("repair_binding_oscillation", stop_reason="repair_binding_oscillation")
-
-        if _is_repairable(issue) and controller_input.attempt_no > self.max_repair_attempts:
-            return _failure("max_repair_attempts_exceeded", stop_reason="max_repair_attempts_exceeded")
-
         if issue.code in STATIC_FAILURE_CODES:
             return _failure(issue.code)
 
@@ -80,15 +72,7 @@ class RepairController:
             return _ask_user(issue, self.max_clarification_options)
 
         if _is_repairable(issue):
-            return RepairDecision(
-                decision="repair_with_llm",
-                reason_code=issue.code,
-                repair_prompt_delta={
-                    "question": controller_input.question,
-                    "selected_bindings": controller_input.selected_bindings,
-                    "validator_errors": [issue.model_dump(mode="json")],
-                },
-            )
+            return _failure(issue.code, stop_reason=issue.code)
 
         return _failure(issue.code)
 
@@ -104,12 +88,6 @@ def _first_issue(controller_input: RepairControllerInput) -> RepairIssue | None:
     if controller_input.cypher_validation_errors:
         return controller_input.cypher_validation_errors[0]
     return None
-
-
-def _current_fingerprint(controller_input: RepairControllerInput) -> str:
-    if controller_input.normalized_dsl is not None:
-        return from_dsl(controller_input.normalized_dsl)
-    return from_binding_plan(controller_input.selected_bindings)
 
 
 def _is_repairable(issue: RepairIssue) -> bool:

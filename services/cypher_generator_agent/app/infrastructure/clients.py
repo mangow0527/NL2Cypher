@@ -8,6 +8,7 @@ import httpx
 
 from services.cypher_generator_agent.app.api.models import (
     CgaGenerationNonSuccessReport,
+    CgaQuestionReceivedReport,
     GeneratedCypherSubmissionRequest,
 )
 
@@ -30,6 +31,13 @@ class TestingAgentClient:
             target="testing_agent.submission",
         )
 
+    async def submit_question_received(self, payload: CgaQuestionReceivedReport) -> Dict[str, Any]:
+        return await self._submit_with_retries(
+            payload=payload,
+            endpoint_path="/api/v1/evaluations/questions",
+            target="testing_agent.question_received",
+        )
+
     async def submit_generation_failure(self, payload: CgaGenerationNonSuccessReport) -> Dict[str, Any]:
         return await self._submit_with_retries(
             payload=payload,
@@ -40,7 +48,7 @@ class TestingAgentClient:
     async def _submit_with_retries(
         self,
         *,
-        payload: GeneratedCypherSubmissionRequest | CgaGenerationNonSuccessReport,
+        payload: GeneratedCypherSubmissionRequest | CgaQuestionReceivedReport | CgaGenerationNonSuccessReport,
         endpoint_path: str,
         target: str,
     ) -> Dict[str, Any]:
@@ -67,7 +75,7 @@ class TestingAgentClient:
     async def _submit_once(
         self,
         *,
-        payload: GeneratedCypherSubmissionRequest | CgaGenerationNonSuccessReport,
+        payload: GeneratedCypherSubmissionRequest | CgaQuestionReceivedReport | CgaGenerationNonSuccessReport,
         endpoint_path: str,
         target: str,
         submit_index: int,

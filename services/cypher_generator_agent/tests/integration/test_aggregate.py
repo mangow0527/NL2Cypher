@@ -3,7 +3,7 @@ from __future__ import annotations
 from services.cypher_generator_agent.app.core.pipeline import run_pipeline
 
 
-def test_pipeline_generates_metric_aggregate_for_firewall_count() -> None:
+def test_pipeline_generates_deterministic_ad_hoc_aggregate_for_firewall_count() -> None:
     result = run_pipeline(
         question="全网有多少台防火墙",
         qa_id="gq-008",
@@ -11,13 +11,13 @@ def test_pipeline_generates_metric_aggregate_for_firewall_count() -> None:
     )
 
     assert result.status == "generated"
-    assert result.dsl["query_shape"] == "metric_aggregate"
-    assert result.dsl["operations"][0]["metric_name"] == "device_count"
-    assert result.dsl["operations"][0]["filters"][0]["value"]["normalized"] == "firewall"
+    assert result.dsl["query_shape"] == "ad_hoc_aggregate"
+    assert result.dsl["filters"][0]["value"]["normalized"] == "firewall"
+    assert result.dsl["operations"][0]["measures"][0]["alias"] == "network_element_count"
     assert result.cypher == (
         "MATCH (ne:NetworkElement)\n"
         "WHERE ne.elem_type = 'firewall'\n"
-        "RETURN count(ne) AS device_count"
+        "RETURN count(ne.id) AS network_element_count"
     )
     trace = result.trace
     assert trace["final_status"] == "generated"

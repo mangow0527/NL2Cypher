@@ -145,6 +145,31 @@ def test_prompt_contract_omits_redundant_decomposition_views() -> None:
     assert "无歧义时省略" in prompt
 
 
+def test_prompt_contract_requires_substantive_terms_in_question_order() -> None:
+    question = "统计服务使用的隧道数量"
+    client = FakeStructuredLLMClient(
+        _valid_payload(
+            question,
+            intent_type="aggregate",
+            output_shape="grouped_rows",
+            substantive_terms=[
+                {"text": "统计", "slot": "projection"},
+                {"text": "服务", "slot": "path"},
+                {"text": "使用", "slot": "path"},
+                {"text": "隧道", "slot": "path"},
+                {"text": "数量", "slot": "projection"},
+            ],
+            literal_candidates=[],
+        )
+    )
+
+    QuestionDecomposer(client).decompose(question)
+
+    prompt = client.calls[0]["prompt"]
+    assert "substantive_terms 按原问题中首次出现的顺序输出" in prompt
+    assert "下游会再用 original_question 反查位置作为兜底" in prompt
+
+
 def test_substantive_terms_carry_slot() -> None:
     slot_kind = _slot_kind("PROJECTION")
     decomp = QuestionDecomposition.model_validate(
@@ -198,6 +223,7 @@ def test_prompt_example_1_accepts_attribute_query_without_literal() -> None:
                 {"text": "使用", "slot": "path"},
                 {"text": "隧道", "slot": "path"},
                 {"text": "时延", "slot": "projection", "attached_to": "服务"},
+                {"text": "时延", "slot": "projection", "attached_to": "隧道"},
             ],
             literal_candidates=[],
         )
@@ -211,6 +237,7 @@ def test_prompt_example_1_accepts_attribute_query_without_literal() -> None:
         {"text": "使用", "slot": "path"},
         {"text": "隧道", "slot": "path"},
         {"text": "时延", "slot": "projection", "attached_to": "服务"},
+        {"text": "时延", "slot": "projection", "attached_to": "隧道"},
     ]
     assert result.literal_candidates == []
     assert "slot" + "_terms" not in result.model_dump()

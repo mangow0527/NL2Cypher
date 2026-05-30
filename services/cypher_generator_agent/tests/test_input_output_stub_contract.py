@@ -20,8 +20,13 @@ GENERATED_NAMES = {"__pycache__", ".DS_Store"}
 
 class _CaptureTestingClient:
     def __init__(self) -> None:
+        self.question_received = None
         self.submission = None
         self.failure = None
+
+    async def submit_question_received(self, payload):
+        self.question_received = payload
+        return {"accepted": True}
 
     async def submit(self, payload):
         self.submission = payload
@@ -37,11 +42,15 @@ async def test_ingest_question_submits_pipeline_generation_trace_contract() -> N
     testing_client = _CaptureTestingClient()
     service = CypherGeneratorAgentService(testing_client=testing_client)
 
-    result = await service.ingest_question(QAQuestionRequest(id="qa-osi-1", question="Gold 服务使用了哪些隧道"))
+    result = await service.generate_and_submit_question(
+        QAQuestionRequest(id="qa-osi-1", question="Gold 服务使用了哪些隧道"),
+        generation_run_id="run-osi-1",
+    )
 
     assert result.submission_status == "submitted_to_testing"
     assert result.generation_status == "generated"
-    assert result.generation_run_id
+    assert result.generation_run_id == "run-osi-1"
+    assert testing_client.question_received is None
     assert testing_client.failure is None
     assert testing_client.submission is not None
     assert testing_client.submission.id == "qa-osi-1"
@@ -57,6 +66,25 @@ async def test_ingest_question_submits_pipeline_generation_trace_contract() -> N
     assert snapshot["final_status"] == "generated"
     assert snapshot["final_outputs"]["cypher"] == testing_client.submission.generated_cypher
     assert snapshot["final_outputs"]["dsl"]["query_shape"] == "single_hop_traversal"
+
+
+@pytest.mark.asyncio
+async def test_accept_question_reports_pending_without_running_pipeline() -> None:
+    testing_client = _CaptureTestingClient()
+    service = CypherGeneratorAgentService(testing_client=testing_client)
+
+    result = await service.accept_question(QAQuestionRequest(id="qa-pending", question="查询服务使用的隧道"))
+
+    assert result.submission_status == "submitted_to_testing"
+    assert result.generation_status is None
+    assert result.generation_run_id
+    assert testing_client.question_received is not None
+    assert testing_client.question_received.id == "qa-pending"
+    assert testing_client.question_received.question == "查询服务使用的隧道"
+    assert testing_client.question_received.generation_run_id == result.generation_run_id
+    assert testing_client.question_received.generation_status == "generation_pending"
+    assert testing_client.submission is None
+    assert testing_client.failure is None
 
 
 @pytest.mark.asyncio
@@ -117,6 +145,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
     allowed_app_children = {
         "__init__.py",
         "api",
+        "assembly",
         "binding",
         "compiler",
         "core",
@@ -199,8 +228,18 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "models.py",
         "retriever.py",
         "scoring.py",
+        "structural_reranker.py",
     }
     assert _source_names(SERVICE_ROOT / "app" / "retrieval") <= allowed_retrieval_files
+
+    allowed_assembly_files = {
+        "__init__.py",
+        "direction.py",
+        "multihop.py",
+        "taxonomy.py",
+        "zero_hop.py",
+    }
+    assert _source_names(SERVICE_ROOT / "app" / "assembly") <= allowed_assembly_files
 
     allowed_binding_files = {"__init__.py", "binder.py", "models.py"}
     assert _source_names(SERVICE_ROOT / "app" / "binding") <= allowed_binding_files
@@ -220,11 +259,18 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
     allowed_observability_files = {"__init__.py", "baseline.py", "metrics.py", "stages.py", "trace.py"}
     assert _source_names(SERVICE_ROOT / "app" / "observability") <= allowed_observability_files
 
-    allowed_validation_files = {"__init__.py", "coverage.py", "models.py", "semantic_validator.py"}
+    allowed_validation_files = {
+        "__init__.py",
+        "coverage.py",
+        "models.py",
+        "semantic_validator.py",
+        "structural_requirements.py",
+    }
     assert _source_names(SERVICE_ROOT / "app" / "validation") <= allowed_validation_files
 
     allowed_tests = {
         "__init__.py",
+        "assembly",
         "binding",
         "compiler",
         "cypher_validation",
@@ -349,8 +395,16 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
     }
     assert _source_names(SERVICE_ROOT / "tests" / "observability") <= allowed_observability_tests
 
-    allowed_retrieval_tests = {"__init__.py", "test_candidate_retriever.py"}
+    allowed_retrieval_tests = {"__init__.py", "test_candidate_retriever.py", "test_structural_reranker.py"}
     assert _source_names(SERVICE_ROOT / "tests" / "retrieval") <= allowed_retrieval_tests
+
+    allowed_assembly_tests = {
+        "test_direction.py",
+        "test_multihop.py",
+        "test_taxonomy.py",
+        "test_zero_hop.py",
+    }
+    assert _source_names(SERVICE_ROOT / "tests" / "assembly") <= allowed_assembly_tests
 
     allowed_binding_tests = {"__init__.py", "test_binder.py"}
     assert _source_names(SERVICE_ROOT / "tests" / "binding") <= allowed_binding_tests
@@ -359,6 +413,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "__init__.py",
         "test_candidate_boundaries.py",
         "test_grounded_schema.py",
+        "test_prompt.py",
     }
     assert _source_names(SERVICE_ROOT / "tests" / "understanding") <= allowed_understanding_tests
 
@@ -376,6 +431,7 @@ def test_cypher_generator_agent_contains_only_io_stub_files() -> None:
         "test_coverage.py",
         "test_dsl_support.py",
         "test_edge_endpoint.py",
+        "test_structural_requirements.py",
     }
     assert _source_names(SERVICE_ROOT / "tests" / "validation") <= allowed_validation_tests
 

@@ -6,6 +6,7 @@ import pytest
 from services.testing_agent.app.grammar import GrammarChecker
 from services.testing_agent.app.models import (
     CgaGenerationNonSuccessReport,
+    CgaQuestionReceivedReport,
     ExecutionResult,
     GeneratedCypherSubmissionRequest,
     QAGoldenRequest,
@@ -297,6 +298,34 @@ async def test_service_failed_report_is_visible_in_evaluation_status(tmp_path):
     assert status.attempts == []
     assert status.generation_failures[0]["generation_status"] == "service_failed"
     assert status.generation_failures[0]["failure_reason"] == "model_invocation_failed"
+
+
+@pytest.mark.asyncio
+async def test_question_received_report_is_visible_until_generation_finishes(tmp_path):
+    repository, service = make_service(tmp_path, parser_success=True)
+    report = CgaQuestionReceivedReport(
+        id="qa-pending",
+        question="查询服务使用的隧道",
+        generation_run_id="run-pending",
+    )
+
+    receipt = await service.ingest_question_received(report)
+    golden_response = await service.ingest_golden(
+        QAGoldenRequest(
+            id="qa-pending",
+            cypher="MATCH (s:Service)-[:SERVICE_USES_TUNNEL]->(t:Tunnel) RETURN t.name AS name",
+            answer=[],
+            difficulty="L3",
+        )
+    )
+
+    assert receipt.accepted is True
+    assert golden_response.status == "generation_pending"
+    status = service.get_evaluation_status("qa-pending")
+    assert status.question_receipt is not None
+    assert status.question_receipt["generation_status"] == "generation_pending"
+    assert status.question_receipt["generation_run_id"] == "run-pending"
+    assert status.attempts == []
 
 
 @pytest.mark.asyncio

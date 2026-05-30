@@ -18,6 +18,7 @@ from .config import Settings, get_settings
 from .grammar import Antlr4CypherParserAdapter, GrammarChecker, build_grammar_metric
 from .models import (
     CgaGenerationNonSuccessReport,
+    CgaQuestionReceivedReport,
     EvaluationStatusResponse,
     ExecutionResult,
     GenerationEvidence,
@@ -32,6 +33,7 @@ from .models import (
     SemanticReviewArtifact,
     SemanticCheck,
     SubmissionReceipt,
+    TuGraphQueryRequest,
 )
 from .repository import TestingRepository
 from .summary import build_evaluation_summary, build_execution_accuracy, build_secondary_signals, is_order_sensitive
@@ -69,6 +71,8 @@ class TestingAgentService:
         self.repository.save_golden(request)
         latest_submission = self.repository.get_submission(request.id)
         if latest_submission is None:
+            if self.repository.get_question_received_report(request.id) is not None:
+                return QAGoldenResponse(id=request.id, status="generation_pending")
             return QAGoldenResponse(id=request.id, status="received_golden_only")
 
         if latest_submission["state"] in {"passed", "issue_ticket_created", "repair_submission_failed"}:
@@ -94,6 +98,10 @@ class TestingAgentService:
         saved = self.repository.save_submission(request, state=state)
         if state == "ready_to_evaluate" and saved.created:
             self._schedule_attempt_evaluation(request.id, saved.attempt_no)
+        return SubmissionReceipt(accepted=True)
+
+    async def ingest_question_received(self, report: CgaQuestionReceivedReport) -> SubmissionReceipt:
+        self.repository.save_question_received_report(report)
         return SubmissionReceipt(accepted=True)
 
     async def ingest_generation_failure(self, report: CgaGenerationNonSuccessReport) -> SubmissionReceipt:
@@ -420,6 +428,7 @@ class TestingAgentService:
         return EvaluationStatusResponse(
             id=qa_id,
             golden=self.repository.get_golden(qa_id),
+            question_receipt=self.repository.get_question_received_report(qa_id),
             submission=submission,
             attempts=self.repository.list_submission_attempts(qa_id),
             generation_failures=self.repository.list_generation_failure_reports(qa_id),
@@ -428,6 +437,12 @@ class TestingAgentService:
 
     def get_issue_ticket(self, ticket_id: str) -> Optional[IssueTicket]:
         return self.repository.get_issue_ticket(ticket_id)
+
+    async def execute_cypher(self, request: TuGraphQueryRequest) -> Dict[str, Any]:
+        try:
+            return await self.tugraph_client.execute_raw(request.cypher)
+        except Exception as exc:
+            return {"error_message": f"TuGraph execution failed: {exc}"}
 
     def get_service_status(self) -> Dict[str, object]:
         return {

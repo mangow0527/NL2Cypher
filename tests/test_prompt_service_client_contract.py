@@ -7,7 +7,11 @@ import pytest
 
 import services.cypher_generator_agent.app.infrastructure.clients as clients_module
 from services.cypher_generator_agent.app.infrastructure.clients import TestingAgentClient
-from services.cypher_generator_agent.app.api.models import CgaGenerationNonSuccessReport, GeneratedCypherSubmissionRequest
+from services.cypher_generator_agent.app.api.models import (
+    CgaGenerationNonSuccessReport,
+    CgaQuestionReceivedReport,
+    GeneratedCypherSubmissionRequest,
+)
 
 
 class _FakeResponse:
@@ -93,6 +97,28 @@ async def test_testing_agent_client_requires_accepted_ack_payload(monkeypatch):
     assert result == {"accepted": True}
     assert _JsonAckAsyncClient.last_request == {
         "url": "http://127.0.0.1:8003/api/v1/evaluations/submissions",
+        "json": payload.model_dump(),
+    }
+
+
+@pytest.mark.asyncio
+async def test_testing_agent_client_submits_question_received_report(monkeypatch):
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", _JsonAckAsyncClient)
+
+    client = TestingAgentClient(base_url="http://127.0.0.1:8003", timeout_seconds=3.0)
+    payload = CgaQuestionReceivedReport(
+        id="qa-001",
+        question="查询协议版本",
+        generation_run_id="cypher-run-001",
+    )
+
+    result = await client.submit_question_received(payload)
+
+    assert result == {"accepted": True}
+    assert _JsonAckAsyncClient.last_request == {
+        "url": "http://127.0.0.1:8003/api/v1/evaluations/questions",
         "json": payload.model_dump(),
     }
 

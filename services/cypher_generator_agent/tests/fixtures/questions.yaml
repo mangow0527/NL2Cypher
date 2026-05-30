@@ -72,7 +72,7 @@ questions:
     coverage: readonly_violation
   - id: gq-024
     question: 服务经过哪些端口
-    coverage: repair_oscillation
+    coverage: single_shot_concede
   - id: gq-025
     question: 返回设备端口服务的所有字段
     coverage: shape_mismatch

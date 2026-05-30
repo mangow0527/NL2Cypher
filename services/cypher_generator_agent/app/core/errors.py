@@ -18,6 +18,13 @@ GenerationFailureReason = Literal[
     "unauthorized_schema_reference",
     "logical_plan_mismatch",
     "semantic_match_rejected",
+    "edge_endpoint_mismatch",
+    "edge_direction_mismatch",
+    "property_owner_mismatch",
+    "metric_dimension_invalid",
+    "metric_group_by_invalid",
+    "binding_plan_incomplete",
+    "structural_coverage_missing",
     "path_planning_failed",
     "cypher_fallback_cannot_generate",
     "cypher_syntax_invalid",
@@ -29,9 +36,11 @@ GenerationFailureReason = Literal[
     "coverage_failure",
     "literal_unresolved",
     "repair_binding_oscillation",
+    "repair_requirements_unsatisfiable",
     "max_repair_attempts_exceeded",
     "question_decomposer_schema_invalid",
     "grounded_understanding_schema_invalid",
+    "single_shot_fallback_failed",
 ]
 
 ServiceFailureReason = Literal[

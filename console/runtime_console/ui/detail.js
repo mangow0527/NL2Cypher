@@ -14,6 +14,7 @@ const cgaStageTitles = {
   repair_controller: '修复与澄清决策',
   dsl_builder: '受限 DSL 构建',
   dsl_parser: 'DSL 解析',
+  dsl_structural_coverage_gate: 'DSL 结构覆盖闸门',
   cypher_compiler: 'Cypher 编译',
   cypher_self_validation: 'Cypher 自校验',
   output: '服务输出',
@@ -121,6 +122,7 @@ function tone(status) {
     case false:
       return 'danger';
     case 'running':
+    case 'generation_pending':
     case 'generation_failed':
     case 'unsupported_query_shape':
     case 'clarification_required':
@@ -532,6 +534,19 @@ const stageFieldHints = {
       query_shape: '解析后的查询形态。',
       operation_count: '解析出的 DSL 操作数量。',
       errors: 'DSL 结构错误。',
+    },
+  },
+  dsl_structural_coverage_gate: {
+    input: {
+      _summary: '这里展示结构需求派生结果以及已通过 parser 的 DSL。',
+      structural_requirements: '从 question_decomposition_v1 的既有 slot 确定性派生出的结构需求，不是 LLM 新输出字段。',
+      dsl: '待检查结构覆盖的受限 DSL。',
+    },
+    output: {
+      _summary: '这里展示 DSL 是否覆盖了题干已识别出的结构需求。',
+      coverage_result: '结构覆盖检查结果，包含 is_valid 与缺失项。',
+      missing: '未被 DSL 覆盖的结构需求，例如 aggregate、group_by、order_by、limit 或 path hop 数量。',
+      path_order_confidence: 'path 词顺序置信度；low 时只做数量充分性检查。',
     },
   },
   cypher_compiler: {
@@ -1145,53 +1160,11 @@ function renderTestingAgent(section) {
   `;
 }
 
-function renderRepairAgent(section) {
-  const repairState = section.repair_state || {};
-  const applyState = section.knowledge_apply_state || {};
-  const redispatchState = section.redispatch_state || {};
-  const statusLabel = repairState.label_zh || section.status || (section.analysis_id ? 'recorded' : 'not recorded');
-  const statusTone = repairState.value || (section.status === 'not_repairable' ? 'not_repairable' : (section.analysis_id ? 'applied' : 'pending'));
-  const nonRepairableReason = section.status === 'not_repairable'
-    ? `
-      <h3>不修复原因</h3>
-      ${codeBlock(section.non_repairable_reason || 'repair-agent 判定该问题不是 knowledge-agent 知识缺口。')}
-    `
-    : '';
-  return `
-    <details class="pipeline-step" open>
-      <summary>
-        <span>repair-agent</span>
-        <span class="status-pill tone-${tone(statusTone)}">${escapeHtml(statusLabel)}</span>
-      </summary>
-      <h3>repair 状态</h3>
-      <div class="field-grid">
-        ${metricCard('诊断状态', `${repairState.label_zh || '未记录'}${repairState.raw_status ? `（原始值：${repairState.raw_status}）` : ''}`, repairState.value)}
-        ${metricCard('知识应用状态', `${applyState.label_zh || '未记录'}${applyState.raw_status ? `（原始值：${applyState.raw_status}）` : ''}`, applyState.value)}
-        ${metricCard('redispatch 状态', `${redispatchState.label_zh || '未记录'}${redispatchState.reason ? `（原因：${redispatchState.reason}）` : ''}`, redispatchState.value)}
-        ${metricCard('applied 原始标记', section.applied ?? '未记录')}
-      </div>
-      ${repairState.message ? `<h3>诊断状态说明</h3>${codeBlock(repairState.message)}` : ''}
-      ${applyState.message ? `<h3>知识应用说明</h3>${codeBlock(applyState.message)}` : ''}
-      ${redispatchState.message ? `<h3>redispatch 说明</h3>${codeBlock(redispatchState.message)}` : ''}
-      <h3>repair-agent 诊断提示词</h3>
-      ${codeBlock(section.llm_prompt_markdown)}
-      <h3>repair-agent 原始返回</h3>
-      ${codeBlock(section.raw_output)}
-      ${nonRepairableReason}
-      <h3>发送给 knowledge-agent 的报文</h3>
-      ${codeBlock(section.knowledge_agent_request)}
-      <h3>knowledge-agent 响应</h3>
-      ${codeBlock(section.knowledge_agent_response)}
-    </details>
-  `;
-}
-
 function renderPipeline(detail) {
   const pipeline = detail.pipeline || {};
   pipelineView.innerHTML = [
     renderCypherGenerator(pipeline.cypher_generator_agent || {}),
     renderTestingAgent(pipeline.testing_agent || {}),
-    renderRepairAgent(pipeline.repair_agent || {}),
   ].join('');
 }
 

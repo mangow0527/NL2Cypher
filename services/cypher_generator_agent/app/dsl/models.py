@@ -67,6 +67,7 @@ class ProjectionItemModel(RestrictedDslBase):
     property: PropertyReferenceModel | None = None
     source: str | None = None
     vertex_full: bool = False
+    projection_terms: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_reference_shape(self) -> "ProjectionItemModel":
@@ -169,6 +170,7 @@ class SubqueryOperationModel(RestrictedDslBase):
     op: Literal["subquery"]
     bind_as: str
     query_shape: QueryShape
+    carry_roles: list[str] = Field(default_factory=list)
     group_by: list[DimensionModel] = Field(default_factory=list)
     measures: list[MeasureModel] = Field(default_factory=list)
     operations: list[dict[str, Any]] = Field(default_factory=list)

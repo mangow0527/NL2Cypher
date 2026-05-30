@@ -151,6 +151,184 @@ def test_selecting_service_uses_tunnel_yields_binder_compatible_payload() -> Non
     ]
 
 
+def test_compact_candidate_only_output_hydrates_to_binder_payload() -> None:
+    literal_result = _gold_literal_result()
+    client = FakeGroundedLLMClient(
+        [
+            {
+                "schema_version": "grounded_understanding_v1",
+                "status": "grounded",
+                "query_shape": "single_hop",
+                "selected_bindings": [
+                    {"candidate_id": "vertex:Service"},
+                    {"candidate_id": "vertex:Tunnel"},
+                    {
+                        "candidate_id": "edge:SERVICE_USES_TUNNEL",
+                        "direction": "forward",
+                    },
+                    {"candidate_id": "property:Service.quality_of_service"},
+                ],
+                "selected_literal_ids": ["literal:0"],
+                "filters": [
+                    {
+                        "owner": "Service",
+                        "property": "quality_of_service",
+                        "operator": "=",
+                        "raw_literal": "Gold",
+                    }
+                ],
+                "projection": [
+                    {
+                        "semantic_type": "property",
+                        "owner": "Tunnel",
+                        "name": "id",
+                        "alias": "tunnel_id",
+                    }
+                ],
+                "limit": 50,
+            }
+        ]
+    )
+
+    result = GroundedUnderstandingSelector(client).select(
+        question_decomposition=_gold_decomposition(),
+        candidates=_gold_candidates(),
+        literal_results=[literal_result],
+    )
+
+    assert isinstance(result, GroundedUnderstanding)
+    assert [
+        {key: value for key, value in binding.model_dump().items() if value is not None}
+        for binding in result.selected_bindings
+    ] == [
+        {
+            "role": "vertex",
+            "semantic_type": "vertex",
+            "candidate_id": "vertex:Service",
+            "semantic_id": "Service",
+            "semantic_name": "Service",
+        },
+        {
+            "role": "vertex",
+            "semantic_type": "vertex",
+            "candidate_id": "vertex:Tunnel",
+            "semantic_id": "Tunnel",
+            "semantic_name": "Tunnel",
+        },
+        {
+            "role": "edge",
+            "semantic_type": "edge",
+            "candidate_id": "edge:SERVICE_USES_TUNNEL",
+            "semantic_id": "SERVICE_USES_TUNNEL",
+            "semantic_name": "SERVICE_USES_TUNNEL",
+            "direction": "forward",
+        },
+        {
+            "role": "property",
+            "semantic_type": "property",
+            "candidate_id": "property:Service.quality_of_service",
+            "semantic_id": "Service.quality_of_service",
+            "semantic_name": "quality_of_service",
+            "owner": "Service",
+        },
+    ]
+    assert result.selected_literals == [literal_result]
+
+    binder = SemanticBinder(load_graph_semantic_model(FIXTURE_PATH).registry)
+    plan = binder.bind(result.to_binder_payload(), candidates=_gold_candidates())
+
+    assert plan.query_shape == "single_hop_traversal"
+    assert [binding.name for binding in plan.vertex_bindings] == ["Service", "Tunnel"]
+    assert [binding.name for binding in plan.edge_bindings] == ["SERVICE_USES_TUNNEL"]
+    assert [(binding.owner, binding.name) for binding in plan.property_bindings] == [
+        ("Service", "quality_of_service")
+    ]
+    assert plan.filters[0].value == "GOLD"
+
+
+def test_legacy_string_operation_hints_hydrate_to_binder_payload() -> None:
+    client = FakeGroundedLLMClient(
+        [
+            {
+                "schema_version": "grounded_understanding_v1",
+                "status": "grounded",
+                "query_shape": "top_n",
+                "selected_bindings": [
+                    _binding("source", "vertex", "Service"),
+                    _binding("relation", "edge", "SERVICE_USES_TUNNEL", direction="forward"),
+                    _binding("relation", "edge", "PATH_THROUGH", direction="forward"),
+                    _binding("target", "vertex", "NetworkElement"),
+                    _binding(
+                        "group_by_property",
+                        "property",
+                        "NetworkElement.location",
+                        semantic_name="location",
+                        owner="NetworkElement",
+                    ),
+                ],
+                "selected_literals": [],
+                "projection": ["NetworkElement.location"],
+                "group_by": ["NetworkElement.location"],
+                "measures": ["count(Service) as 次数"],
+                "sort": ["次数 desc"],
+                "assumptions": [
+                    "假设 SERVICE_USES_TUNNEL 表示业务与隧道的承载关系",
+                ],
+                "limit": 5,
+                "coverage": _coverage(["业务", "隧道", "网元", "厂商", "次数"]),
+                "unsupported": None,
+                "confidence": 0.8,
+            }
+        ]
+    )
+
+    result = GroundedUnderstandingSelector(client).select(
+        question_decomposition=_gold_decomposition(),
+        candidates=_aggregate_candidates(),
+        literal_results=[],
+    )
+
+    assert isinstance(result, GroundedUnderstanding)
+    assert result.group_by == [
+        {
+            "alias": "network_element_location",
+            "target": "network_element",
+            "property": {"owner": "NetworkElement", "name": "location"},
+        }
+    ]
+    assert result.measures == [
+        {
+            "alias": "cnt",
+            "function": "count",
+            "target": "service",
+            "property": {"owner": "Service", "name": "id"},
+            "projection_terms": ["次数"],
+        }
+    ]
+    assert result.sort == [{"source": "measure.cnt", "direction": "desc"}]
+    assert result.projection == [
+        {"alias": "network_element_location", "source": "group.network_element_location"}
+    ]
+    assert result.assumptions == [
+        {
+            "type": "llm_assumption",
+            "message": "假设 SERVICE_USES_TUNNEL 表示业务与隧道的承载关系",
+        }
+    ]
+
+    binder = SemanticBinder(load_graph_semantic_model(FIXTURE_PATH).registry)
+    plan = binder.bind(result.to_binder_payload(), candidates=_aggregate_candidates())
+
+    assert plan.query_shape == "top_n"
+    assert [binding.name for binding in plan.vertex_bindings] == ["Service", "NetworkElement"]
+    assert [(item["property"]["owner"], item["property"]["name"]) for item in plan.group_by] == [
+        ("NetworkElement", "location")
+    ]
+    assert [(item["function"], item["property"]["owner"], item["property"]["name"]) for item in plan.measures] == [
+        ("count", "Service", "id")
+    ]
+
+
 def test_schema_violation_retries_then_returns_valid_grounding() -> None:
     client = FakeGroundedLLMClient(
         [
@@ -401,6 +579,24 @@ def _gold_candidates() -> CandidateRetrievalResult:
                 "Tunnel.id",
                 owner="Tunnel",
                 semantic_name="id",
+            ),
+        ]
+    )
+
+
+def _aggregate_candidates() -> CandidateRetrievalResult:
+    return CandidateRetrievalResult(
+        candidates=[
+            _candidate("vertex", "Service"),
+            _candidate("vertex", "NetworkElement"),
+            _candidate("edge", "SERVICE_USES_TUNNEL"),
+            _candidate("edge", "PATH_THROUGH"),
+            _candidate("property", "Service.id", owner="Service", semantic_name="id"),
+            _candidate(
+                "property",
+                "NetworkElement.location",
+                owner="NetworkElement",
+                semantic_name="location",
             ),
         ]
     )

@@ -150,7 +150,7 @@ def _validate_operation_sequence(dsl: RestrictedQueryDslModel) -> None:
     if shape is QueryShape.VERTEX_LOOKUP:
         valid = ops == []
     elif shape is QueryShape.SINGLE_HOP_TRAVERSAL:
-        valid = _matches_primary_optional_tail(ops, OperationType.TRAVERSE_EDGE)
+        valid = _matches_traverse_chain_optional_tail(ops)
     elif shape is QueryShape.VARIABLE_PATH_TRAVERSAL:
         valid = _matches_primary_optional_tail(ops, OperationType.VARIABLE_PATH)
     elif shape is QueryShape.NAMED_PATH_PATTERN:
@@ -160,12 +160,7 @@ def _validate_operation_sequence(dsl: RestrictedQueryDslModel) -> None:
     elif shape is QueryShape.AD_HOC_AGGREGATE:
         valid = _matches_primary_optional_tail(ops, OperationType.AGGREGATE)
     elif shape is QueryShape.TOP_N:
-        valid = (
-            len(ops) == 3
-            and ops[0] in {OperationType.METRIC_AGGREGATE, OperationType.AGGREGATE}
-            and ops[1] is OperationType.SORT
-            and ops[2] is OperationType.LIMIT
-        )
+        valid = _matches_top_n_sequence(ops)
     elif shape is QueryShape.TWO_STEP_AGGREGATE:
         valid = _matches_two_step_sequence(ops)
 
@@ -193,7 +188,59 @@ def _matches_primary_optional_tail(ops: list[OperationType], primary: OperationT
     )
 
 
+def _matches_traverse_chain_optional_tail(ops: list[OperationType]) -> bool:
+    if not ops or ops[0] is not OperationType.TRAVERSE_EDGE:
+        return False
+    index = 0
+    while index < len(ops) and ops[index] is OperationType.TRAVERSE_EDGE:
+        index += 1
+    tail = ops[index:]
+    return tail in (
+        [],
+        [OperationType.SORT],
+        [OperationType.LIMIT],
+        [OperationType.SORT, OperationType.LIMIT],
+    )
+
+
+def _matches_top_n_sequence(ops: list[OperationType]) -> bool:
+    if (
+        len(ops) == 3
+        and ops[0] in {OperationType.METRIC_AGGREGATE, OperationType.AGGREGATE}
+        and ops[1] is OperationType.SORT
+        and ops[2] is OperationType.LIMIT
+    ):
+        return True
+    if not ops or ops[0] is not OperationType.TRAVERSE_EDGE:
+        return False
+    index = 0
+    while index < len(ops) and ops[index] is OperationType.TRAVERSE_EDGE:
+        index += 1
+    return (
+        len(ops) == index + 3
+        and ops[index] is OperationType.AGGREGATE
+        and ops[index + 1] is OperationType.SORT
+        and ops[index + 2] is OperationType.LIMIT
+    )
+
+
 def _matches_two_step_sequence(ops: list[OperationType]) -> bool:
+    if not ops or ops[0] is not OperationType.SUBQUERY:
+        return False
+    index = 1
+    while index < len(ops) and ops[index] is OperationType.TRAVERSE_EDGE:
+        index += 1
+    if index > 1:
+        return (
+            len(ops) >= index + 1
+            and ops[index] is OperationType.AGGREGATE
+            and ops[index + 1 :] in (
+                [],
+                [OperationType.SORT],
+                [OperationType.LIMIT],
+                [OperationType.SORT, OperationType.LIMIT],
+            )
+        )
     allowed = (
         [OperationType.SUBQUERY],
         [OperationType.SUBQUERY, OperationType.FILTER_SUBQUERY],
@@ -224,7 +271,7 @@ def _validate_semantics(dsl: RestrictedQueryDslModel, registry: GraphSemanticReg
         elif isinstance(operation, AggregateOperationModel):
             _validate_aggregate(operation, registry, vertex_bindings, location, issues)
         elif isinstance(operation, SubqueryOperationModel):
-            _validate_subquery(operation, registry, vertex_bindings, location, issues)
+            _validate_subquery(operation, registry, vertex_bindings, edge_bindings, location, issues)
 
     _validate_filters(dsl.filters, registry, "filters", issues, vertex_bindings=vertex_bindings)
     _validate_projection(dsl, registry, vertex_bindings, _source_outputs(dsl, registry), issues)
@@ -503,25 +550,41 @@ def _validate_subquery(
     operation: SubqueryOperationModel,
     registry: GraphSemanticRegistry,
     vertex_bindings: dict[str, str],
+    edge_bindings: dict[str, str],
     location: str,
     issues: list[RestrictedDslValidationIssue],
 ) -> None:
-    if operation.query_shape is not QueryShape.AD_HOC_AGGREGATE:
+    if operation.query_shape not in {QueryShape.AD_HOC_AGGREGATE, QueryShape.SINGLE_HOP_TRAVERSAL}:
         issues.append(
             _issue(
                 "invalid_subquery_shape",
-                "subquery.query_shape must be ad_hoc_aggregate",
+                "subquery.query_shape must be ad_hoc_aggregate or single_hop_traversal",
                 f"{location}.query_shape",
             )
         )
     if operation.operations:
-        issues.append(
-            _issue(
-                "nested_subquery_not_allowed",
-                "subquery operations cannot contain nested operations in restricted_query_dsl_v1",
-                f"{location}.operations[0]",
+        operation_models = []
+        for index, raw_operation in enumerate(operation.operations):
+            try:
+                operation_model = TraverseEdgeOperationModel.model_validate(raw_operation)
+            except ValidationError:
+                issues.append(
+                    _issue(
+                        "nested_subquery_not_allowed",
+                        "subquery operations can only contain traverse_edge operations in restricted_query_dsl_v1",
+                        f"{location}.operations[{index}]",
+                    )
+                )
+                continue
+            operation_models.append(operation_model)
+            _validate_traverse_edge(
+                operation_model,
+                registry,
+                vertex_bindings,
+                edge_bindings,
+                f"{location}.operations[{index}]",
+                issues,
             )
-        )
     if not operation.measures:
         issues.append(_issue("missing_subquery_measures", "subquery must include at least one measure", f"{location}.measures"))
         return
@@ -541,6 +604,16 @@ def _validate_subquery(
 
     aggregate = AggregateOperationModel(op="aggregate", group_by=operation.group_by, measures=operation.measures)
     _validate_aggregate(aggregate, registry, vertex_bindings, location, issues)
+
+    for carry_index, role in enumerate(operation.carry_roles):
+        if role not in vertex_bindings:
+            issues.append(
+                _issue(
+                    "unknown_carry_role",
+                    f"subquery carry role not found: {role}",
+                    f"{location}.carry_roles[{carry_index}]",
+                )
+            )
 
 
 def _validate_filters(
@@ -875,6 +948,15 @@ def _build_ast(dsl: RestrictedQueryDslModel, registry: GraphSemanticRegistry) ->
                     query_shape=operation.query_shape,
                     group_by=_build_dimensions(operation.group_by, vertex_bindings),
                     measures=_build_measures(operation.measures, vertex_bindings),
+                    carry_roles=[
+                        RoleReference(alias=role, vertex_name=vertex_bindings[role])
+                        for role in operation.carry_roles
+                    ],
+                    operations=_build_subquery_traverse_operations(
+                        operation.operations,
+                        vertex_bindings,
+                        edge_bindings,
+                    ),
                 )
             )
         elif isinstance(operation, FilterSubqueryOperationModel):
@@ -981,6 +1063,35 @@ def _build_dimensions(dimensions: list[DimensionModel], vertex_bindings: dict[st
         )
         for item in dimensions
     ]
+
+
+def _build_subquery_traverse_operations(
+    operations: list[dict[str, Any]],
+    vertex_bindings: dict[str, str],
+    edge_bindings: dict[str, str],
+) -> list[TraverseEdgeOperation]:
+    built: list[TraverseEdgeOperation] = []
+    for raw_operation in operations:
+        operation = TraverseEdgeOperationModel.model_validate(raw_operation)
+        built.append(
+            TraverseEdgeOperation(
+                op=OperationType.TRAVERSE_EDGE,
+                from_role=RoleReference(
+                    alias=operation.from_ref,
+                    vertex_name=vertex_bindings[operation.from_ref],
+                ),
+                edge_role=EdgeReference(
+                    alias=operation.edge,
+                    edge_name=edge_bindings[operation.edge],
+                ),
+                to_role=RoleReference(
+                    alias=operation.to,
+                    vertex_name=vertex_bindings[operation.to],
+                ),
+                direction=operation.direction,
+            )
+        )
+    return built
 
 
 def _build_measures(measures: list[MeasureModel], vertex_bindings: dict[str, str]) -> list[Measure]:

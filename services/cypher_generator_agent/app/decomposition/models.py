@@ -109,12 +109,13 @@ class QuestionDecomposition(DecompositionBaseModel):
     @classmethod
     def dedupe_substantive_terms(cls, value: list[SubstantiveTerm]) -> list[SubstantiveTerm]:
         terms: list[SubstantiveTerm] = []
-        seen: set[str] = set()
+        seen: set[tuple[str, SlotKind, str | None]] = set()
         for term in value:
             text = term.text.strip()
-            if not text or text in seen:
+            key = (text, term.slot, term.attached_to)
+            if not text or key in seen:
                 continue
-            seen.add(text)
+            seen.add(key)
             terms.append(term.model_copy(update={"text": text}))
         return terms
 

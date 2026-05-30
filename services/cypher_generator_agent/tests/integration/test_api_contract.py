@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 
 import pytest
 from pydantic import ValidationError
 
+import services.cypher_generator_agent.app.api.service as service_module
 from services.cypher_generator_agent.app.api.main import parse_semantics
 from services.cypher_generator_agent.app.api.models import (
     CgaGenerationNonSuccessReport,
     GeneratedCypherSubmissionRequest,
+    QAQuestionRequest,
     SemanticParseRequest,
 )
 from services.cypher_generator_agent.app.api.service import (
@@ -262,6 +266,43 @@ async def test_service_can_submit_non_success_generation_output_to_testing_agent
 
 
 @pytest.mark.asyncio
+async def test_generation_pipeline_is_offloaded_from_event_loop(monkeypatch) -> None:
+    class CaptureTestingClient:
+        def __init__(self) -> None:
+            self.generated = None
+
+        async def submit(self, payload):
+            self.generated = payload
+            return {"accepted": True}
+
+        async def submit_question_received(self, payload):
+            return {"accepted": True}
+
+        async def submit_generation_failure(self, payload):
+            return {"accepted": True}
+
+    def slow_run_pipeline(**_: object) -> GenerationOutput:
+        time.sleep(0.05)
+        return _generated_output()
+
+    monkeypatch.setattr(service_module, "run_pipeline", slow_run_pipeline)
+    client = CaptureTestingClient()
+    service = CypherGeneratorAgentService(testing_client=client)
+
+    task = asyncio.create_task(
+        service.generate_and_submit_question(
+            QAQuestionRequest(id="qa-generated", question="query devices"),
+            generation_run_id="run-generated",
+        )
+    )
+    await asyncio.sleep(0.01)
+
+    assert not task.done()
+    await task
+    assert client.generated is not None
+
+
+@pytest.mark.asyncio
 async def test_semantic_parse_returns_pipeline_clarification_without_empty_success_cypher() -> None:
     result = await parse_semantics(
         SemanticParseRequest(id="qa-osi-2", question="2024 年收入增长情况", generation_run_id="run-osi-2")
@@ -356,12 +397,15 @@ def _generated_stages() -> list[dict[str, object]]:
         _stage("input_clarification_gate"),
         _stage("question_decomposer"),
         _stage("candidate_retrieval"),
+        _stage("candidate_reranker"),
         _stage("literal_resolver"),
+        _stage("deterministic_assembler"),
         _stage("grounded_understanding"),
         _stage("semantic_binder"),
         _stage("semantic_validator"),
         _stage("dsl_builder"),
         _stage("dsl_parser"),
+        _stage("dsl_structural_coverage_gate"),
         _stage("cypher_compiler"),
         _stage("cypher_self_validation"),
         _stage("output"),

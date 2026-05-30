@@ -89,6 +89,12 @@ class RestrictedDslBuilder:
     ) -> dict[str, Any]:
         if len(plan.vertex_bindings) < 2 or not plan.edge_bindings:
             raise ValueError("single_hop_traversal requires start/end vertices and one edge")
+        if len(plan.edge_bindings) > 1:
+            return self._build_traversal_chain(
+                plan,
+                source_question=source_question,
+                query_id=query_id,
+            )
 
         start = plan.vertex_bindings[0]
         end = plan.vertex_bindings[1]
@@ -120,6 +126,54 @@ class RestrictedDslBuilder:
                 "direction": edge.direction,
             }
         ]
+        self._add_filters_projection_sort_limit(dsl, plan, role_by_owner=role_by_owner, include_filters=True)
+        return dsl
+
+    def _build_traversal_chain(
+        self,
+        plan: BindingPlan,
+        *,
+        source_question: str,
+        query_id: str,
+    ) -> dict[str, Any]:
+        if len(plan.vertex_bindings) != len(plan.edge_bindings) + 1:
+            raise ValueError("single_hop_traversal chain requires one more vertex than edge")
+
+        role_by_owner = {
+            binding.name: f"v{index}"
+            for index, binding in enumerate(plan.vertex_bindings)
+        }
+        dsl = self._base_payload(plan, source_question=source_question, query_id=query_id)
+        dsl["bindings"] = {
+            **{
+                f"v{index}": {"vertex_name": binding.name}
+                for index, binding in enumerate(plan.vertex_bindings)
+            },
+            **{
+                f"e{index}": {"edge_name": binding.name}
+                for index, binding in enumerate(plan.edge_bindings)
+            },
+        }
+        dsl["operations"] = [
+            {
+                "op": "traverse_edge",
+                "from": f"v{index}",
+                "edge": f"e{index}",
+                "to": f"v{index + 1}",
+                "direction": edge.direction,
+            }
+            for index, edge in enumerate(plan.edge_bindings)
+        ]
+        if not plan.projection:
+            vertex = self.registry.get_vertex(plan.vertex_bindings[-1].name)
+            plan.projection.append(
+                {
+                    "semantic_type": "property",
+                    "owner": plan.vertex_bindings[-1].name,
+                    "name": vertex.id_property,
+                    "alias": f"{_snake_case(plan.vertex_bindings[-1].name)}_{vertex.id_property}",
+                }
+            )
         self._add_filters_projection_sort_limit(dsl, plan, role_by_owner=role_by_owner, include_filters=True)
         return dsl
 
@@ -381,6 +435,7 @@ class RestrictedDslBuilder:
             projection = {"source": item["source"]}
             if item.get("alias") is not None:
                 projection["alias"] = item["alias"]
+            _copy_projection_terms(item, projection)
             return projection
 
         property_ref = item.get("property")
@@ -391,6 +446,7 @@ class RestrictedDslBuilder:
             }
             if item.get("alias") is not None:
                 projection["alias"] = item["alias"]
+            _copy_projection_terms(item, projection)
             return projection
 
         if item.get("semantic_type") == "vertex":
@@ -400,11 +456,13 @@ class RestrictedDslBuilder:
 
         if item.get("semantic_type") == "vertex_full":
             vertex_name = str(item["name"])
-            return {
+            projection = {
                 "alias": item.get("alias") or _snake_case(vertex_name),
                 "target": role_by_owner[vertex_name],
                 "vertex_full": True,
             }
+            _copy_projection_terms(item, projection)
+            return projection
 
         if item.get("semantic_type") == "property":
             owner = str(item["owner"])
@@ -414,6 +472,7 @@ class RestrictedDslBuilder:
                 "target": role_by_owner[owner],
                 "property": {"owner": owner, "name": name},
             }
+            _copy_projection_terms(item, projection)
             return projection
 
         raise ValueError(f"unsupported projection item for restricted DSL builder: {item!r}")
@@ -653,6 +712,15 @@ class RestrictedDslBuilder:
             if property_name == id_property:
                 expected_names.add(f"{_snake_case(owner)}_id")
         return parameter_name in expected_names
+
+
+def _copy_projection_terms(source: Mapping[str, Any], target: dict[str, Any]) -> None:
+    raw_terms = source.get("projection_terms")
+    if not isinstance(raw_terms, list | tuple):
+        return
+    terms = [str(term).strip() for term in raw_terms if str(term).strip()]
+    if terms:
+        target["projection_terms"] = terms
 
 
 def _snake_case(value: str) -> str:

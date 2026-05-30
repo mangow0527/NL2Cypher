@@ -6,6 +6,9 @@ import re
 from time import perf_counter
 from typing import Any
 
+from services.cypher_generator_agent.app.assembly.taxonomy import QueryShape, ShapeStatus, classify_query_shape
+from services.cypher_generator_agent.app.assembly.multihop import MultihopAssembler
+from services.cypher_generator_agent.app.assembly.zero_hop import ZeroHopAssembler
 from services.cypher_generator_agent.app.binding import BindingValidationError, SemanticBinder
 from services.cypher_generator_agent.app.compiler import CypherCompiler, CypherCompilerError
 from services.cypher_generator_agent.app.core.errors import GenerationFailureReason, ServiceFailureReason
@@ -31,11 +34,11 @@ from services.cypher_generator_agent.app.literals.value_index import StaticValue
 from services.cypher_generator_agent.app.observability.stages import StageName
 from services.cypher_generator_agent.app.observability.trace import GraphTraceBuilder, inline_ref
 from services.cypher_generator_agent.app.repair.controller import RepairController
-from services.cypher_generator_agent.app.repair.fingerprint import from_binding_plan
 from services.cypher_generator_agent.app.repair.models import RepairDecision, RepairIssue
 from services.cypher_generator_agent.app.repair.notices import render_user_visible_notices
 from services.cypher_generator_agent.app.retrieval.models import CandidateRetrievalResult, SemanticCandidate
 from services.cypher_generator_agent.app.retrieval.retriever import CandidateRetriever
+from services.cypher_generator_agent.app.retrieval.structural_reranker import StructuralReranker
 from services.cypher_generator_agent.app.semantic_model.loader import load_graph_semantic_model
 from services.cypher_generator_agent.app.semantic_model.registry import RegistryLookupError
 from services.cypher_generator_agent.app.understanding.models import (
@@ -45,6 +48,13 @@ from services.cypher_generator_agent.app.understanding.models import (
 from services.cypher_generator_agent.app.understanding.grounded_understanding import GroundedUnderstandingSelector
 from services.cypher_generator_agent.app.validation.coverage import CoverageReport
 from services.cypher_generator_agent.app.validation.semantic_validator import SemanticValidator
+from services.cypher_generator_agent.app.validation.structural_requirements import (
+    DslStructuralCoverageResult,
+    StructuralRequirements,
+    derive_structural_requirements,
+    structural_coverage_issue,
+    validate_dsl_structural_coverage,
+)
 
 
 _STRUCTURAL_LITERAL_SKIP_SLOTS = {"limit", "order_by", "group_by", "path", "projection"}
@@ -164,6 +174,11 @@ def _run_pipeline_steps(
         output_payload=lambda result: result.model_dump(mode="json"),
         metrics=lambda result: {"candidate_count": len(result.candidates)},
     )
+    retrieval_result = _run_candidate_reranker_stage(
+        trace,
+        retrieval_result=retrieval_result,
+        structural_requirements=decomposition["structural_requirements"],
+    )
     decomposition = _with_literal_requests_from_candidates(decomposition, retrieval_result)
     skipped_literal_candidates = list(decomposition.get("skipped_literal_candidates") or [])
 
@@ -204,6 +219,24 @@ def _run_pipeline_steps(
             ),
         )
 
+    structural_requirements = StructuralRequirements.model_validate(decomposition["structural_requirements"])
+    deterministic_assembly = _run_deterministic_assembler_stage(
+        trace,
+        decomposition=decomposition,
+        retrieval_result=retrieval_result,
+        literal_results=literal_results,
+        registry=registry,
+    )
+    if deterministic_assembly.get("success") and isinstance(deterministic_assembly.get("dsl"), dict):
+        return _complete_dsl_generation(
+            trace,
+            dsl=deterministic_assembly["dsl"],
+            structural_requirements=structural_requirements,
+            registry=registry,
+            path_pattern_template_overrides_for_tests=path_pattern_template_overrides_for_tests,
+            user_visible_notices=_decomposition_user_visible_notices(decomposition),
+        )
+
     grounded = _run_grounded_understanding_stage(
         trace,
         decomposition=decomposition,
@@ -217,135 +250,63 @@ def _run_pipeline_steps(
     if grounded_output := _output_from_grounded_outcome(trace, grounded):
         return grounded_output
     grounded = _grounded_binder_payload(grounded)
-    repair_history: list[dict[str, Any]] = []
-    repair_attempt_no = 1
-
-    while True:
-        try:
-            plan = _run_stage(
-                trace,
-                stage=StageName.SEMANTIC_BINDER,
-                input_payload=grounded,
-                action=lambda: SemanticBinder(registry).bind(grounded, candidates=retrieval_result),
-                output_payload=lambda result: result.model_dump(mode="json"),
-            )
-        except BindingValidationError as exc:
-            return _failure(trace, reason="semantic_match_rejected", message=str(exc))
-
-        validation_result = _run_stage(
+    try:
+        plan = _run_stage(
             trace,
-            stage=StageName.SEMANTIC_VALIDATOR,
-            input_payload={
-                "binding_plan": plan.model_dump(mode="json"),
-                "coverage": decomposition["coverage"],
-            },
-            action=lambda: SemanticValidator(registry).validate(plan, coverage=decomposition["coverage"]),
+            stage=StageName.SEMANTIC_BINDER,
+            input_payload=grounded,
+            action=lambda: SemanticBinder(registry).bind(grounded, candidates=retrieval_result),
             output_payload=lambda result: result.model_dump(mode="json"),
         )
-        if not validation_result.is_valid:
-            decision = _run_repair_controller_stage(
+    except BindingValidationError as exc:
+        return _failure(trace, reason="semantic_match_rejected", message=str(exc))
+
+    validation_result = _run_stage(
+        trace,
+        stage=StageName.SEMANTIC_VALIDATOR,
+        input_payload={
+            "binding_plan": plan.model_dump(mode="json"),
+            "coverage": decomposition["coverage"],
+        },
+        action=lambda: SemanticValidator(registry).validate(plan, coverage=decomposition["coverage"]),
+        output_payload=lambda result: result.model_dump(mode="json"),
+    )
+    if not validation_result.is_valid:
+        return _handle_repair_decision(
+            trace,
+            decision=_run_repair_controller_stage(
                 trace,
                 question=question,
                 selected_bindings=plan.model_dump(mode="json"),
-                validator_errors=[
-                    issue.model_dump(mode="json")
-                    for issue in validation_result.errors
-                ],
+                validator_errors=[issue.model_dump(mode="json") for issue in validation_result.errors],
                 assumptions=validation_result.assumptions,
-                attempt_no=repair_attempt_no,
-                history=repair_history,
-            )
-            if _can_reground_with_llm(decision, llm_client):
-                repair_history.append(_repair_history_item(plan.model_dump(mode="json"), repair_attempt_no, decision))
-                repair_attempt_no += 1
-                grounded = _run_grounded_understanding_stage(
-                    trace,
-                    decomposition=decomposition,
-                    retrieval_result=retrieval_result,
-                    literal_results=literal_results,
-                    settings=settings,
-                    llm_client=llm_client,
-                    registry=registry,
-                    repair_context=decision.repair_prompt_delta,
-                    attempt_no=repair_attempt_no,
-                )
-                if grounded_output := _output_from_grounded_outcome(trace, grounded):
-                    return grounded_output
-                grounded = _grounded_binder_payload(grounded)
-                continue
-            return _handle_repair_decision(
-                trace,
-                decision=decision,
-                fallback_details={"validation": validation_result.model_dump(mode="json")},
-            )
-        user_visible_notices = render_user_visible_notices(validation_result.assumptions)
+            ),
+            fallback_details={"validation": validation_result.model_dump(mode="json")},
+        )
+    user_visible_notices = render_user_visible_notices(validation_result.assumptions)
 
-        try:
-            dsl = _run_stage(
-                trace,
-                stage=StageName.DSL_BUILDER,
-                input_payload=plan.model_dump(mode="json"),
-                action=lambda: RestrictedDslBuilder(registry).build(
-                    plan,
-                    source_question=question,
-                    query_id=question_id,
-                ),
-            )
-            ast = _run_stage(
-                trace,
-                stage=StageName.DSL_PARSER,
-                input_payload=dsl,
-                action=lambda: parse_restricted_query_dsl(dsl, registry),
-                output_payload=lambda result: {
-                    "query_shape": result.query_shape.value,
-                    "operation_count": len(result.operations),
-                },
-            )
-            compiler = CypherCompiler(
-                registry,
-                _path_pattern_template_overrides_for_tests=path_pattern_template_overrides_for_tests,
-            )
-            compilation = _run_stage(
-                trace,
-                stage=StageName.CYPHER_COMPILER,
-                input_payload={"query_shape": ast.query_shape.value},
-                action=lambda: compiler.compile_draft(ast),
-                output_payload=lambda result: {
-                    "schema_version": result.schema_version,
-                    "cypher_template": result.cypher_template,
-                    "parameters": result.parameters,
-                    "parameter_sources": result.parameter_sources,
-                    "cypher_executable": result.cypher_executable,
-                    "cypher": result.cypher_executable,
-                    "expected_return_aliases": result.expected_return_aliases,
-                },
-            )
-            validation_result = _run_cypher_self_validation_stage(
-                trace,
-                cypher=compilation.cypher_executable,
-                expected_return_aliases=compilation.expected_return_aliases,
-                validator=CypherSelfValidator(registry),
-            )
-            if not validation_result.valid:
-                return _handle_repair_decision(
-                    trace,
-                    decision=_run_repair_controller_stage(
-                        trace,
-                        question=question,
-                        selected_bindings=plan.model_dump(mode="json"),
-                        cypher_validation_errors=[
-                            error.model_dump(mode="json")
-                            for error in validation_result.errors
-                        ],
-                        attempt_no=repair_attempt_no,
-                        history=repair_history,
-                    ),
-                    fallback_details={"self_validation": validation_result.model_dump(mode="json")},
-                )
-        except (CypherCompilerError, RestrictedDslValidationError, ValueError) as exc:
-            return _failure(trace, reason="compiler_shape_mismatch", message=str(exc))
+    try:
+        dsl = _run_stage(
+            trace,
+            stage=StageName.DSL_BUILDER,
+            input_payload=plan.model_dump(mode="json"),
+            action=lambda: RestrictedDslBuilder(registry).build(
+                plan,
+                source_question=question,
+                query_id=question_id,
+            ),
+        )
+    except (CypherCompilerError, RestrictedDslValidationError, ValueError) as exc:
+        return _failure(trace, reason="compiler_shape_mismatch", message=str(exc))
 
-        return _generated(trace, dsl=dsl, cypher=compilation.cypher_executable, user_visible_notices=user_visible_notices)
+    return _complete_dsl_generation(
+        trace,
+        dsl=dsl,
+        structural_requirements=structural_requirements,
+        registry=registry,
+        path_pattern_template_overrides_for_tests=path_pattern_template_overrides_for_tests,
+        user_visible_notices=user_visible_notices,
+    )
 
 
 def _run_stage(
@@ -495,7 +456,6 @@ def _select_grounded_understanding(
     settings: Settings,
     llm_client: Any | None,
     registry: Any,
-    repair_context: Mapping[str, Any] | None = None,
 ) -> Any:
     if llm_client is None:
         if decomposition.get("mock_intent"):
@@ -507,25 +467,50 @@ def _select_grounded_understanding(
             registry=registry,
         )
         if deterministic is not None:
-            return deterministic
+            return _with_grounding_decision(
+                deterministic,
+                {
+                    "grounding_source": "deterministic",
+                    "deterministic_decision": "returned",
+                    "fallback_mode": "llm_disabled",
+                },
+            )
         return _mock_understand(decomposition, literal_results)
-    deterministic = _deterministic_grounding_from_slots(
-        decomposition=decomposition,
-        retrieval_result=retrieval_result,
-        literal_results=literal_results,
-        registry=registry,
-    )
-    if deterministic is not None:
-        return deterministic
-    return GroundedUnderstandingSelector(
+
+    selected = GroundedUnderstandingSelector(
         llm_client,
-        max_schema_retries=settings.llm_max_schema_retries,
+        max_schema_retries=0,
     ).select(
         question_decomposition=decomposition,
         candidates=retrieval_result,
         literal_results=literal_results,
-        repair_context=repair_context,
     )
+    return _with_grounding_decision(
+        selected,
+        {
+            "grounding_source": "llm",
+            "deterministic_decision": "not_applicable",
+            "fallback_mode": "single_shot",
+        },
+    )
+
+
+def _structural_requirements_for_precheck(decomposition: Mapping[str, Any]) -> StructuralRequirements:
+    payload = decomposition.get("structural_requirements")
+    if isinstance(payload, Mapping):
+        return StructuralRequirements.model_validate(payload)
+    return derive_structural_requirements(decomposition)
+
+
+def _with_grounding_decision(result: Any, decision: Mapping[str, Any]) -> Any:
+    if isinstance(result, GroundedUnderstandingFailure):
+        return result
+    if isinstance(result, Mapping):
+        return {**dict(result), "_grounding_decision": dict(decision)}
+    if hasattr(result, "model_dump"):
+        payload = result.model_dump(mode="json")
+        return {**payload, "_grounding_decision": dict(decision)}
+    return result
 
 
 def _deterministic_grounding_from_slots(
@@ -962,9 +947,7 @@ def _coverage_with_projection_terms(
 ) -> Any:
     if _is_count_slot(decomposition):
         return coverage
-    projection_terms = [
-        str(item["text"]) for item in _substantive_terms_with_slot(decomposition, slot="projection")
-    ]
+    projection_terms = _required_projection_terms(decomposition)
     if not projection_terms:
         return coverage
     covered: list[str] = []
@@ -986,6 +969,23 @@ def _coverage_with_projection_terms(
     return payload
 
 
+def _required_projection_terms(decomposition: Mapping[str, Any]) -> list[str]:
+    return list(_structural_requirements_for_precheck(decomposition).projection_terms)
+
+
+def _covered_projection_terms(projection: list[dict[str, Any]]) -> list[str]:
+    covered: list[str] = []
+    for item in projection:
+        raw_terms = item.get("projection_terms")
+        if not isinstance(raw_terms, list | tuple):
+            continue
+        for raw_term in raw_terms:
+            term = str(raw_term).strip()
+            if term and term not in covered:
+                covered.append(term)
+    return covered
+
+
 def _snake_case(value: str) -> str:
     text = value.replace("-", "_")
     text = "".join(f"_{char.lower()}" if char.isupper() else char for char in text)
@@ -1002,15 +1002,12 @@ def _run_grounded_understanding_stage(
     llm_client: Any | None,
     registry: Any,
     attempt_no: int,
-    repair_context: Mapping[str, Any] | None = None,
 ) -> Any:
     input_payload: dict[str, Any] = {
         "decomposition": decomposition,
         "resolved_literals": [result.model_dump(mode="json") for result in literal_results],
         "attempt_no": attempt_no,
     }
-    if repair_context:
-        input_payload["repair_context"] = dict(repair_context)
     llm_start = _llm_trace_count(llm_client)
     return _run_stage(
         trace,
@@ -1023,7 +1020,6 @@ def _run_grounded_understanding_stage(
             settings=settings,
             llm_client=llm_client,
             registry=registry,
-            repair_context=repair_context,
         ),
         output_payload=lambda result: _with_stage_llm_calls(
             _stage_result_payload(result),
@@ -1032,6 +1028,511 @@ def _run_grounded_understanding_stage(
             stage="grounded_understanding",
         ),
         metrics=lambda result: _llm_metrics(_llm_trace_slice(llm_client, llm_start)),
+    )
+
+
+def _run_candidate_reranker_stage(
+    trace: GraphTraceBuilder,
+    *,
+    retrieval_result: CandidateRetrievalResult,
+    structural_requirements: Mapping[str, Any],
+) -> CandidateRetrievalResult:
+    rerank_result = _run_stage(
+        trace,
+        stage=StageName.CANDIDATE_RERANKER,
+        input_payload={
+            "candidate_count": len(retrieval_result.candidates),
+            "structural_requirements": structural_requirements,
+        },
+        action=lambda: StructuralReranker().rerank(
+            retrieval_result,
+            structural_requirements=structural_requirements,
+        ),
+        output_payload=lambda result: {
+            "schema_version": "candidate_structural_rerank_v1",
+            "candidates": [candidate.model_dump(mode="json") for candidate in result.candidates],
+            "trace": [item.model_dump(mode="json") for item in result.trace],
+        },
+        metrics=lambda result: {
+            "candidate_count": len(result.candidates),
+            "demoted_count": sum(1 for item in result.trace if item.decision == "demoted"),
+        },
+    )
+    return CandidateRetrievalResult(candidates=rerank_result.candidates)
+
+
+def _run_deterministic_assembler_stage(
+    trace: GraphTraceBuilder,
+    *,
+    decomposition: dict[str, Any],
+    retrieval_result: CandidateRetrievalResult,
+    literal_results: list[LiteralResolverResult],
+    registry: Any,
+) -> dict[str, Any]:
+    return _run_stage(
+        trace,
+        stage=StageName.DETERMINISTIC_ASSEMBLER,
+        input_payload={
+            "structural_requirements": decomposition.get("structural_requirements"),
+            "candidate_count": len(retrieval_result.candidates),
+            "literal_count": len(literal_results),
+        },
+        action=lambda: _deterministic_assembler_payload(
+            decomposition=decomposition,
+            retrieval_result=retrieval_result,
+            literal_results=literal_results,
+            registry=registry,
+        ),
+        output_payload=lambda result: result,
+        metrics=lambda result: {
+            "deterministic_hit": bool(result.get("success")),
+            "fallback_reason": result.get("fallback_reason"),
+        },
+    )
+
+
+def _deterministic_assembler_payload(
+    *,
+    decomposition: dict[str, Any],
+    retrieval_result: CandidateRetrievalResult,
+    literal_results: list[LiteralResolverResult],
+    registry: Any,
+) -> dict[str, Any]:
+    requirements = _structural_requirements_for_precheck(decomposition)
+    shape_result = classify_query_shape(requirements, decomposition)
+    base = {
+        "schema_version": "deterministic_assembler_result_v1",
+        "shape_status": shape_result.status.value,
+        "shape": shape_result.shape.value if shape_result.shape is not None else None,
+        "shape_candidates": [shape.value for shape in shape_result.candidates],
+    }
+    if shape_result.status != ShapeStatus.RESOLVED:
+        return {
+            **base,
+            "success": False,
+            "fallback_reason": shape_result.reason or "shape_not_resolved",
+        }
+
+    if shape_result.shape in {
+        QueryShape.F1_VERTEX_PROJECTION_0HOP,
+        QueryShape.F2_VERTEX_FILTER_0HOP,
+        QueryShape.F3_VERTEX_AGGREGATE_0HOP,
+    }:
+        assembler_requirements = _zero_hop_assembler_requirements(
+            shape=shape_result.shape,
+            decomposition=decomposition,
+            retrieval_result=retrieval_result,
+            literal_results=literal_results,
+            registry=registry,
+        )
+        assembler_candidates = _zero_hop_candidates_for_assembler(retrieval_result.candidates)
+        assembled = ZeroHopAssembler(registry).assemble(
+            shape_result.shape.value,
+            assembler_candidates,
+            assembler_requirements,
+            literals=_zero_hop_literal_payloads(literal_results),
+        )
+    elif shape_result.shape in {
+        QueryShape.F4_PATH_PROJECTION_MULTIHOP,
+        QueryShape.F5_PATH_FILTER_MULTIHOP,
+        QueryShape.F6_PATH_GROUP_TOPN,
+    }:
+        assembler_requirements = _multihop_assembler_requirements(
+            shape=shape_result.shape,
+            decomposition=decomposition,
+            retrieval_result=retrieval_result,
+            literal_results=literal_results,
+            registry=registry,
+        )
+        uncovered_projection_terms = assembler_requirements.get("projection_uncovered_terms")
+        if uncovered_projection_terms:
+            return {
+                **base,
+                "success": False,
+                "fallback_reason": "unresolved_projection_terms",
+                "uncovered_projection_terms": uncovered_projection_terms,
+            }
+        assembler_candidates = _multihop_candidates_for_assembler(retrieval_result.candidates)
+        assembled = MultihopAssembler(registry).assemble(
+            shape_result.shape.value,
+            assembler_candidates,
+            assembler_requirements,
+            literals=_zero_hop_literal_payloads(literal_results),
+        )
+    else:
+        return {
+            **base,
+            "success": False,
+            "fallback_reason": "shape_not_supported_by_current_assembler",
+        }
+
+    if not assembled.success:
+        return {**base, "success": False, "fallback_reason": assembled.fallback_reason}
+    return {**base, "success": True, "dsl": assembled.dsl}
+
+
+def _multihop_candidates_for_assembler(candidates: list[SemanticCandidate]) -> list[SemanticCandidate]:
+    vertex_ids = set(_candidate_ids(candidates, "vertex"))
+    if len(vertex_ids) < 2:
+        return list(candidates)
+
+    filtered: list[SemanticCandidate] = []
+    for candidate in candidates:
+        if candidate.semantic_type == "vertex":
+            if candidate.semantic_id in vertex_ids:
+                filtered.append(candidate)
+            continue
+        if candidate.semantic_type == "property":
+            if candidate.owner in vertex_ids:
+                filtered.append(candidate)
+            continue
+        if candidate.semantic_type == "edge":
+            endpoints = {candidate.metadata.get("from_vertex"), candidate.metadata.get("to_vertex")}
+            if endpoints <= vertex_ids:
+                filtered.append(candidate)
+            continue
+        if candidate.semantic_type == "metric":
+            filtered.append(candidate)
+    return filtered
+
+
+def _multihop_assembler_requirements(
+    *,
+    shape: QueryShape,
+    decomposition: Mapping[str, Any],
+    retrieval_result: CandidateRetrievalResult,
+    literal_results: list[LiteralResolverResult],
+    registry: Any,
+) -> dict[str, Any]:
+    candidates = list(retrieval_result.candidates)
+    vertex_ids = _candidate_ids(candidates, "vertex")
+    requirements = _structural_requirements_for_precheck(decomposition).model_dump(mode="json")
+    requirements["source_question"] = _path_direction_context(requirements)
+
+    projection = _projection_items_from_substantive_terms(
+        decomposition=decomposition,
+        candidates=candidates,
+        registry=registry,
+        selected_vertices=vertex_ids,
+    )
+    projection_terms = _required_projection_terms(decomposition)
+    if shape in {QueryShape.F4_PATH_PROJECTION_MULTIHOP, QueryShape.F5_PATH_FILTER_MULTIHOP} and projection_terms:
+        covered_terms = _covered_projection_terms(projection)
+        uncovered_terms = [term for term in projection_terms if term not in covered_terms]
+        if uncovered_terms:
+            requirements["projection_uncovered_terms"] = uncovered_terms
+    if (
+        not projection
+        and not projection_terms
+        and shape in {QueryShape.F4_PATH_PROJECTION_MULTIHOP, QueryShape.F5_PATH_FILTER_MULTIHOP}
+        and vertex_ids
+    ):
+        projection_vertex = _projection_vertex_for_traversal(vertex_ids, literal_results)
+        projection = [_id_projection_item(projection_vertex, registry)]
+    requirements["projection"] = [
+        {
+            "owner": item["owner"],
+            "property": item["name"],
+            "alias": item.get("alias"),
+            "projection_terms": item.get("projection_terms", []),
+        }
+        for item in projection
+        if item.get("semantic_type") == "property" and item.get("owner") and item.get("name")
+    ]
+
+    filters = _filters_from_literal_results(literal_results)
+    if filters:
+        requirements["filters"] = [
+            {
+                "owner": item["owner"],
+                "property": item["property"],
+                "operator": item.get("operator") or "eq",
+            }
+            for item in filters
+        ]
+
+    if shape == QueryShape.F6_PATH_GROUP_TOPN:
+        selected_vertices = vertex_ids
+        group_by = _slot_property_items_from_substantive_terms(
+            decomposition=decomposition,
+            slot="group_by",
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+        if group_by:
+            requirements["group_by"] = group_by
+
+        measure = _count_measure_from_projection_terms(
+            decomposition=decomposition,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+        if measure is not None:
+            requirements["aggregate"] = measure
+
+        structural_requirements = _structural_requirements_for_precheck(decomposition)
+        if structural_requirements.requires_order_by and measure is not None:
+            requirements["order_by"] = [
+                {
+                    "source": f"measure.{measure['alias']}",
+                    "direction": structural_requirements.order_direction,
+                }
+            ]
+        if structural_requirements.requires_limit.required and structural_requirements.requires_limit.value is not None:
+            requirements["limit"] = structural_requirements.requires_limit.value
+
+    return requirements
+
+
+def _slot_property_items_from_substantive_terms(
+    *,
+    decomposition: Mapping[str, Any],
+    slot: str,
+    candidates: list[SemanticCandidate],
+    registry: Any,
+    selected_vertices: list[str],
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for slot_term in _substantive_terms_with_slot(decomposition, slot=slot):
+        property_ref = _resolve_projection_property(
+            slot_term,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+        if property_ref is None:
+            continue
+        owner, property_name = property_ref
+        if any(item["owner"] == owner and item["property"] == property_name for item in items):
+            continue
+        items.append(
+            {
+                "owner": owner,
+                "property": property_name,
+                "alias": f"{_snake_case(owner)}_{property_name}",
+            }
+        )
+    return items
+
+
+def _count_measure_from_projection_terms(
+    *,
+    decomposition: Mapping[str, Any],
+    registry: Any,
+    selected_vertices: list[str],
+) -> dict[str, Any] | None:
+    matches: list[dict[str, Any]] = []
+    for slot_term in _substantive_terms_with_slot(decomposition, slot="projection"):
+        text = str(slot_term.get("text") or "")
+        if not any(token in text for token in ("数量", "个数", "总数", "count", "Count")):
+            continue
+        attached_to = str(slot_term.get("attached_to") or "").strip()
+        owners = _attached_vertex_names_from_registry(
+            attached_to,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+        if len(owners) != 1:
+            continue
+        owner = next(iter(owners))
+        try:
+            id_property = registry.get_vertex(owner).id_property
+            registry.get_property(owner, id_property)
+        except RegistryLookupError:
+            continue
+        matches.append(
+            {
+                "function": "count",
+                "owner": owner,
+                "property": id_property,
+                "alias": f"{_snake_case(owner)}_count",
+                "projection_terms": [text],
+            }
+        )
+    unique = {
+        (item["function"], item["owner"], item["property"], item["alias"])
+        for item in matches
+    }
+    if len(unique) != 1:
+        return None
+    return matches[0]
+
+
+def _path_direction_context(requirements: Mapping[str, Any]) -> str:
+    terms = [
+        str(item.get("text") or "").strip()
+        for item in requirements.get("path_terms", [])
+        if isinstance(item, Mapping) and str(item.get("text") or "").strip()
+    ]
+    return " ".join(terms) if terms else str(requirements.get("source_question") or "")
+
+
+def _zero_hop_candidates_for_assembler(candidates: list[SemanticCandidate]) -> list[SemanticCandidate]:
+    vertex_ids = _candidate_ids(candidates, "vertex")
+    if len(vertex_ids) != 1:
+        return list(candidates)
+    vertex_name = vertex_ids[0]
+    return [
+        candidate
+        for candidate in candidates
+        if candidate.semantic_type != "property" or candidate.owner == vertex_name
+    ]
+
+
+def _zero_hop_assembler_requirements(
+    *,
+    shape: QueryShape,
+    decomposition: Mapping[str, Any],
+    retrieval_result: CandidateRetrievalResult,
+    literal_results: list[LiteralResolverResult],
+    registry: Any,
+) -> dict[str, Any]:
+    candidates = list(retrieval_result.candidates)
+    vertex_ids = _candidate_ids(candidates, "vertex")
+    selected_vertices = vertex_ids[:1] if len(vertex_ids) == 1 else vertex_ids
+    payload: dict[str, Any] = {}
+
+    if shape in {QueryShape.F1_VERTEX_PROJECTION_0HOP, QueryShape.F2_VERTEX_FILTER_0HOP}:
+        payload["projection"] = _projection_items_from_substantive_terms(
+            decomposition=decomposition,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+
+    if shape == QueryShape.F2_VERTEX_FILTER_0HOP:
+        payload["filters"] = [
+            {"property": result.expected_property, "operator": "eq"}
+            for result in literal_results
+            if result.resolved and result.expected_property
+        ]
+
+    if shape == QueryShape.F3_VERTEX_AGGREGATE_0HOP:
+        payload["filters"] = [
+            {"property": result.expected_property, "operator": "eq"}
+            for result in literal_results
+            if result.resolved and result.expected_property
+        ]
+        payload["aggregate"] = {"function": "count", "alias": f"{_snake_case(selected_vertices[0])}_count"} if len(selected_vertices) == 1 else {"function": "count"}
+
+    return payload
+
+
+def _zero_hop_literal_payloads(literal_results: list[LiteralResolverResult]) -> list[dict[str, Any]]:
+    values: list[dict[str, Any]] = []
+    for result in literal_results:
+        if not result.resolved:
+            continue
+        owner = result.expected_vertex or result.expected_edge
+        if owner is None or result.expected_property is None:
+            continue
+        values.append(
+            {
+                "owner": owner,
+                "property": result.expected_property,
+                "raw": result.raw_literal,
+                "normalized": result.normalized_value if result.normalized_value is not None else result.resolved_value,
+                "resolver_match_type": result.match_type,
+            }
+        )
+    return values
+
+
+def _complete_dsl_generation(
+    trace: GraphTraceBuilder,
+    *,
+    dsl: dict[str, Any],
+    structural_requirements: StructuralRequirements,
+    registry: Any,
+    path_pattern_template_overrides_for_tests: Mapping[str, str] | None,
+    user_visible_notices: list[str] | None = None,
+) -> GenerationOutput:
+    try:
+        ast = _run_stage(
+            trace,
+            stage=StageName.DSL_PARSER,
+            input_payload=dsl,
+            action=lambda: parse_restricted_query_dsl(dsl, registry),
+            output_payload=lambda result: {
+                "query_shape": result.query_shape.value,
+                "operation_count": len(result.operations),
+            },
+        )
+        structural_coverage = _run_dsl_structural_coverage_stage(
+            trace,
+            structural_requirements=structural_requirements,
+            dsl=dsl,
+        )
+        if not structural_coverage.is_valid:
+            return _failure(
+                trace,
+                reason="coverage_failure",
+                message="DSL does not cover all structural requirements derived from decomposition.",
+                details={
+                    "structural_coverage": structural_coverage.model_dump(mode="json"),
+                    "structural_requirements": structural_requirements.model_dump(mode="json"),
+                },
+            )
+        compiler = CypherCompiler(
+            registry,
+            _path_pattern_template_overrides_for_tests=path_pattern_template_overrides_for_tests,
+        )
+        compilation = _run_stage(
+            trace,
+            stage=StageName.CYPHER_COMPILER,
+            input_payload={"query_shape": ast.query_shape.value},
+            action=lambda: compiler.compile_draft(ast),
+            output_payload=lambda result: {
+                "schema_version": result.schema_version,
+                "cypher_template": result.cypher_template,
+                "parameters": result.parameters,
+                "parameter_sources": result.parameter_sources,
+                "cypher_executable": result.cypher_executable,
+                "cypher": result.cypher_executable,
+                "expected_return_aliases": result.expected_return_aliases,
+            },
+        )
+        validation_result = _run_cypher_self_validation_stage(
+            trace,
+            cypher=compilation.cypher_executable,
+            expected_return_aliases=compilation.expected_return_aliases,
+            validator=CypherSelfValidator(registry),
+        )
+        if not validation_result.valid:
+            first_error = validation_result.errors[0] if validation_result.errors else None
+            return _failure(
+                trace,
+                reason=first_error.code if first_error is not None else "target_dialect_static_error",
+                message="Cypher self-validation failed.",
+                details={"self_validation": validation_result.model_dump(mode="json")},
+            )
+    except (CypherCompilerError, RestrictedDslValidationError, ValueError) as exc:
+        return _failure(trace, reason="compiler_shape_mismatch", message=str(exc))
+
+    return _generated(trace, dsl=dsl, cypher=compilation.cypher_executable, user_visible_notices=user_visible_notices)
+
+
+def _decomposition_user_visible_notices(decomposition: Mapping[str, Any]) -> list[str]:
+    coverage = decomposition.get("coverage")
+    if not isinstance(coverage, Mapping):
+        return []
+    modality_terms = coverage.get("modality_terms")
+    if not isinstance(modality_terms, Mapping):
+        return []
+    warning_terms = modality_terms.get("warning_only")
+    if not isinstance(warning_terms, list | tuple):
+        return []
+    return render_user_visible_notices(
+        [
+            {
+                "type": "modality_warning",
+                "term": str(term),
+                "message": f"问题中的“{term}”没有被解释为查询约束。",
+            }
+            for term in warning_terms
+            if str(term).strip()
+        ]
     )
 
 
@@ -1092,7 +1593,11 @@ def _slot_by_substantive_text(decomposition: Mapping[str, Any]) -> dict[str, str
         if not text:
             continue
         slot = str(term.get("slot") or "unknown").strip() or "unknown"
-        slots[_norm(text)] = slot
+        key = _norm(text)
+        if slots.get(key) in _STRUCTURAL_LITERAL_SKIP_SLOTS:
+            continue
+        if slot in _STRUCTURAL_LITERAL_SKIP_SLOTS or key not in slots:
+            slots[key] = slot
     return slots
 
 
@@ -1402,6 +1907,36 @@ def _run_cypher_self_validation_stage(
     return result
 
 
+def _run_dsl_structural_coverage_stage(
+    trace: GraphTraceBuilder,
+    *,
+    structural_requirements: StructuralRequirements,
+    dsl: dict[str, Any],
+) -> DslStructuralCoverageResult:
+    started = perf_counter()
+    result = validate_dsl_structural_coverage(structural_requirements, dsl)
+    issue = structural_coverage_issue(result, structural_requirements) if not result.is_valid else None
+    trace.add_stage(
+        stage=StageName.DSL_STRUCTURAL_COVERAGE_GATE,
+        status="success" if result.is_valid else "failed",
+        duration_ms=_duration_ms(started),
+        input_ref=inline_ref(
+            {
+                "structural_requirements": structural_requirements.model_dump(mode="json"),
+                "dsl": dsl,
+            }
+        ),
+        output_ref=inline_ref(
+            {
+                "structural_requirements": structural_requirements.model_dump(mode="json"),
+                "coverage_result": result.model_dump(mode="json"),
+            }
+        ),
+        errors=[issue] if issue is not None else [],
+    )
+    return result
+
+
 def _run_repair_controller_stage(
     trace: GraphTraceBuilder,
     *,
@@ -1410,19 +1945,17 @@ def _run_repair_controller_stage(
     validator_errors: list[dict[str, Any]] | None = None,
     cypher_validation_errors: list[dict[str, Any]] | None = None,
     assumptions: list[dict[str, Any]] | None = None,
-    attempt_no: int = 1,
-    history: list[dict[str, Any]] | None = None,
 ) -> RepairDecision:
     payload = {
         "schema_version": "repair_controller_input_v1",
         "trace_id": trace._trace_id,  # noqa: SLF001 - pipeline owns the trace builder lifecycle.
         "question": question,
-        "attempt_no": attempt_no,
+        "attempt_no": 1,
         "selected_bindings": selected_bindings,
         "normalized_dsl": None,
         "validator_errors": validator_errors or [],
         "cypher_validation_errors": cypher_validation_errors or [],
-        "history": history or [],
+        "history": [],
         "assumptions": assumptions or [],
     }
     return _run_stage(
@@ -1432,22 +1965,6 @@ def _run_repair_controller_stage(
         action=lambda: RepairController().decide(payload),
         output_payload=lambda result: result.model_dump(mode="json"),
     )
-
-
-def _can_reground_with_llm(decision: RepairDecision, llm_client: Any | None) -> bool:
-    return decision.decision == "repair_with_llm" and llm_client is not None
-
-
-def _repair_history_item(
-    selected_bindings: dict[str, Any],
-    attempt_no: int,
-    decision: RepairDecision,
-) -> dict[str, Any]:
-    return {
-        "attempt_no": attempt_no,
-        "fingerprint": from_binding_plan(selected_bindings),
-        "error_code": decision.reason_code,
-    }
 
 
 def _output_from_decomposition_outcome(
@@ -1508,7 +2025,7 @@ def _normalize_decomposition_terms(payload: dict[str, Any]) -> dict[str, Any]:
         if attached_to:
             substantive_terms = _append_unique_substantive_term(substantive_terms, attached_to)
         text = str(literal.get("text") or literal.get("raw_literal") or literal.get("value") or "").strip()
-        if text:
+        if text and not _has_structural_substantive_slot(substantive_terms, text):
             substantive_terms = _append_unique_substantive_term(
                 substantive_terms,
                 text,
@@ -1532,6 +2049,7 @@ def _normalize_decomposition_terms(payload: dict[str, Any]) -> dict[str, Any]:
     normalized["substantive_terms"] = substantive_terms
     normalized.setdefault("coverage", _coverage(covered=_substantive_term_texts(normalized)))
     normalized["coverage"] = _coverage_seeded_with_projection_terms(normalized, normalized["coverage"])
+    normalized["structural_requirements"] = derive_structural_requirements(normalized).model_dump(mode="json")
     return normalized
 
 
@@ -1548,24 +2066,34 @@ def _string_list(value: Any) -> list[str]:
     return [str(item).strip() for item in value if str(item).strip()]
 
 
+def _has_structural_substantive_slot(terms: list[dict[str, Any]], text: str) -> bool:
+    target = _norm(text)
+    return any(
+        _norm(str(term.get("text") or "")) == target
+        and str(term.get("slot") or "unknown").strip() in _STRUCTURAL_LITERAL_SKIP_SLOTS
+        for term in terms
+    )
+
+
 def _substantive_term_payloads(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list | tuple):
         return []
     terms: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    seen: set[tuple[str, str, str | None]] = set()
     for item in value:
         if not isinstance(item, Mapping):
             continue
         text = str(item.get("text") or "").strip()
-        if not text or text in seen:
-            continue
         slot = str(item.get("slot") or "unknown").strip() or "unknown"
+        attached_to = str(item.get("attached_to") or "").strip() or None
+        key = (text, slot, attached_to)
+        if not text or key in seen:
+            continue
         payload: dict[str, Any] = {"text": text, "slot": slot}
-        attached_to = str(item.get("attached_to") or "").strip()
         if attached_to:
             payload["attached_to"] = attached_to
         terms.append(payload)
-        seen.add(text)
+        seen.add(key)
     return terms
 
 
@@ -1579,9 +2107,7 @@ def _coverage_seeded_with_projection_terms(
 ) -> Any:
     if _is_count_slot(decomposition):
         return coverage
-    projection_terms = [
-        str(item["text"]) for item in _substantive_terms_with_slot(decomposition, slot="projection")
-    ]
+    projection_terms = _required_projection_terms(decomposition)
     if not projection_terms:
         return coverage
     payload = dict(coverage) if isinstance(coverage, Mapping) else CoverageReport.model_validate(coverage).model_dump(mode="json")
@@ -1605,7 +2131,12 @@ def _append_unique_substantive_term(
     slot: str = "unknown",
     attached_to: str | None = None,
 ) -> list[dict[str, Any]]:
-    if any(item.get("text") == text for item in values):
+    if any(
+        item.get("text") == text
+        and str(item.get("slot") or "unknown") == slot
+        and (str(item.get("attached_to") or "").strip() or None) == attached_to
+        for item in values
+    ):
         return values
     payload: dict[str, Any] = {"text": text, "slot": slot}
     if attached_to:
@@ -1637,12 +2168,34 @@ def _output_from_grounded_outcome(
             },
         )
     if grounded.status == "clarification_required":
-        return _clarification(trace, question="请补充澄清信息。")
+        return _clarification(trace, question=_grounded_clarification_question(grounded))
+    if grounded.status == "failed":
+        return _failure(
+            trace,
+            reason="single_shot_fallback_failed",
+            message=_grounded_failure_message(grounded),
+            details={"grounded_understanding": grounded.model_dump(mode="json")},
+        )
     return _failure(
         trace,
         reason="semantic_match_rejected",
         message=f"Grounded understanding returned non-grounded status {grounded.status}.",
     )
+
+
+def _grounded_clarification_question(grounded: GroundedUnderstanding) -> str:
+    if grounded.ambiguities:
+        ambiguity = grounded.ambiguities[0]
+        return f"请补充澄清信息：{ambiguity.reason}"
+    return "请补充澄清信息。"
+
+
+def _grounded_failure_message(grounded: GroundedUnderstanding) -> str:
+    if grounded.ambiguities:
+        return grounded.ambiguities[0].reason
+    if grounded.unsupported is not None:
+        return grounded.unsupported.message
+    return "Single-shot fallback could not produce a valid DSL grounding."
 
 
 def _grounded_binder_payload(result: Any) -> dict[str, Any]:
@@ -1658,7 +2211,8 @@ def _coerce_grounded_understanding(result: Any) -> GroundedUnderstanding | None:
     if isinstance(result, GroundedUnderstanding):
         return result
     if isinstance(result, Mapping) and result.get("schema_version") == "grounded_understanding_v1":
-        return GroundedUnderstanding.model_validate(result)
+        payload = {key: value for key, value in result.items() if not str(key).startswith("_")}
+        return GroundedUnderstanding.model_validate(payload)
     return None
 
 
@@ -2364,13 +2918,6 @@ def _handle_repair_decision(
             reason=decision.reason_code,
             message=decision.stop_reason or decision.reason_code,
             details=fallback_details,
-        )
-    if decision.decision == "repair_with_llm":
-        return _failure(
-            trace,
-            reason="semantic_match_rejected",
-            message=f"Repair with LLM is not connected in deterministic pipeline: {decision.reason_code}",
-            details={"repair_decision": decision.model_dump(mode="json"), **(fallback_details or {})},
         )
     return _failure(
         trace,

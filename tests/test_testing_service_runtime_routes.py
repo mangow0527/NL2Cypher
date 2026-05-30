@@ -10,12 +10,18 @@ from services.testing_agent.app.models import QAGoldenResponse, SubmissionReceip
 
 class StubService:
     def __init__(self) -> None:
+        self.question_received_reports = []
         self.generation_failure_reports = []
+        self.executed_cypher = None
 
     async def ingest_golden(self, request):
         return QAGoldenResponse(id=request.id, status="received_golden_only")
 
     async def ingest_submission(self, request):
+        return SubmissionReceipt(accepted=True)
+
+    async def ingest_question_received(self, request):
+        self.question_received_reports.append(request)
         return SubmissionReceipt(accepted=True)
 
     async def ingest_generation_failure(self, request):
@@ -36,6 +42,13 @@ class StubService:
 
     def get_service_status(self):
         return {"status": "ok"}
+
+    async def execute_cypher(self, request):
+        self.executed_cypher = request.cypher
+        return {
+            "header": [{"name": "name"}],
+            "result": [["edge-router-1"]],
+        }
 
 
 def test_testing_service_root_redirects_to_healthcheck():
@@ -85,6 +98,45 @@ def test_submission_route_returns_minimal_receipt(monkeypatch):
 
     assert response.status_code == 200
     assert response.json() == {"accepted": True}
+
+
+def test_question_received_route_returns_minimal_receipt(monkeypatch):
+    service = StubService()
+    monkeypatch.setattr(main_module, "get_testing_service", lambda: service)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/evaluations/questions",
+        json={
+            "id": "qa-001",
+            "question": "查询设备",
+            "generation_run_id": "run-001",
+            "generation_status": "generation_pending",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"accepted": True}
+    assert len(service.question_received_reports) == 1
+    assert service.question_received_reports[0].generation_status == "generation_pending"
+
+
+def test_tugraph_query_route_executes_cypher_without_evaluation(monkeypatch):
+    service = StubService()
+    monkeypatch.setattr(main_module, "get_testing_service", lambda: service)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/tugraph/query",
+        json={"cypher": "MATCH (n) RETURN n.name AS name LIMIT 1"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "header": [{"name": "name"}],
+        "result": [["edge-router-1"]],
+    }
+    assert service.executed_cypher == "MATCH (n) RETURN n.name AS name LIMIT 1"
 
 
 @pytest.mark.parametrize(

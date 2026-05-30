@@ -207,6 +207,48 @@ def test_edge_direction_mapping_is_preserved_for_validator_and_dsl_builder(
     assert plan.edge_bindings[0].direction == "backward"
 
 
+def test_variable_path_with_multiple_edges_is_normalized_to_traversal_chain(
+    binder: SemanticBinder,
+) -> None:
+    plan = binder.bind(
+        {
+            "query_shape": "variable_path_traversal",
+            "selected_vertices": ["Service", "Tunnel", "NetworkElement"],
+            "selected_edges": ["SERVICE_USES_TUNNEL", "PATH_THROUGH"],
+            "projection": [
+                {
+                    "semantic_type": "property",
+                    "owner": "NetworkElement",
+                    "name": "name",
+                }
+            ],
+        },
+        candidates=[
+            _candidate("vertex", "Service"),
+            _candidate("vertex", "Tunnel"),
+            _candidate("vertex", "NetworkElement"),
+            _candidate("edge", "SERVICE_USES_TUNNEL"),
+            _candidate("edge", "PATH_THROUGH"),
+            _candidate(
+                "property",
+                "NetworkElement.name",
+                owner="NetworkElement",
+                semantic_name="name",
+            ),
+        ],
+    )
+
+    assert plan.query_shape == "single_hop_traversal"
+    assert plan.assumptions[-1] == {
+        "type": "query_shape_normalized",
+        "from": "variable_path_traversal",
+        "to": "single_hop_traversal",
+        "reason": "multiple edge bindings form a traversal chain",
+        "edge_count": 2,
+        "vertex_count": 3,
+    }
+
+
 def test_metric_group_by_dimensions_are_preserved_for_validation(
     binder: SemanticBinder,
 ) -> None:

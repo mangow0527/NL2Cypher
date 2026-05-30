@@ -92,6 +92,72 @@ def test_openai_compatible_client_posts_schema_bound_json_request(
     assert request["timeout"] == 12.0
 
 
+def test_grounded_understanding_schema_bound_contract_uses_compact_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[dict[str, Any]] = []
+
+    class FakeClient:
+        def __init__(self, *, timeout: float) -> None:
+            self.timeout = timeout
+
+        def __enter__(self) -> "FakeClient":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def post(
+            self,
+            url: str,
+            *,
+            headers: dict[str, str],
+            json: dict[str, Any],
+        ) -> httpx.Response:
+            requests.append({"url": url, "headers": headers, "json": json, "timeout": self.timeout})
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": '{"schema_version":"grounded_understanding_v1","status":"grounded","query_shape":"lookup","selected_bindings":[]}'
+                            }
+                        }
+                    ]
+                },
+                request=httpx.Request("POST", url),
+            )
+
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+
+    client = OpenAICompatibleStructuredLLMClient(
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        model="qwen3-32b",
+        temperature=0.1,
+        timeout_seconds=12.0,
+    )
+
+    client.generate_structured(
+        prompt="Ground this question.",
+        schema_name="grounded_understanding_v1",
+        schema={"type": "object", "required": ["schema_version"]},
+        attempt=1,
+    )
+
+    content = requests[0]["json"]["messages"][0]["content"]
+    assert "compact selection contract" in content
+    assert "selected_literal_ids" in content
+    assert "candidate_id" in content
+    assert "不要输出 semantic_id" in content
+    assert "projection/group_by/measures/sort/assumptions 必须是对象数组" in content
+    assert '"selected_literals"' not in content
+    assert '"coverage"' not in content
+    assert '"rationale"' not in content
+    assert '"confidence"' not in content
+
+
 def test_openai_compatible_client_strips_markdown_json_fences(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

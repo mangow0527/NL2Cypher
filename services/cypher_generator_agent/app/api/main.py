@@ -1,6 +1,6 @@
 from typing import Dict
 
-from fastapi import FastAPI
+from fastapi import BackgroundTasks, FastAPI
 from fastapi.responses import Response
 import uvicorn
 
@@ -24,8 +24,14 @@ async def generator_status() -> Dict[str, object]:
 
 
 @app.post("/api/v1/qa/questions", status_code=204)
-async def ingest_question(request: QAQuestionRequest) -> Response:
-    await get_workflow_service().ingest_question(request)
+async def ingest_question(request: QAQuestionRequest, background_tasks: BackgroundTasks) -> Response:
+    service = get_workflow_service()
+    result = await service.accept_question(request)
+    background_tasks.add_task(
+        service.generate_and_submit_question,
+        request,
+        generation_run_id=result.generation_run_id,
+    )
     return Response(status_code=204)
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from functools import lru_cache
 from typing import Dict, Optional, Protocol
@@ -7,6 +8,7 @@ from uuid import uuid4
 
 from .models import (
     CgaGenerationNonSuccessReport,
+    CgaQuestionReceivedReport,
     GeneratedCypherSubmissionRequest,
     GenerationRunResult,
     QAQuestionRequest,
@@ -23,12 +25,30 @@ GENERATED_STAGE_ORDER = [
     "input_clarification_gate",
     "question_decomposer",
     "candidate_retrieval",
+    "candidate_reranker",
     "literal_resolver",
+    "deterministic_assembler",
     "grounded_understanding",
     "semantic_binder",
     "semantic_validator",
     "dsl_builder",
     "dsl_parser",
+    "dsl_structural_coverage_gate",
+    "cypher_compiler",
+    "cypher_self_validation",
+    "output",
+]
+
+DETERMINISTIC_GENERATED_STAGE_ORDER = [
+    "graph_model_loader",
+    "input_clarification_gate",
+    "question_decomposer",
+    "candidate_retrieval",
+    "candidate_reranker",
+    "literal_resolver",
+    "deterministic_assembler",
+    "dsl_parser",
+    "dsl_structural_coverage_gate",
     "cypher_compiler",
     "cypher_self_validation",
     "output",
@@ -36,6 +56,9 @@ GENERATED_STAGE_ORDER = [
 
 
 class GeneratedCypherSubmitter(Protocol):
+    async def submit_question_received(self, payload: CgaQuestionReceivedReport) -> Dict[str, object]:
+        ...
+
     async def submit(self, payload: GeneratedCypherSubmissionRequest) -> Dict[str, object]:
         ...
 
@@ -51,9 +74,28 @@ class CypherGeneratorAgentService:
     ) -> None:
         self.testing_client = testing_client
 
-    async def ingest_question(self, request: QAQuestionRequest) -> GenerationRunResult:
+    async def accept_question(self, request: QAQuestionRequest) -> GenerationRunResult:
         generation_run_id = str(uuid4())
-        output = run_pipeline(
+        await self.testing_client.submit_question_received(
+            CgaQuestionReceivedReport(
+                id=request.id,
+                question=request.question,
+                generation_run_id=generation_run_id,
+            )
+        )
+        return GenerationRunResult(
+            generation_run_id=generation_run_id,
+            submission_status="submitted_to_testing",
+        )
+
+    async def generate_and_submit_question(
+        self,
+        request: QAQuestionRequest,
+        *,
+        generation_run_id: str,
+    ) -> GenerationRunResult:
+        output = await asyncio.to_thread(
+            run_pipeline,
             qa_id=request.id,
             question=request.question,
             generation_run_id=generation_run_id,
@@ -172,10 +214,10 @@ def _validated_graph_trace(
 def _validate_stage_contract(trace: GraphTraceRecord) -> None:
     stage_names = [str(stage.stage) for stage in trace.stages]
     if trace.final_status == "generated":
-        if stage_names != GENERATED_STAGE_ORDER:
+        if stage_names not in (GENERATED_STAGE_ORDER, DETERMINISTIC_GENERATED_STAGE_ORDER):
             raise ValueError(
-                "generated trace stages must match cga_graph_trace_v1 generated stage order: "
-                f"{GENERATED_STAGE_ORDER}"
+                "generated trace stages must match a cga_graph_trace_v1 generated stage order: "
+                f"{GENERATED_STAGE_ORDER} or {DETERMINISTIC_GENERATED_STAGE_ORDER}"
             )
         return
 
@@ -202,6 +244,7 @@ def get_generator_status() -> Dict[str, object]:
                 "semantic_validator",
                 "dsl_builder",
                 "dsl_parser",
+                "dsl_structural_coverage_gate",
                 "cypher_compiler",
                 "cypher_self_validation",
             ]

@@ -31,7 +31,10 @@
         "property": {
           "owner": "Tunnel",
           "name": "id"
-        }
+        },
+        "projection_terms": [
+          "ID"
+        ]
       },
       {
         "alias": "tunnel_name",
@@ -39,7 +42,10 @@
         "property": {
           "owner": "Tunnel",
           "name": "name"
-        }
+        },
+        "projection_terms": [
+          "名称"
+        ]
       },
       {
         "alias": "tunnel_bandwidth",
@@ -47,7 +53,10 @@
         "property": {
           "owner": "Tunnel",
           "name": "bandwidth"
-        }
+        },
+        "projection_terms": [
+          "带宽"
+        ]
       }
     ]
   }

@@ -1,40 +1,50 @@
 {
   "schema_version": "restricted_query_dsl_v1",
-  "query_id": "gq-008",
-  "query_shape": "metric_aggregate",
-  "source_question": "全网有多少台防火墙",
+  "query_id": "zero-hop-f3",
+  "query_shape": "ad_hoc_aggregate",
+  "source_question": "",
   "bindings": {
-    "metric": {
-      "metric_name": "device_count"
+    "target": {
+      "vertex_name": "NetworkElement"
     }
   },
   "operations": [
     {
-      "op": "metric_aggregate",
-      "metric_name": "device_count",
+      "op": "aggregate",
       "group_by": [],
-      "filters": [
+      "measures": [
         {
-          "target": "ne",
+          "alias": "network_element_count",
+          "function": "count",
+          "target": "target",
           "property": {
             "owner": "NetworkElement",
-            "name": "elem_type"
-          },
-          "operator": "eq",
-          "value": {
-            "raw": "防火墙",
-            "normalized": "firewall",
-            "resolver_match_type": "value_synonym"
+            "name": "id"
           }
         }
       ]
     }
   ],
+  "filters": [
+    {
+      "target": "target",
+      "property": {
+        "owner": "NetworkElement",
+        "name": "elem_type"
+      },
+      "operator": "eq",
+      "value": {
+        "raw": "防火墙",
+        "normalized": "firewall",
+        "resolver_match_type": "value_synonym"
+      }
+    }
+  ],
   "projection": {
     "items": [
       {
-        "alias": "device_count",
-        "source": "metric.device_count"
+        "alias": "network_element_count",
+        "source": "measure.network_element_count"
       }
     ]
   }

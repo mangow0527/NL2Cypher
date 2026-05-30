@@ -36,6 +36,7 @@ class RepairHistoryItem(RepairBaseModel):
     attempt_no: int | None = None
     fingerprint: str
     error_code: str | None = None
+    missing_requirements: list[str] = Field(default_factory=list)
 
 
 class RepairControllerInput(RepairBaseModel):

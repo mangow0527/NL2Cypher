@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator, model_validator
 
 from services.cypher_generator_agent.app.literals.models import LiteralResolverResult
 from services.cypher_generator_agent.app.retrieval.models import SemanticType
@@ -83,6 +84,30 @@ class GroundedBinding(UnderstandingBaseModel):
         raise ValueError(f"property binding is missing owner: {self.semantic_id}")
 
 
+class CompactGroundedBinding(UnderstandingBaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    candidate_id: str = Field(min_length=1)
+    role: str | None = None
+    direction: BindingDirection | None = None
+
+    @field_validator("candidate_id")
+    @classmethod
+    def strip_candidate_id(cls, value: str) -> str:
+        text = value.strip()
+        if not text:
+            raise ValueError("compact binding candidate_id must not be empty")
+        return text
+
+    @field_validator("role")
+    @classmethod
+    def strip_optional_role(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        text = value.strip()
+        return text or None
+
+
 class GroundedAmbiguity(UnderstandingBaseModel):
     role: str = Field(min_length=1)
     reason: str = Field(min_length=1)
@@ -117,6 +142,53 @@ class GroundedUnsupported(UnderstandingBaseModel):
         if not text:
             raise ValueError("unsupported text fields must not be empty")
         return text
+
+
+class CompactGroundedUnderstanding(UnderstandingBaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    schema_version: Literal["grounded_understanding_v1"] = GROUNDED_UNDERSTANDING_SCHEMA_VERSION
+    status: GroundedStatus
+    query_shape: GroundedQueryShape
+    selected_bindings: list[CompactGroundedBinding]
+    selected_literal_ids: list[str] = Field(default_factory=list)
+    filters: list[Any] = Field(default_factory=list)
+    projection: list[Any] = Field(default_factory=list)
+    group_by: list[Any] = Field(default_factory=list)
+    measures: list[Any] = Field(default_factory=list)
+    sort: list[Any] = Field(default_factory=list)
+    limit: int | None = Field(default=None, ge=1)
+    assumptions: list[Any] = Field(default_factory=list)
+    ambiguities: list[GroundedAmbiguity] = Field(default_factory=list)
+    unsupported: GroundedUnsupported | None = None
+
+    @field_validator("query_shape")
+    @classmethod
+    def strip_query_shape(cls, value: str) -> str:
+        text = value.strip()
+        if not text:
+            raise ValueError("query_shape must not be empty")
+        return text
+
+    @field_validator("selected_literal_ids", mode="after")
+    @classmethod
+    def strip_selected_literal_ids(cls, value: list[str]) -> list[str]:
+        literal_ids = [literal_id.strip() for literal_id in value]
+        if any(not literal_id for literal_id in literal_ids):
+            raise ValueError("selected_literal_ids must not contain empty literal ids")
+        return literal_ids
+
+    @model_validator(mode="after")
+    def validate_status_payload(self) -> "CompactGroundedUnderstanding":
+        if self.status == "unsupported_query_shape":
+            if self.unsupported is None:
+                raise ValueError("unsupported_query_shape requires unsupported payload")
+            if self.query_shape != "unsupported":
+                raise ValueError("unsupported_query_shape requires query_shape=unsupported")
+            return self
+        if self.unsupported is not None:
+            raise ValueError(f"{self.status} output must not include unsupported payload")
+        return self
 
 
 class GroundedUnderstanding(UnderstandingBaseModel):
@@ -242,6 +314,7 @@ class GroundedUnderstandingFailure(UnderstandingBaseModel):
 GroundedUnderstandingOutcome: TypeAlias = GroundedUnderstanding | GroundedUnderstandingFailure
 
 GROUNDED_UNDERSTANDING_RESPONSE_ADAPTER = TypeAdapter(GroundedUnderstanding)
+COMPACT_GROUNDED_UNDERSTANDING_RESPONSE_ADAPTER = TypeAdapter(CompactGroundedUnderstanding)
 
 
 def _looks_like_projection_property(item: dict[str, Any]) -> bool:
@@ -254,9 +327,32 @@ def _looks_like_projection_property(item: dict[str, Any]) -> bool:
     return isinstance(semantic_id, str) and "." in semantic_id
 
 
-def parse_grounded_understanding_response(payload: Any) -> GroundedUnderstanding:
-    return GROUNDED_UNDERSTANDING_RESPONSE_ADAPTER.validate_python(payload)
+def parse_grounded_understanding_response(payload: Any) -> CompactGroundedUnderstanding | GroundedUnderstanding:
+    try:
+        return GROUNDED_UNDERSTANDING_RESPONSE_ADAPTER.validate_python(payload)
+    except ValidationError as full_exc:
+        try:
+            return COMPACT_GROUNDED_UNDERSTANDING_RESPONSE_ADAPTER.validate_python(payload)
+        except ValidationError as compact_exc:
+            if _looks_like_legacy_full_grounding_payload(payload):
+                raise full_exc
+            raise compact_exc
 
 
 def grounded_understanding_json_schema() -> dict[str, Any]:
-    return GROUNDED_UNDERSTANDING_RESPONSE_ADAPTER.json_schema()
+    return COMPACT_GROUNDED_UNDERSTANDING_RESPONSE_ADAPTER.json_schema()
+
+
+def _looks_like_legacy_full_grounding_payload(payload: Any) -> bool:
+    if not isinstance(payload, Mapping):
+        return False
+    if any(key in payload for key in ("coverage", "selected_literals", "confidence")):
+        return True
+    selected_bindings = payload.get("selected_bindings")
+    if not isinstance(selected_bindings, list | tuple):
+        return False
+    return any(
+        isinstance(binding, Mapping)
+        and any(key in binding for key in ("semantic_type", "semantic_id", "semantic_name", "owner"))
+        for binding in selected_bindings
+    )

@@ -102,7 +102,7 @@ golden_questions:
     primary_ir: IR-18
     expected_reason_code: generated
     coverage: literal
-    query_shape: metric_aggregate
+    query_shape: ad_hoc_aggregate
     expected_dsl_ir: IR-18
     cypher_filled_by_ir: IR-18
     expected_dsl_fixture: expected_dsl/gq-008.json
@@ -283,9 +283,9 @@ golden_questions:
     question: 服务经过哪些端口
     expected_status: generation_failed
     primary_ir: IR-15
-    expected_reason_code: repair_binding_oscillation
+    expected_reason_code: edge_endpoint_mismatch
     reason: failure
-    coverage: repair_oscillation
+    coverage: single_shot_concede
     query_shape: single_hop_traversal
     ci_smoke: false
 

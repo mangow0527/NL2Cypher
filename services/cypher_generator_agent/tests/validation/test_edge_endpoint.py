@@ -118,6 +118,53 @@ def test_backward_single_hop_direction_allows_reversed_vertex_order(
     assert result.errors == []
 
 
+def test_traversal_chain_validates_each_edge_against_adjacent_vertices(
+    validator: SemanticValidator,
+) -> None:
+    plan = BindingPlan(
+        query_shape="single_hop_traversal",
+        vertex_bindings=[
+            VertexBinding(name="Service", candidate=_candidate("vertex", "Service")),
+            VertexBinding(name="Tunnel", candidate=_candidate("vertex", "Tunnel")),
+            VertexBinding(name="NetworkElement", candidate=_candidate("vertex", "NetworkElement")),
+        ],
+        edge_bindings=[
+            EdgeBinding(name="SERVICE_USES_TUNNEL", candidate=_candidate("edge", "SERVICE_USES_TUNNEL")),
+            EdgeBinding(name="PATH_THROUGH", candidate=_candidate("edge", "PATH_THROUGH")),
+        ],
+    )
+
+    result = validator.validate(plan)
+
+    assert result.is_valid is True
+    assert result.errors == []
+
+
+def test_traversal_chain_reports_mismatched_later_edge_endpoint(
+    validator: SemanticValidator,
+) -> None:
+    plan = BindingPlan(
+        query_shape="single_hop_traversal",
+        vertex_bindings=[
+            VertexBinding(name="Service", candidate=_candidate("vertex", "Service")),
+            VertexBinding(name="Tunnel", candidate=_candidate("vertex", "Tunnel")),
+            VertexBinding(name="Port", candidate=_candidate("vertex", "Port")),
+        ],
+        edge_bindings=[
+            EdgeBinding(name="SERVICE_USES_TUNNEL", candidate=_candidate("edge", "SERVICE_USES_TUNNEL")),
+            EdgeBinding(name="PATH_THROUGH", candidate=_candidate("edge", "PATH_THROUGH")),
+        ],
+    )
+
+    result = validator.validate(plan)
+
+    assert result.is_valid is False
+    assert result.errors[0].code == "edge_endpoint_mismatch"
+    assert result.errors[0].details["edge_index"] == 1
+    assert result.errors[0].details["actual_from"] == "Tunnel"
+    assert result.errors[0].details["actual_to"] == "Port"
+
+
 def test_property_owner_mismatch_returns_repairable_error(
     validator: SemanticValidator,
 ) -> None:

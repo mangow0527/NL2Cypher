@@ -128,6 +128,22 @@ class SemanticBinder:
                 )
         if query_shape == "vertex_lookup" and edge_bindings and len(vertex_bindings) >= 2:
             query_shape = "single_hop_traversal"
+        if (
+            query_shape == "variable_path_traversal"
+            and len(edge_bindings) > 1
+            and len(vertex_bindings) == len(edge_bindings) + 1
+        ):
+            assumptions.append(
+                {
+                    "type": "query_shape_normalized",
+                    "from": "variable_path_traversal",
+                    "to": "single_hop_traversal",
+                    "reason": "multiple edge bindings form a traversal chain",
+                    "edge_count": len(edge_bindings),
+                    "vertex_count": len(vertex_bindings),
+                }
+            )
+            query_shape = "single_hop_traversal"
         if query_shape == "metric_aggregate" and not metric_bindings and measures:
             query_shape = "ad_hoc_aggregate"
 
