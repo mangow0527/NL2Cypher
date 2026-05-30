@@ -49,7 +49,7 @@ def test_id_shape_resolves_only_by_value_index_exact(
     assert result.evidence[0].target == "ne-0001"
 
 
-def test_missing_id_shape_is_unresolved_without_near_id_replacement(
+def test_missing_id_shape_passes_through_without_near_id_replacement(
     resolver: LiteralResolver,
 ) -> None:
     result = resolver.resolve(
@@ -61,18 +61,18 @@ def test_missing_id_shape_is_unresolved_without_near_id_replacement(
         )
     )
 
-    assert result.resolved is False
-    assert result.resolved_value is None
-    assert result.normalized_value is None
-    assert result.match_type == "unresolved"
-    assert result.confidence == 0.0
+    assert result.resolved is True
+    assert result.resolved_value == "ne-9999"
+    assert result.normalized_value == "ne-9999"
+    assert result.match_type == "literal_passthrough"
+    assert result.confidence == 0.9
     assert result.requires_user_choice is False
     assert result.value_index_miss is True
-    assert result.error_code == "literal_value_index_miss"
+    assert result.error_code is None
     assert result.alternatives == []
 
 
-def test_owner_id_property_always_uses_exact_index_without_near_id_alternatives(
+def test_owner_id_property_passes_through_index_miss_without_near_id_alternatives(
     resolver: LiteralResolver,
 ) -> None:
     result = resolver.resolve(
@@ -84,10 +84,49 @@ def test_owner_id_property_always_uses_exact_index_without_near_id_alternatives(
         )
     )
 
-    assert result.resolved is False
-    assert result.match_type == "unresolved"
+    assert result.resolved is True
+    assert result.resolved_value == "ne0001"
+    assert result.match_type == "literal_passthrough"
     assert result.value_index_miss is True
-    assert result.error_code == "literal_value_index_miss"
+    assert result.error_code is None
+    assert result.alternatives == []
+
+
+def test_unknown_name_value_passes_through_when_property_is_unambiguous(
+) -> None:
+    registry = load_graph_semantic_model(
+        {
+            "name": "literal_name_passthrough",
+            "vertices": [
+                {
+                    "name": "Service",
+                    "id_property": "id",
+                    "properties": [
+                        {"name": "id", "type": "string", "required": True},
+                        {"name": "name", "type": "string", "required": True},
+                    ],
+                }
+            ],
+        }
+    ).registry
+    resolver = LiteralResolver(registry=registry, value_index=StaticValueIndex.empty())
+
+    result = resolver.resolve(
+        LiteralResolverRequest(
+            raw_literal="Service_001",
+            expected_vertex="Service",
+            expected_property="name",
+            literal_kind_hint="name",
+        )
+    )
+
+    assert result.resolved is True
+    assert result.resolved_value == "Service_001"
+    assert result.normalized_value == "Service_001"
+    assert result.match_type == "literal_passthrough"
+    assert result.requires_user_choice is False
+    assert result.value_index_miss is False
+    assert result.error_code is None
     assert result.alternatives == []
 
 

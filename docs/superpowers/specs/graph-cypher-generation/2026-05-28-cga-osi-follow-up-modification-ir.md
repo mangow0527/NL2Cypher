@@ -29,11 +29,12 @@
 | MIR-005 | Decomposer Redundant Output Field Removal | 已闭环，性能继续优化另开 | decomposer completion token latency | P0 |
 | MIR-006 | Structural Requirements and DSL Coverage Gate | 检测链路已闭环；结构补齐能力转 MIR-010 | `qa_526d49332ed1` / `qa_c3e83dd7ad32` / `qa_a5f4b0253af3` | P0 |
 | MIR-007 | Coverage-Aware Deterministic Grounding and LLM Handoff | 由 MIR-010 取代；不单独实施 | `qa_526d49332ed1` / `qa_c3e83dd7ad32` / `qa_a5f4b0253af3` | P0 |
-| MIR-008 | Grounded Understanding Compact Output Contract | fallback compact contract / hydrate / failure path 已本地闭环，待远端 5 job 验证；token 收益待单独量化 | MIR-010 fallback output token / schema invalid | P0 |
+| MIR-008 | Grounded Understanding Compact Output Contract | 功能已随 MIR-010.6 接入；token / fallback 专项指标未闭环 | MIR-010 fallback output token / schema invalid | P0 |
 | MIR-009 | Retrieval Structural Relevance Reranker | 已实施并远端部署；收窄边界需持续回归 | dirty top_candidates / structure-irrelevant candidate noise | P0 |
-| MIR-010 | Deterministic Form Assembler Corpus and Main-Path Control Flow Refactor | 主控制流已实施到第 4 波；projection 与 fallback schema 防线已本地闭环，待远端 5 job 验证 | 680-query shape analysis / MIR-007 multi-round LLM latency | P0 |
+| MIR-010 | Deterministic Form Assembler Corpus and Main-Path Control Flow Refactor | 主控制流已远端部署；L2 澄清闭环；L2 投影 / vertex lookup 抽样残缺已远端闭环；MIR-010.8 指标未闭环 | 680-query shape analysis / MIR-007 multi-round LLM latency | P0 |
+| MIR-011 | Literal Filter Binding and Static Index-Miss Pass-through | 已远端闭环；L2 literal 澄清归零 | L2 `Service_001` / `svc-mpls-vpn-1004` / `MPLS-VPN` / `延迟=23` 澄清 | P0 |
 
-后续新增问题按 `MIR-011`、`MIR-012` 继续追加。
+后续新增问题按 `MIR-012`、`MIR-013` 继续追加。
 
 未闭环 MIR 实施处置（2026-05-30）：
 
@@ -41,9 +42,9 @@
 | --- | --- | --- | --- |
 | MIR-002 | B：取代/吸收，不再单独落地 | 无需实施 | 代码侧 hard cut 已完成；后续性能方向由 MIR-005 的 prompt slimming 经验和 MIR-010 的确定性主路径接管，不再继续围绕 decomposer token 单独决策。 |
 | MIR-007 | B：由 MIR-010 取代，不单独落地 | 无需实施；仅保留 MIR-010.5 明确保留的机制 | MIR-010 取消 deterministic <-> LLM 多轮 handoff，因此 MIR-007 的 fingerprint 控制、交替循环检测和多轮 repair 不应再作为主控制流实现。 |
-| MIR-008 | 已执行：作用域修订后并入 fallback | MIR-010.6 single-shot fallback 内部 | compact contract 仍有价值，但只服务 MIR-010 的 single-shot fallback；不再服务 MIR-007 式多轮 grounded repair。 |
+| MIR-008 | C：功能已接入，指标未闭环 | MIR-010.6 single-shot fallback 内部；后续补 token / fallback 专项采样 | compact contract 已随 fallback 路径接入，但原目标中的 completion token 收益、fallback schema retry 率和专项远端样本尚未单独量化。 |
 | MIR-009 | 已执行：直接落地 | MIR-010 前置 | retrieval reranker 已作为确定性拼装和 single-shot fallback 的候选收窄层接入，后续只持续验证边界。 |
-| MIR-010 | 已执行到第 4 波，未业务闭环 | 继续按 failure reason 小步补齐 | 主路径控制流重构已落地；随机 40 样本显示复杂路径、聚合内容正确性和 literal owner/property 绑定仍需后续分线处理。 |
+| MIR-010 | A：主干已落地，业务与指标未闭环 | 继续按 failure reason 小步补齐 | 主路径控制流重构已落地并远端部署；L2 literal 澄清已由 MIR-011 收口；2026-05-30 已远端确认一批 `coverage_failure` / `compiler_shape_mismatch` 小缺口闭环（投影同义词、`vertex_full`、唯一 owner 推断、vertex lookup limit、低分 vertex 噪声防误伤）。MIR-010.8 的 680/留出指标仍未完整沉淀，L2 全量分布仍需再刷新。 |
 
 推荐实施顺序（已按此完成主干落地）：`MIR-009 -> MIR-010 最小确定性闭环 -> MIR-010.4/.5 原子控制流切换与 MIR-007 退役 -> 修订/实施 MIR-008 fallback compact contract -> 扩展 MIR-010 F4/F6/F8`。
 
@@ -51,9 +52,10 @@
 
 | MIR | 当前实施状态 | 验证 / 剩余边界 |
 | --- | --- | --- |
-| MIR-008 | 已并入 MIR-010.6 single-shot fallback 路径；wrapper 侧 schema-bound prompt 已收敛为 compact selection contract，operation hint hydrate 可兼容旧式字符串 projection/group_by/measures/sort/assumptions，schema invalid 失败不再被误报为 compiler_shape_mismatch。 | 本地 CGA 回归 `585 passed`；fallback 只调用一次、输出 DSL、过结构覆盖和 self-validation；completion token 收益尚未按原 MIR-008 指标单独量化，业务效果待远端 5 job 复验。 |
+| MIR-008 | 已并入 MIR-010.6 single-shot fallback 路径；wrapper 侧 schema-bound prompt 已收敛为 compact selection contract，operation hint hydrate 可兼容旧式字符串 projection/group_by/measures/sort/assumptions，schema invalid 失败不再被误报为 compiler_shape_mismatch。 | 本地 CGA 回归 `600 passed`；fallback 只调用一次、输出 DSL、过结构覆盖和 self-validation。未闭环：completion token 收益、fallback 命中样本 schema retry 率、fallback 专项远端样本。 |
 | MIR-009 | 已落地独立 structural reranker，接在 retriever 之后，保持“收窄不裁决”边界。 | 作为 MIR-010 前置组件参与远端部署；仍需持续回归确认 SRC/DST、PATH_THROUGH 等结构相关 edge 不被提前裁掉。 |
-| MIR-010 | 已完成第 1-4 波主干：taxonomy / direction mapper / F1-F6 形态拼装器、F6 grouped top-N DSL 扩展、主控制流切换、MIR-007 多轮 repair 退役、single-shot fallback、clarification / concede 路径；2026-05-30 已补齐 deterministic 主路径 projection term 覆盖防线，并补齐 fallback schema / hydrate 防线。 | 旧远端随机 5 job / 40 样本验证结果为 `pass=10`、`fail=24`、`pending=6`；本地 CGA `585 passed`，待重新部署并复跑 5 job 验证业务结果。 |
+| MIR-010 | 已完成第 1-4 波主干：taxonomy / direction mapper / F1-F6 形态拼装器、F6 grouped top-N DSL 扩展、主控制流切换、MIR-007 多轮 repair 退役、single-shot fallback、clarification / concede 路径；2026-05-30 已补齐 deterministic 主路径 projection term 覆盖防线，并补齐 fallback schema / hydrate 防线。随后继续小步闭环 L2 残缺：`服务名称/编号/服务ID/等级值/服务质量等级` 投影同义词、`详细信息/节点/全部属性信息` -> `vertex_full`、vertex lookup 唯一属性 owner 推断、vertex lookup `LIMIT`、低分 token 级 vertex 噪声不阻断 0-hop 收敛。 | 本地 CGA `615 passed`。远端 L2 去重 86 条上一轮重跑：`generated=63`、`generation_failed=23`、`clarification_required=0`；testing 状态 `passed=55`、`issue_ticket_created=31`。针对上一轮 8 条 L2 投影 / vertex lookup 残缺样本，远端 smoke `smoke_l2_projection_vertex_fix4_20260530T155847Z` 先确认 7/8 passed，随后 `qa_38392098b2fc` 经低分 vertex 噪声防误伤补丁在 `smoke_single_qa383_fix5_20260530T160229Z` 通过；该抽样问题集 8/8 闭环。未闭环：L2 全量分布刷新，以及 MIR-010.8 四指标。 |
+| MIR-011 | 已补齐 literal request 构造与 resolver pass-through 防线：hyphenated 类型值不再被 ID 快路径抢走；无 attachment 的数值 literal 可回看前置 filter 属性；明确 owner/property 的非枚举等值 literal 在静态索引 miss 时 raw pass-through。 | 本地 CGA `600 passed`。远端 L2 去重 86 条重跑后 `clarification_required=0`；典型样本 `qa_a1801a24cede` 生成 `WHERE svc.name = 'Service_001'` 并通过，`qa_78040ceec879` 生成 `WHERE svc.latency = 23.0` 并通过。 |
 
 ## 2. 总体修改原则
 
@@ -848,7 +850,7 @@ docs/experiments/2026-05-28-runtime-center-cga-job-analysis.md
 
 ## 10. MIR-008 Grounded Understanding Compact Output Contract
 
-状态：已按 MIR-010 修订作用域，并随 MIR-010.6 single-shot fallback 路径实施；fallback compact contract、hydrate 和 failure path 已本地闭环，待远端 5 job 验证；不再按原 MIR-007 多轮 handoff 背景直接实施。
+状态：已按 MIR-010 修订作用域，并随 MIR-010.6 single-shot fallback 路径实施；fallback compact contract、hydrate 和 failure path 已本地闭环；不再按原 MIR-007 多轮 handoff 背景直接实施。未闭环项是原性能目标：completion token 收益、schema retry 率和 fallback 专项远端样本尚未单独量化。
 
 处置结论（2026-05-30）：本 MIR 的 compact contract 仍有价值，但作用域从“服务 MIR-007 的多轮 grounded repair”收缩为“服务 MIR-010.6 的 LLM single-shot fallback”。MIR-010 主路径命中的查询不应进入 grounded understanding compact selector；只有确定性形态拼装无法唯一覆盖、需要 LLM 兜底时，才适用本 MIR。
 
@@ -1283,7 +1285,7 @@ Retrieval 做“结构相关性收窄”，绝不做“路径裁决”。
 
 ## 12. MIR-010 Deterministic Form Assembler Corpus and Main-Path Control Flow Refactor
 
-状态：主控制流已实施到第 4 波；控制流闭环。2026-05-30 已补齐 deterministic 主路径的 projection term 覆盖防线，并补齐 fallback compact schema / hydrate 防线，本地 CGA 回归 `585 passed`；280 池随机 40 样本通过率待重新部署后复验。
+状态：主控制流已实施到第 4 波并远端部署；控制流闭环。2026-05-30 已补齐 deterministic 主路径的 projection term 覆盖防线，并补齐 fallback compact schema / hydrate 防线；随后通过 MIR-011 收口 L2 literal 澄清问题。2026-05-30 继续补齐 L2 残缺投影与 vertex lookup 小缺口，本地 CGA 回归 `615 passed`；远端针对上一轮 8 条 L2 投影 / vertex lookup 残缺样本已抽样闭环。MIR-010 的剩余未闭环项已收缩为：L2 全量分布刷新、复杂结构语义正确性，以及 MIR-010.8 四指标。
 
 实施摘要（2026-05-30）：
 
@@ -1291,16 +1293,20 @@ Retrieval 做“结构相关性收窄”，绝不做“路径裁决”。
 - 第 2 波已完成 assembler dispatch、确定性主路径 -> single-shot fallback -> clarification / generation_failed 的控制流切换，并退役 MIR-007 多轮 grounded repair。
 - 第 3 波已完成 F4 路径投影、多跳扩展、single-shot fallback 契约和认输 / 澄清路径；F1/F2/F3 远端验证已从 LLM 路径降到秒级确定性路径。
 - 第 4 波选择扩展 DSL 支持 F6 grouped top-N，并完成 F6 相关拼装与回归接线；F8 仅保留可模板化子形态，非唯一场景退 fallback。
-- 旧远端随机 5 job / 40 样本验证：`pass=10`，`fail=24`，`pending=6`；pending 均为 `clarification_required`，不是后台未跑完。
+- 旧远端随机 5 job / 40 样本验证：`pass=10`，`fail=24`，`pending=6`；pending 均为 `clarification_required`，不是后台未跑完。该结果已被后续 L2 literal 澄清修复局部刷新，不能再代表当前 L2 状态。
 - 2026-05-30 projection 补齐增量：为 DSL projection item 增加 `projection_terms` 元数据；结构覆盖闸门按题干 projection term 逐项校验；F4/F5 若显式 projection 字段未解析完整，不再静默 fallback 为默认 ID；同名字段可按不同 `attached_to` 保留，例如“服务的时延”和“隧道的时延”不再被去重成单一服务字段。
 - 2026-05-30 fallback schema 补齐增量：schema-bound prompt 改为 compact selection contract；hydrate 层兼容旧式字符串 operation hints；`GroundedUnderstandingFailure` 不再被转成普通 dict 后误入 binder，真实失败原因保留为 `grounded_understanding_schema_invalid`。
-- 本地验证：`CYPHER_GENERATOR_AGENT_DISABLE_ENV_FILE=1 CYPHER_GENERATOR_AGENT_LLM_ENABLED=false PYTHONPATH=. pytest services/cypher_generator_agent/tests -q` -> `585 passed in 4.39s`。
+- 2026-05-30 L2 残缺投影 / vertex lookup 小步补齐：`服务名称`、`编号/服务ID`、`等级值`、`服务质量等级` 可作为 property projection surface；`详细信息/详情/完整信息/全部属性/所有属性/节点/全部属性信息` 可落成 `vertex_full` projection；fallback 只选属性但 owner 唯一时，binder 可推断 vertex lookup 目标；vertex lookup 支持 limit-only tail；literal owner 可从 `服务ID` 这类 owner+field surface 反推，但若存在高置信度其他 vertex 候选则不抢路径查询，低分 token 噪声（例如 limit 数字召回 `Port`）不阻断 0-hop 收敛。该批修复针对上一轮 L2 中的 `coverage_failure` 和 `compiler_shape_mismatch` 抽样根因，不引入新架构。
+- 本地验证：`python -m pytest services/cypher_generator_agent/tests` -> `615 passed in 4.48s`。
+- 远端 L2 验证：280 池与 400 池去重 L2 共 86 条，dispatch log 为 `/home/mabingjie/apps/qa-agent/artifacts/experiment_runs/dispatch_l2_after_literal_fix_20260530T092405Z.jsonl`；结果为 `generated=63`、`generation_failed=23`、`clarification_required=0`、`pending=0`，testing 状态为 `passed=55`、`issue_ticket_created=31`。
+- 远端 L2 投影 / vertex lookup 抽样验证：`smoke_l2_projection_vertex_fix4_20260530T155847Z` 覆盖上一轮 8 条问题样本中的 7 条通过；剩余 `qa_38392098b2fc` 经 `smoke_single_qa383_fix5_20260530T160229Z` 单条复测通过，生成 `MATCH (svc:Service) WHERE svc.name = 'Service_003' RETURN svc AS service LIMIT 3`，testing verdict `pass`。
 
 当前边界：
 
 - MIR-010 已解决“旧多轮 LLM repair 可能拖到 60s”的控制流问题，但尚未解决全部复杂语义正确性。
 - L1 / L2 样本表现明显好于中高难度，说明确定性主路径对简单形态已生效。
-- 旧 40 样本失败集中在复杂路径、路径 + 端口、路径分组 top-N、两阶段聚合、属性计数、projection 字段不全和 literal owner/property 绑定；其中 projection 字段不全已先补齐本地防线，剩余边界需以本轮远端 5 job 复跑结果重新归类。
+- L2 literal 澄清已由 MIR-011 收口，不再作为当前 L2 主失败类型。
+- 上一轮 L2 未通过项集中在：`coverage_failure=14`、`compiler_shape_mismatch=7`、`grounded_understanding_schema_invalid=1`、`semantic_match_rejected=1`。其中已抽样确认投影 surface / `vertex_full` / vertex lookup owner 推断 / vertex lookup limit / 低分 vertex 噪声防误伤闭环；仍需远端全量 L2 重跑刷新剩余分布，其余失败继续分别回到结构覆盖 / DSL 表达 / fallback schema / semantic verdict 线处理。
 
 ### 12.1 首要原则：确定性拼装，不启发式猜测
 
@@ -1738,7 +1744,70 @@ docs/experiments/2026-05-28-runtime-center-cga-job-analysis.md
 - MIR-008 和 MIR-009 仍有价值：retrieval 收窄降低 fallback 选择难度，compact contract 降低 fallback 输出 token；但 MIR-010 会减少它们在主路径上的触发频率。
 - testing-agent 结构等价 verdict 仍是独立线；本 MIR 能降低方向错误进入结果的概率，但不替代下游 verdict 增强。
 
-## 13. 后续 MIR 模板
+## 13. MIR-011 Literal Filter Binding and Static Index-Miss Pass-through
+
+状态：已远端闭环。该 MIR 是对 MIR-006 剩余风险中“literal owner/property 绑定问题”的小步收口，不改变主控制流，不引入数据库查询，不扩大为新的架构调整。
+
+### 13.1 闭环摘要
+
+触发范围：L2 大量 `clarification_required`，代表样本包括：
+
+- `qa_a1801a24cede`：`查询名称为“Service_001”的服务的ID、名称、服务质量等级和带宽。`
+- `qa_b4a89bcff37b`：`查询ID为'svc-mpls-vpn-1004'的服务的名称。`
+- `qa_d54077843edf`：`查询网元类型为MPLS-VPN的服务的ID和网元类型。`
+- `qa_78040ceec879`：`查询延迟等于23的服务名称、带宽和延迟。`
+
+旧行为不是用户问题真实含糊，而是 literal 解析链路把明确等值过滤转成反问：
+
+- `Service_001` / `Service_002` 等服务名称在 `Service.name` 或误绑 `Service.id` 后 unresolved。
+- `svc-mpls-vpn-1000` 到 `svc-mpls-vpn-1004` 等服务 ID 因静态 value index miss 触发 `literal_value_index_miss`。
+- `MPLS-VPN` 因 hyphenated value 形态被 ID 快路径抢走，误绑到 `Service.id`。
+- `延迟=23` 在缺少 `attached_to` 时没有消费前置 filter 词“延迟”，误绑到 `Service.name`。
+
+本 MIR 的闭环原则：
+
+> 当 literal 的 owner / property 已经由 decomposition、retrieval candidate 和 filter property hint 唯一确定时，CGA 不应仅因为静态 value index 缺样本而反问；对非枚举等值过滤允许 raw literal pass-through。高风险枚举仍必须走 valid_values / synonym / index 校验，不能 pass-through 猜测。
+
+关键结果：
+
+- literal request 构造消费 filter property hint：
+  - `类型为 MPLS-VPN` 绑定到 `Service.elem_type`，不会因连字符形态优先走 ID 快路径。
+  - `延迟等于 23` 在 literal 无 `attached_to` 时回看前置 filter term，绑定到 `Service.latency`。
+  - `名称为 Service_003` 优先绑定到 `Service.name`，不会因值形态像标识符而抢到 `Service.id`。
+- literal resolver 增加 `literal_passthrough` match type：
+  - 对明确 owner/property 的非枚举 string/id literal，value index miss 不再等价于 unresolved。
+  - compiler 将 `literal_passthrough` 视为有证据的 resolved literal，可安全内联到 Cypher。
+  - `value_index_miss` 仍保留在 trace 中，表达“静态索引未确认存在”，但不触发用户澄清。
+- 高风险 enum 逻辑保持不变：未知枚举值仍可进入 clarification，不允许被 pass-through。
+
+验证：
+
+- 本地：`python -m pytest services/cypher_generator_agent/tests` -> `600 passed in 4.66s`。
+- 远端：CGA、运行中心、testing-agent 均 health OK；repair-agent 未启动。
+- 远端 L2 去重 86 条重跑：
+  - dispatch log：`/home/mabingjie/apps/qa-agent/artifacts/experiment_runs/dispatch_l2_after_literal_fix_20260530T092405Z.jsonl`
+  - 生成状态：`generated=63`、`generation_failed=23`、`clarification_required=0`、`pending=0`
+  - testing 状态：`passed=55`、`issue_ticket_created=31`
+  - 典型通过：`qa_a1801a24cede` 生成 `WHERE svc.name = 'Service_001'` 并通过；`qa_78040ceec879` 生成 `WHERE svc.latency = 23.0` 并通过。
+
+剩余边界：
+
+- `literal_passthrough` 不证明数据库中一定存在该值，只证明过滤槽位明确；真实存在性由执行结果和 testing-agent 判断。
+- 本 MIR 不解决 L2 剩余 `coverage_failure`、`compiler_shape_mismatch`、`grounded_understanding_schema_invalid`、`semantic_match_rejected`。
+- 若后续发现 pass-through 被用于高风险 enum、模糊 owner/property 或多候选场景，必须回退到 clarification 或另开 MIR，不得扩大为“所有 literal 都直通”。
+
+## 14. 当前未闭环 MIR / 风险清单
+
+| 项 | 所属 MIR | 当前证据 | 下一步 |
+| --- | --- | --- | --- |
+| fallback compact contract 性能收益未量化 | MIR-008 | 功能接入、本地 `600 passed`，但没有单独统计 fallback completion tokens、schema retry 率、端到端耗时。 | 选取 fallback 命中样本做 token / latency / schema retry 专项采样；若收益未达标，再决定是否继续压缩 prompt。 |
+| MIR-010.8 四指标未完整沉淀 | MIR-010 | 已有 86 条 L2 结果，但尚未对 680 条训练集和留出集输出形态覆盖率、确定性命中率、fallback 触发率、认输率。 | 跑 680 条形态回归；若有 680 外样本，单独标注为留出泛化；文档中区分训练集自验证与泛化。 |
+| L2 剩余 `coverage_failure` | MIR-010 / MIR-006 边界 | 上一轮 L2 86 条中有 14 条 `coverage_failure`；本轮已抽样闭环 `服务ID/服务名称/编号/等级值/服务质量等级` 投影 surface 与 `详细信息/节点/全部属性信息` -> `vertex_full`，8 条问题样本中的 coverage 类已远端通过。 | 远端全量 L2 重跑后刷新剩余分布；若仍有 coverage failure，继续按 structural_requirements vs DSL 差异分类，不扩大为架构改动。 |
+| L2 剩余 `compiler_shape_mismatch` | MIR-010 / DSL 表达力 | 上一轮 L2 86 条中有 7 条 `compiler_shape_mismatch`；已远端验证 vertex lookup limit-only tail、fallback 仅有同 owner 属性时的 target vertex 推断，以及低分 token 级 vertex 噪声不阻断 0-hop 收敛。 | 远端全量 L2 重跑后确认是否还存在 compiler shape；剩余项再区分 DSL 表达力缺口、assembler dispatch 误判或 fallback hydrate 失败。 |
+| fallback schema / grounded 输出仍有个别失败 | MIR-008 / MIR-010.6 | L2 86 条中仍有 1 条 `grounded_understanding_schema_invalid`。 | 拉 trace 看 schema invalid 的具体字段；若是 compact contract 仍不稳定，补最小 schema / hydrate 测试。 |
+| semantic verdict / 语义等价仍有失败 | testing-agent / verdict 线，非本 MIR 闭环 | L2 86 条中仍有 1 条 `semantic_match_rejected`；历史上 alias strict mismatch 与结构等价 verdict 一直是独立线。 | 不混入 CGA 主路径；单独审 testing-agent verdict 和 alias/结构等价口径。 |
+
+## 15. 后续 MIR 模板
 
 新增修改项时按以下模板追加：
 

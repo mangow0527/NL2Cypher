@@ -7,7 +7,13 @@ import pytest
 
 from services.cypher_generator_agent.app.assembly.zero_hop import ZeroHopAssembler
 from services.cypher_generator_agent.app.binding.models import CandidateBinding
+from services.cypher_generator_agent.app.core.pipeline import (
+    _projection_items_from_substantive_terms,
+    _with_literal_requests_from_candidates,
+    _zero_hop_candidates_for_assembler,
+)
 from services.cypher_generator_agent.app.dsl.parser import parse_restricted_query_dsl
+from services.cypher_generator_agent.app.retrieval.models import CandidateRetrievalResult, SemanticCandidate
 from services.cypher_generator_agent.app.semantic_model import GraphSemanticRegistry, load_graph_semantic_model
 from services.cypher_generator_agent.app.validation.structural_requirements import StructuralRequirements
 
@@ -132,6 +138,199 @@ def test_f2_unique_filter_property_and_literal_builds_parseable_filter(
     assert ast.projection.items[0].property.name == "id"
 
 
+def test_f2_covers_service_quality_projection_when_filter_uses_same_property(
+    registry: GraphSemanticRegistry,
+) -> None:
+    result = ZeroHopAssembler(registry).assemble(
+        "F2",
+        candidates=[
+            _candidate("vertex", "Service"),
+            _candidate("property", "Service.id", owner="Service", semantic_name="id"),
+            _candidate("property", "Service.quality_of_service", owner="Service", semantic_name="quality_of_service"),
+        ],
+        structural_requirements={
+            "filters": [{"property": "quality_of_service", "operator": "eq"}],
+            "projection": [
+                {
+                    "semantic_type": "property",
+                    "owner": "Service",
+                    "name": "id",
+                    "projection_terms": ["编号"],
+                },
+                {
+                    "semantic_type": "property",
+                    "owner": "Service",
+                    "name": "quality_of_service",
+                    "projection_terms": ["服务质量等级"],
+                },
+            ],
+        },
+        literals=[
+            {
+                "property": "quality_of_service",
+                "owner": "Service",
+                "raw": "Gold",
+                "normalized": "Gold",
+                "resolver_match_type": "exact",
+            }
+        ],
+    )
+
+    assert result.success is True
+    assert result.dsl is not None
+    assert [item["property"]["name"] for item in result.dsl["projection"]["items"]] == [
+        "id",
+        "quality_of_service",
+    ]
+
+
+def test_f2_preserves_vertex_full_detail_projection(
+    registry: GraphSemanticRegistry,
+) -> None:
+    result = ZeroHopAssembler(registry).assemble(
+        "F2",
+        candidates=[
+            _candidate("vertex", "Service"),
+            _candidate("property", "Service.quality_of_service", owner="Service", semantic_name="quality_of_service"),
+        ],
+        structural_requirements={
+            "filters": [{"property": "quality_of_service", "operator": "eq"}],
+            "projection": [
+                {
+                    "semantic_type": "vertex_full",
+                    "name": "Service",
+                    "alias": "service",
+                    "projection_terms": ["详细信息"],
+                }
+            ],
+        },
+        literals=[
+            {
+                "property": "quality_of_service",
+                "owner": "Service",
+                "raw": "Gold",
+                "normalized": "Gold",
+                "resolver_match_type": "exact",
+            }
+        ],
+    )
+
+    assert result.success is True
+    assert result.dsl is not None
+    ast = parse_restricted_query_dsl(result.dsl, registry)
+    assert ast.projection.items[0].vertex_full is True
+    assert ast.projection.items[0].target is not None
+    assert ast.projection.items[0].target.vertex_name == "Service"
+
+
+def test_projection_terms_map_detail_info_to_vertex_full(
+    registry: GraphSemanticRegistry,
+) -> None:
+    projection = _projection_items_from_substantive_terms(
+        decomposition={
+            "substantive_terms": [
+                {"text": "服务", "slot": "projection"},
+                {"text": "详细信息", "slot": "projection", "attached_to": "服务"},
+            ]
+        },
+        candidates=[
+            _semantic_candidate("vertex", "Service"),
+            _semantic_candidate("property", "Service.id", owner="Service", semantic_name="id"),
+        ],
+        registry=registry,
+        selected_vertices=["Service"],
+    )
+
+    assert projection == [
+        {
+            "semantic_type": "vertex_full",
+            "name": "Service",
+            "alias": "service",
+            "projection_terms": ["详细信息"],
+        }
+    ]
+
+
+def test_projection_terms_map_node_object_to_vertex_full_when_owner_is_unique(
+    registry: GraphSemanticRegistry,
+) -> None:
+    projection = _projection_items_from_substantive_terms(
+        decomposition={
+            "substantive_terms": [
+                {"text": "服务", "slot": "path"},
+                {"text": "节点", "slot": "projection"},
+            ]
+        },
+        candidates=[
+            _semantic_candidate("vertex", "Service"),
+            _semantic_candidate("property", "Service.id", owner="Service", semantic_name="id"),
+        ],
+        registry=registry,
+        selected_vertices=["Service"],
+    )
+
+    assert projection == [
+        {
+            "semantic_type": "vertex_full",
+            "name": "Service",
+            "alias": "service",
+            "projection_terms": ["节点"],
+        }
+    ]
+
+
+def test_zero_hop_candidates_can_be_scoped_by_unique_literal_owner() -> None:
+    candidates = [
+        _semantic_candidate("vertex", "Service"),
+        _semantic_candidate("vertex", "NetworkElement"),
+        _semantic_candidate("property", "Service.elem_type", owner="Service", semantic_name="elem_type"),
+        _semantic_candidate("property", "NetworkElement.elem_type", owner="NetworkElement", semantic_name="elem_type"),
+    ]
+
+    filtered = _zero_hop_candidates_for_assembler(candidates, preferred_vertex="Service")
+
+    assert [(item.semantic_type, item.semantic_id) for item in filtered] == [
+        ("vertex", "Service"),
+        ("property", "Service.elem_type"),
+    ]
+
+
+def test_literal_request_infers_service_owner_from_projection_surface_without_vertex_candidate(
+    registry: GraphSemanticRegistry,
+) -> None:
+    enriched = _with_literal_requests_from_candidates(
+        {
+            "original_question": "查询时延等于22的服务ID、名称和时延。",
+            "literal_candidates": [{"text": "22", "kind_hint": "number"}],
+            "substantive_terms": [
+                {"text": "时延", "slot": "filter"},
+                {"text": "等于", "slot": "filter"},
+                {"text": "22", "slot": "filter"},
+                {"text": "服务ID", "slot": "projection"},
+                {"text": "名称", "slot": "projection"},
+                {"text": "时延", "slot": "projection"},
+            ],
+        },
+        CandidateRetrievalResult(
+            candidates=[
+                _semantic_candidate("property", "Service.id", owner="Service", semantic_name="id"),
+                _semantic_candidate("property", "Service.latency", owner="Service", semantic_name="latency"),
+                _semantic_candidate("property", "Tunnel.latency", owner="Tunnel", semantic_name="latency"),
+            ]
+        ),
+        registry=registry,
+    )
+
+    assert enriched["literal_requests"] == [
+        {
+            "raw_literal": "22",
+            "expected_vertex": "Service",
+            "expected_property": "latency",
+            "literal_kind_hint": "numeric",
+        }
+    ]
+
+
 def test_f3_unique_vertex_count_builds_parseable_aggregate(registry: GraphSemanticRegistry) -> None:
     result = ZeroHopAssembler(registry).assemble(
         "F3",
@@ -190,4 +389,22 @@ def _candidate(
         score=1.0,
         match_type="exact",
         metadata=metadata or {},
+    )
+
+
+def _semantic_candidate(
+    semantic_type: str,
+    semantic_id: str,
+    *,
+    owner: str | None = None,
+    semantic_name: str | None = None,
+) -> SemanticCandidate:
+    return SemanticCandidate(
+        semantic_type=semantic_type,  # type: ignore[arg-type]
+        semantic_id=semantic_id,
+        semantic_name=semantic_name or semantic_id,
+        owner=owner,
+        score=1.0,
+        match_type="exact",
+        evidence=[],
     )

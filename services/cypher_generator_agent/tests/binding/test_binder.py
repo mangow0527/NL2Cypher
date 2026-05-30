@@ -249,6 +249,43 @@ def test_variable_path_with_multiple_edges_is_normalized_to_traversal_chain(
     }
 
 
+def test_variable_path_with_missing_intermediate_vertex_is_inferred_from_edge_chain(
+    binder: SemanticBinder,
+) -> None:
+    plan = binder.bind(
+        {
+            "query_shape": "variable_path_traversal",
+            "selected_vertices": ["Service", "NetworkElement", "Port"],
+            "selected_edges": ["SERVICE_USES_TUNNEL", "PATH_THROUGH", "HAS_PORT"],
+            "projection": [
+                {
+                    "semantic_type": "property",
+                    "owner": "Port",
+                    "name": "id",
+                }
+            ],
+        },
+        candidates=[
+            _candidate("vertex", "Service"),
+            _candidate("vertex", "NetworkElement"),
+            _candidate("vertex", "Port"),
+            _candidate("edge", "SERVICE_USES_TUNNEL"),
+            _candidate("edge", "PATH_THROUGH"),
+            _candidate("edge", "HAS_PORT"),
+            _candidate("property", "Port.id", owner="Port", semantic_name="id"),
+        ],
+    )
+
+    assert plan.query_shape == "single_hop_traversal"
+    assert [binding.name for binding in plan.vertex_bindings] == [
+        "Service",
+        "Tunnel",
+        "NetworkElement",
+        "Port",
+    ]
+    assert plan.assumptions[-2]["type"] == "inferred_vertex_chain_from_edges"
+
+
 def test_metric_group_by_dimensions_are_preserved_for_validation(
     binder: SemanticBinder,
 ) -> None:
@@ -383,6 +420,64 @@ def test_llm_nested_filter_payload_is_normalized_to_selected_literal(
     assert plan.filters[0].raw_literal == "Gold级别"
     assert plan.filters[0].value == "GOLD"
     assert plan.projection == [{"semantic_type": "vertex", "name": "Tunnel"}]
+
+
+def test_vertex_lookup_infers_unique_vertex_from_property_owners(
+    binder: SemanticBinder,
+) -> None:
+    literal_result = LiteralResolverResult(
+        raw_literal="21",
+        resolved=True,
+        resolved_value=21.0,
+        normalized_value=21.0,
+        match_type="typed_parse",
+        confidence=0.97,
+        expected_vertex="Service",
+        expected_property="quality_of_service",
+    )
+
+    plan = binder.bind(
+        {
+            "query_shape": "vertex_lookup",
+            "selected_properties": ["Service.quality_of_service", "Service.id"],
+            "selected_literals": [literal_result.model_dump()],
+            "projection": [
+                {"semantic_type": "property", "owner": "Service", "name": "id"},
+                {"semantic_type": "property", "owner": "Service", "name": "quality_of_service"},
+            ],
+        },
+        candidates=_service_lookup_candidates(),
+    )
+
+    assert [binding.name for binding in plan.vertex_bindings] == ["Service"]
+    assert [(item["owner"], item["name"]) for item in plan.projection] == [
+        ("Service", "id"),
+        ("Service", "quality_of_service"),
+    ]
+    assert [(item.owner, item.property) for item in plan.filters] == [("Service", "quality_of_service")]
+    assert any(item["type"] == "inferred_vertex_from_property_owner" for item in plan.assumptions)
+
+
+def test_vertex_lookup_does_not_infer_vertex_from_multiple_property_owners(
+    binder: SemanticBinder,
+) -> None:
+    plan = binder.bind(
+        {
+            "query_shape": "vertex_lookup",
+            "selected_properties": ["Service.id", "Tunnel.id"],
+            "projection": [
+                {"semantic_type": "property", "owner": "Service", "name": "id"},
+                {"semantic_type": "property", "owner": "Tunnel", "name": "id"},
+            ],
+        },
+        candidates=[
+            *_service_lookup_candidates(),
+            _candidate("vertex", "Tunnel"),
+            _candidate("property", "Tunnel.id", owner="Tunnel", semantic_name="id"),
+        ],
+    )
+
+    assert plan.vertex_bindings == []
 
 
 def test_llm_shorthand_filter_and_projection_are_normalized(
@@ -926,6 +1021,21 @@ def _gold_candidates() -> list[SemanticCandidate]:
             owner="Service",
             semantic_name="quality_of_service",
         ),
+    ]
+
+
+def _service_lookup_candidates() -> list[SemanticCandidate]:
+    return [
+        _candidate("vertex", "Service"),
+        _candidate("property", "Service.id", owner="Service", semantic_name="id"),
+        _candidate(
+            "property",
+            "Service.quality_of_service",
+            owner="Service",
+            semantic_name="quality_of_service",
+        ),
+        _candidate("property", "Service.latency", owner="Service", semantic_name="latency"),
+        _candidate("property", "Service.elem_type", owner="Service", semantic_name="elem_type"),
     ]
 
 

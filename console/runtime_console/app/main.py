@@ -43,9 +43,9 @@ def create_app() -> FastAPI:
             timeout_seconds=120.0,
         ),
         diagnostic_client=RuntimeCgaDiagnosticLLMClient(
-            base_url=runtime_settings.diagnostic_llm_base_url,
-            api_key=runtime_settings.diagnostic_llm_api_key,
-            model=runtime_settings.diagnostic_llm_model,
+            base_url=runtime_settings.resolved_diagnostic_llm_base_url,
+            api_key=runtime_settings.resolved_diagnostic_llm_api_key,
+            model=runtime_settings.resolved_diagnostic_llm_model,
             timeout_seconds=runtime_settings.diagnostic_llm_timeout_seconds,
             temperature=runtime_settings.diagnostic_llm_temperature,
         ),

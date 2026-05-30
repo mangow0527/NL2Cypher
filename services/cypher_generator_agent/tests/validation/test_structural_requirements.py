@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from services.cypher_generator_agent.app.validation.structural_requirements import (
+    StructuralRequirements,
     derive_structural_requirements,
     validate_dsl_structural_coverage,
 )
@@ -55,6 +56,47 @@ def test_top_n_with_group_order_limit_requires_aggregate_even_when_output_shape_
     )
 
     assert requirements.requires_aggregate is True
+
+
+def test_scalar_projection_value_does_not_imply_aggregate() -> None:
+    requirements = derive_structural_requirements(
+        {
+            "original_question": "查询名称为 Service_002 的服务的名称。",
+            "intent_type": "lookup",
+            "output_shape": "scalar",
+            "substantive_terms": [
+                {"text": "名称", "slot": "filter", "attached_to": "服务"},
+                {"text": "Service_002", "slot": "filter", "attached_to": "服务"},
+                {"text": "服务", "slot": "path"},
+                {"text": "名称", "slot": "projection", "attached_to": "服务"},
+            ],
+        }
+    )
+
+    assert requirements.requires_aggregate is False
+    assert requirements.projection_terms == ["名称"]
+
+
+def test_node_projection_is_required_even_when_limit_is_present() -> None:
+    requirements = derive_structural_requirements(
+        {
+            "original_question": "查询名称为 Service_003 的服务节点，最多返回 3 条记录。",
+            "intent_type": "list",
+            "output_shape": "rows",
+            "substantive_terms": [
+                {"text": "名称", "slot": "filter", "attached_to": "服务"},
+                {"text": "Service_003", "slot": "filter", "attached_to": "服务"},
+                {"text": "服务", "slot": "path"},
+                {"text": "节点", "slot": "projection"},
+                {"text": "最多", "slot": "limit"},
+                {"text": "3", "slot": "limit"},
+            ],
+        }
+    )
+
+    assert requirements.requires_limit.required is True
+    assert requirements.requires_limit.value == 3
+    assert requirements.projection_terms == ["节点"]
 
 
 def test_path_term_positions_prefer_longer_non_overlapping_surface_matches() -> None:
@@ -226,6 +268,152 @@ def test_gate_reports_uncovered_projection_terms_when_projection_is_partial() ->
     projection_missing = [item for item in result.missing if item["code"] == "projection_terms_uncovered"]
     assert projection_missing
     assert projection_missing[0]["details"]["uncovered"] == ["名称", "带宽"]
+
+
+def test_gate_covers_projection_terms_from_alias_or_property_surface_without_projection_terms() -> None:
+    requirements = derive_structural_requirements(
+        {
+            "original_question": "返回隧道的IETF标准、源网元的IP地址、服务时延、网元软件版本和端口节点。",
+            "intent_type": "list",
+            "output_shape": "rows",
+            "substantive_terms": [
+                {"text": "IETF标准", "slot": "projection", "attached_to": "隧道"},
+                {"text": "IP地址", "slot": "projection", "attached_to": "网元"},
+                {"text": "时延", "slot": "projection", "attached_to": "服务"},
+                {"text": "软件版本", "slot": "projection", "attached_to": "网元"},
+                {"text": "节点", "slot": "projection", "attached_to": "端口"},
+            ],
+        }
+    )
+
+    result = validate_dsl_structural_coverage(
+        requirements,
+        {
+            "schema_version": "restricted_query_dsl_v1",
+            "query_id": "projection-surface-fallback",
+            "query_shape": "single_hop_traversal",
+            "source_question": "返回隧道的IETF标准、源网元的IP地址、服务时延、网元软件版本和端口节点。",
+            "bindings": {},
+            "operations": [{"op": "traverse_edge", "from": "svc", "edge": "edge", "to": "tun"}],
+            "projection": {
+                "items": [
+                    {
+                        "alias": "IETF标准",
+                        "property": {"owner": "Tunnel", "name": "ietf_standard"},
+                    },
+                    {
+                        "alias": "IP地址",
+                        "property": {"owner": "NetworkElement", "name": "ip_address"},
+                    },
+                    {
+                        "alias": "service_latency",
+                        "property": {"owner": "Service", "name": "latency"},
+                    },
+                    {
+                        "alias": "network_element_software_version",
+                        "property": {"owner": "NetworkElement", "name": "software_version"},
+                    },
+                    {
+                        "alias": "port",
+                        "target": {"vertex_name": "Port"},
+                        "vertex_full": True,
+                    },
+                ]
+            },
+        },
+    )
+
+    assert result.is_valid is True
+
+
+def test_gate_covers_service_projection_synonyms_without_explicit_projection_terms() -> None:
+    requirements = StructuralRequirements(
+        projection_terms=["编号", "服务ID", "服务名称", "等级值", "服务质量等级"],
+    )
+
+    result = validate_dsl_structural_coverage(
+        requirements,
+        {
+            "schema_version": "restricted_query_dsl_v1",
+            "query_shape": "vertex_lookup",
+            "bindings": {"target": {"vertex_name": "Service"}},
+            "operations": [],
+            "projection": {
+                "items": [
+                    {"target": "target", "property": {"owner": "Service", "name": "id"}},
+                    {"target": "target", "property": {"owner": "Service", "name": "name"}},
+                    {
+                        "target": "target",
+                        "property": {"owner": "Service", "name": "quality_of_service"},
+                    },
+                ]
+            },
+        },
+    )
+
+    assert result.is_valid is True
+
+
+def test_gate_covers_elem_type_with_network_element_surface() -> None:
+    requirements = StructuralRequirements(projection_terms=["网元类型"])
+
+    result = validate_dsl_structural_coverage(
+        requirements,
+        {
+            "schema_version": "restricted_query_dsl_v1",
+            "query_shape": "vertex_lookup",
+            "bindings": {"target": {"vertex_name": "Service"}},
+            "operations": [],
+            "projection": {
+                "items": [
+                    {
+                        "target": "target",
+                        "property": {"owner": "Service", "name": "elem_type"},
+                    }
+                ]
+            },
+        },
+    )
+
+    assert result.is_valid is True
+
+
+def test_derives_and_covers_vertex_full_detail_projection() -> None:
+    requirements = derive_structural_requirements(
+        {
+            "original_question": "查询服务质量等级为金牌的所有服务的详细信息。",
+            "intent_type": "list",
+            "output_shape": "rows",
+            "substantive_terms": [
+                {"text": "服务质量等级", "slot": "filter", "attached_to": "服务"},
+                {"text": "金牌", "slot": "filter", "attached_to": "服务质量等级"},
+                {"text": "服务", "slot": "projection"},
+                {"text": "详细信息", "slot": "projection", "attached_to": "服务"},
+            ],
+        }
+    )
+
+    result = validate_dsl_structural_coverage(
+        requirements,
+        {
+            "schema_version": "restricted_query_dsl_v1",
+            "query_shape": "vertex_lookup",
+            "bindings": {"target": {"vertex_name": "Service"}},
+            "operations": [],
+            "projection": {
+                "items": [
+                    {
+                        "target": "target",
+                        "vertex_full": True,
+                        "alias": "service",
+                    }
+                ]
+            },
+        },
+    )
+
+    assert requirements.projection_terms == ["详细信息"]
+    assert result.is_valid is True
 
 
 def test_gate_accepts_matching_structure_without_requiring_specific_edge_or_alias() -> None:

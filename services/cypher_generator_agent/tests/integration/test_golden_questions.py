@@ -90,8 +90,8 @@ def test_full_golden_regression_matrix_covers_generated_query_shapes() -> None:
 def test_golden_matrix_tracks_every_declared_question() -> None:
     cases = _all_cases()
 
-    assert len(cases) == 33
-    assert [case["id"] for case in cases] == [f"gq-{index:03d}" for index in range(1, 34)]
+    assert len(cases) == 34
+    assert [case["id"] for case in cases] == [f"gq-{index:03d}" for index in range(1, 35)]
     assert {case["id"] for case in _regression_cases()} >= {
         "gq-001",
         "gq-002",

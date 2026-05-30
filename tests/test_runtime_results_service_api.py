@@ -362,6 +362,68 @@ async def test_cga_diagnostic_llm_client_requires_explicit_runtime_configuration
         await client.generate(facts={"user_question": "查询香蕉今天开心吗"})
 
 
+def test_runtime_diagnostic_llm_config_falls_back_to_testing_agent_llm_env(monkeypatch):
+    monkeypatch.delenv("RUNTIME_RESULTS_SERVICE_DIAGNOSTIC_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("RUNTIME_RESULTS_SERVICE_DIAGNOSTIC_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("RUNTIME_RESULTS_SERVICE_DIAGNOSTIC_LLM_MODEL", raising=False)
+    monkeypatch.setenv("TESTING_SERVICE_LLM_BASE_URL", "https://glm.example/v1")
+    monkeypatch.setenv("TESTING_SERVICE_LLM_API_KEY", "testing-key")
+    monkeypatch.setenv("TESTING_SERVICE_LLM_MODEL", "glm-5.1")
+
+    from console.runtime_console.app.config import Settings
+
+    settings = Settings()
+
+    assert settings.resolved_diagnostic_llm_base_url == "https://glm.example/v1"
+    assert settings.resolved_diagnostic_llm_api_key == "testing-key"
+    assert settings.resolved_diagnostic_llm_model == "glm-5.1"
+
+
+def test_runtime_diagnostic_llm_config_prefers_runtime_specific_env(monkeypatch):
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_DIAGNOSTIC_LLM_BASE_URL", "https://runtime.example/v1")
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_DIAGNOSTIC_LLM_API_KEY", "runtime-key")
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_DIAGNOSTIC_LLM_MODEL", "runtime-model")
+    monkeypatch.setenv("TESTING_SERVICE_LLM_BASE_URL", "https://glm.example/v1")
+    monkeypatch.setenv("TESTING_SERVICE_LLM_API_KEY", "testing-key")
+    monkeypatch.setenv("TESTING_SERVICE_LLM_MODEL", "glm-5.1")
+
+    from console.runtime_console.app.config import Settings
+
+    settings = Settings()
+
+    assert settings.resolved_diagnostic_llm_base_url == "https://runtime.example/v1"
+    assert settings.resolved_diagnostic_llm_api_key == "runtime-key"
+    assert settings.resolved_diagnostic_llm_model == "runtime-model"
+
+
+def test_runtime_diagnostic_llm_config_reads_testing_agent_values_from_env_file(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("RUNTIME_RESULTS_SERVICE_DIAGNOSTIC_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("RUNTIME_RESULTS_SERVICE_DIAGNOSTIC_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("RUNTIME_RESULTS_SERVICE_DIAGNOSTIC_LLM_MODEL", raising=False)
+    monkeypatch.delenv("TESTING_SERVICE_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("TESTING_SERVICE_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("TESTING_SERVICE_LLM_MODEL", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "TESTING_SERVICE_LLM_BASE_URL=https://glm-from-file.example/v1",
+                "TESTING_SERVICE_LLM_API_KEY=file-key",
+                "TESTING_SERVICE_LLM_MODEL=glm-5.1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    from console.runtime_console.app.config import Settings
+
+    settings = Settings(_env_file=env_file)
+
+    assert settings.resolved_diagnostic_llm_base_url == "https://glm-from-file.example/v1"
+    assert settings.resolved_diagnostic_llm_api_key == "file-key"
+    assert settings.resolved_diagnostic_llm_model == "glm-5.1"
+
+
 @pytest.mark.asyncio
 async def test_user_query_service_uses_user_query_ids_and_full_result_preview(tmp_path: Path):
     from console.runtime_console.app.user_queries import RuntimeUserQueryService

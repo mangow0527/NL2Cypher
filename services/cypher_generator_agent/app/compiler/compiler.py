@@ -71,6 +71,7 @@ RESOLVED_MATCH_TYPES = {
     "synonym",
     "text_exact",
     "value_index_exact",
+    "literal_passthrough",
     "value_model",
     "value_synonym",
 }
@@ -184,6 +185,7 @@ class CypherCompiler:
         if where:
             clauses.append(f"WHERE {' AND '.join(where)}")
         clauses.append(_compile_return(ast.projection, role_variables))
+        _append_order_limit(clauses, ast, {})
         return "\n".join(clauses), parameters.result
 
     def _compile_metric_aggregate(self, ast: RestrictedQueryAst) -> tuple[str, "_CompiledParameters"]:

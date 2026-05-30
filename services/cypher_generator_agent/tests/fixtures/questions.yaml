@@ -100,3 +100,6 @@ questions:
   - id: gq-033
     question: 查询服务质量等级为金牌的所有服务的 ID、名称和带宽
     coverage: projection_slot
+  - id: gq-034
+    question: Platinum 服务使用了哪些隧道
+    coverage: literal

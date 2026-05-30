@@ -179,7 +179,7 @@ def _run_pipeline_steps(
         retrieval_result=retrieval_result,
         structural_requirements=decomposition["structural_requirements"],
     )
-    decomposition = _with_literal_requests_from_candidates(decomposition, retrieval_result)
+    decomposition = _with_literal_requests_from_candidates(decomposition, retrieval_result, registry=registry)
     skipped_literal_candidates = list(decomposition.get("skipped_literal_candidates") or [])
 
     literal_results = _run_stage(
@@ -424,6 +424,8 @@ def _input_clarification_gate(question: str) -> dict[str, Any]:
 
     for term in ("它", "这个", "那个", "这些", "那些"):
         if term in normalized:
+            if term != "它" and _deictic_has_explicit_referent(normalized, term):
+                continue
             return {
                 "status": "clarification_required",
                 "reason": "missing_referent",
@@ -432,6 +434,17 @@ def _input_clarification_gate(question: str) -> dict[str, Any]:
             }
 
     return {"status": "pass"}
+
+
+def _deictic_has_explicit_referent(question: str, term: str) -> bool:
+    explicit_referents = ("服务", "业务", "隧道", "网元", "端口", "节点", "设备", "链路", "路径")
+    start = question.find(term)
+    while start != -1:
+        following = question[start + len(term) : start + len(term) + 6]
+        if any(following.startswith(referent) for referent in explicit_referents):
+            return True
+        start = question.find(term, start + 1)
+    return False
 
 
 def _decompose_question(
@@ -723,18 +736,54 @@ def _projection_items_from_substantive_terms(
     selected_vertices: list[str],
 ) -> list[dict[str, Any]]:
     projection_terms = [
-        item for item in _substantive_terms_with_slot(decomposition, slot="projection")
-        if _projection_slot_term_requires_property(
+        item
+        for item in _substantive_terms_with_slot(decomposition, slot="projection")
+        if not _resolve_projection_vertex_full(
+            item,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+        and _projection_slot_term_requires_property(
             item,
             candidates=candidates,
             registry=registry,
             selected_vertices=selected_vertices,
         )
     ]
-    if not projection_terms:
-        return []
 
     items: list[dict[str, Any]] = []
+    for slot_term in _substantive_terms_with_slot(decomposition, slot="projection"):
+        vertex_name = _resolve_projection_vertex_full(
+            slot_term,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+        if vertex_name is None:
+            continue
+        item = {
+            "semantic_type": "vertex_full",
+            "name": vertex_name,
+            "alias": _snake_case(vertex_name),
+            "projection_terms": [str(slot_term["text"])],
+        }
+        existing = next(
+            (
+                existing
+                for existing in items
+                if existing.get("semantic_type") == "vertex_full" and existing.get("name") == vertex_name
+            ),
+            None,
+        )
+        if existing is None:
+            items.append(item)
+        else:
+            existing_terms = existing.setdefault("projection_terms", [])
+            term = str(slot_term["text"])
+            if term not in existing_terms:
+                existing_terms.append(term)
+
     for slot_term in projection_terms:
         property_ref = _resolve_projection_property(
             slot_term,
@@ -768,6 +817,39 @@ def _projection_items_from_substantive_terms(
     return items
 
 
+def _resolve_projection_vertex_full(
+    slot_term: Mapping[str, Any],
+    *,
+    candidates: list[SemanticCandidate],
+    registry: Any,
+    selected_vertices: list[str],
+) -> str | None:
+    text = str(slot_term.get("text") or "").strip()
+    if not _is_vertex_full_projection_text(text):
+        return None
+
+    attached_to = str(slot_term.get("attached_to") or "").strip()
+    attached_owners = _attached_vertex_names(attached_to or text, candidates)
+    if not attached_owners and attached_to:
+        attached_owners = _attached_vertex_names_from_registry(
+            attached_to,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+    if not attached_owners and len(selected_vertices) == 1:
+        attached_owners = {selected_vertices[0]}
+
+    owners = [owner for owner in selected_vertices if owner in attached_owners]
+    if len(owners) != 1:
+        return None
+    return owners[0]
+
+
+def _is_vertex_full_projection_text(text: str) -> bool:
+    normalized = _norm(text).replace(" ", "")
+    return normalized in _VERTEX_FULL_PROJECTION_TERMS
+
+
 def _projection_slot_term_requires_property(
     slot_term: Mapping[str, Any],
     *,
@@ -780,6 +862,13 @@ def _projection_slot_term_requires_property(
         return False
     attached_to = str(slot_term.get("attached_to") or "").strip()
     if attached_to:
+        return True
+    if _has_exact_projection_property_match(
+        text,
+        candidates=candidates,
+        registry=registry,
+        selected_vertices=selected_vertices,
+    ):
         return True
     object_matches = _attached_vertex_names(text, candidates)
     if not object_matches:
@@ -845,6 +934,7 @@ def _property_surface_match_score(term: str, owner: str, prop: Any) -> int:
     surfaces = [
         prop.name,
         f"{owner}.{prop.name}",
+        *_PROPERTY_PROJECTION_TERM_SURFACES.get(prop.name, ()),
         *(
             item
             for item in prop.ai_context.get("synonyms", [])
@@ -862,6 +952,71 @@ def _property_surface_match_score(term: str, owner: str, prop: Any) -> int:
         ):
             return 70
     return 0
+
+
+def _has_exact_projection_property_match(
+    term: str,
+    *,
+    candidates: list[SemanticCandidate],
+    registry: Any,
+    selected_vertices: list[str],
+) -> bool:
+    attached_owners = _attached_vertex_names(term, candidates)
+    owners = [owner for owner in selected_vertices if not attached_owners or owner in attached_owners]
+    if not owners:
+        owners = selected_vertices
+    for owner in owners:
+        try:
+            vertex = registry.get_vertex(owner)
+        except RegistryLookupError:
+            continue
+        if any(_property_surface_match_score(term, owner, prop) >= 100 for prop in vertex.properties):
+            return True
+    return False
+
+
+_PROPERTY_PROJECTION_TERM_SURFACES = {
+    "id": (
+        "ID",
+        "id",
+        "编号",
+        "标识",
+        "identifier",
+        "服务ID",
+        "服务编号",
+        "隧道ID",
+        "隧道编号",
+        "网元ID",
+        "网元编号",
+        "端口ID",
+        "端口编号",
+        "链路ID",
+        "链路编号",
+        "协议ID",
+        "协议编号",
+        "光纤ID",
+        "光纤编号",
+    ),
+    "name": ("名称", "名字", "服务名称", "name"),
+    "elem_type": ("类型", "网元类型", "元素类型", "设备类型", "服务类型", "type"),
+    "quality_of_service": ("服务质量", "服务质量等级", "质量等级", "服务等级", "等级", "等级值", "QoS"),
+    "bandwidth": ("带宽",),
+    "latency": ("时延", "延迟", "延迟值"),
+}
+
+
+_VERTEX_FULL_PROJECTION_TERMS = {
+    "节点",
+    "详细信息",
+    "详情",
+    "完整信息",
+    "全部信息",
+    "所有信息",
+    "全部属性",
+    "全部属性信息",
+    "所有属性",
+    "所有属性信息",
+}
 
 
 def _attached_vertex_names_from_registry(
@@ -888,7 +1043,7 @@ def _attached_vertex_names_from_registry(
                 if isinstance(item, str)
             ),
         ]
-        if any(_norm(surface) == attached for surface in surfaces):
+        if any(_vertex_surface_matches_attached_text(attached, _norm(surface)) for surface in surfaces):
             owners.add(owner)
     return owners
 
@@ -1118,6 +1273,11 @@ def _deterministic_assembler_payload(
         QueryShape.F2_VERTEX_FILTER_0HOP,
         QueryShape.F3_VERTEX_AGGREGATE_0HOP,
     }:
+        preferred_vertex = _zero_hop_preferred_vertex(
+            requirements,
+            literal_results,
+            candidates=retrieval_result.candidates,
+        )
         assembler_requirements = _zero_hop_assembler_requirements(
             shape=shape_result.shape,
             decomposition=decomposition,
@@ -1125,7 +1285,10 @@ def _deterministic_assembler_payload(
             literal_results=literal_results,
             registry=registry,
         )
-        assembler_candidates = _zero_hop_candidates_for_assembler(retrieval_result.candidates)
+        assembler_candidates = _zero_hop_candidates_for_assembler(
+            retrieval_result.candidates,
+            preferred_vertex=preferred_vertex,
+        )
         assembled = ZeroHopAssembler(registry).assemble(
             shape_result.shape.value,
             assembler_candidates,
@@ -1368,7 +1531,24 @@ def _path_direction_context(requirements: Mapping[str, Any]) -> str:
     return " ".join(terms) if terms else str(requirements.get("source_question") or "")
 
 
-def _zero_hop_candidates_for_assembler(candidates: list[SemanticCandidate]) -> list[SemanticCandidate]:
+def _zero_hop_candidates_for_assembler(
+    candidates: list[SemanticCandidate],
+    *,
+    preferred_vertex: str | None = None,
+) -> list[SemanticCandidate]:
+    if preferred_vertex is not None:
+        filtered = [
+            candidate
+            for candidate in candidates
+            if (
+                (candidate.semantic_type == "vertex" and candidate.semantic_id == preferred_vertex)
+                or (candidate.semantic_type == "property" and candidate.owner == preferred_vertex)
+                or candidate.semantic_type not in {"vertex", "property"}
+            )
+        ]
+        if not any(candidate.semantic_type == "vertex" and candidate.semantic_id == preferred_vertex for candidate in filtered):
+            filtered.insert(0, _inferred_semantic_vertex_candidate(preferred_vertex))
+        return filtered
     vertex_ids = _candidate_ids(candidates, "vertex")
     if len(vertex_ids) != 1:
         return list(candidates)
@@ -1378,6 +1558,57 @@ def _zero_hop_candidates_for_assembler(candidates: list[SemanticCandidate]) -> l
         for candidate in candidates
         if candidate.semantic_type != "property" or candidate.owner == vertex_name
     ]
+
+
+def _unique_literal_expected_vertex(literal_results: list[LiteralResolverResult]) -> str | None:
+    owners = {
+        result.expected_vertex
+        for result in literal_results
+        if result.resolved and result.expected_vertex
+    }
+    if len(owners) != 1:
+        return None
+    return next(iter(owners))
+
+
+def _zero_hop_preferred_vertex(
+    requirements: StructuralRequirements,
+    literal_results: list[LiteralResolverResult],
+    *,
+    candidates: list[SemanticCandidate],
+) -> str | None:
+    if requirements.min_path_hops > 0 or len(requirements.path_terms) > 1:
+        return None
+    preferred_vertex = _unique_literal_expected_vertex(literal_results)
+    if preferred_vertex is None:
+        return None
+    candidate_vertices = {
+        candidate.semantic_id
+        for candidate in candidates
+        if candidate.semantic_type == "vertex" and candidate.score >= 0.7
+    }
+    if any(vertex != preferred_vertex for vertex in candidate_vertices):
+        return None
+    return preferred_vertex
+
+
+def _inferred_semantic_vertex_candidate(vertex_name: str) -> SemanticCandidate:
+    return SemanticCandidate(
+        semantic_type="vertex",
+        semantic_id=vertex_name,
+        semantic_name=vertex_name,
+        score=1.0,
+        match_type="text",
+        owner=None,
+        evidence=[
+            {
+                "term": vertex_name,
+                "source": "semantic_model.literal_owner",
+                "matched_text": vertex_name,
+            }
+        ],
+        metadata={},
+    )
 
 
 def _zero_hop_assembler_requirements(
@@ -1390,8 +1621,20 @@ def _zero_hop_assembler_requirements(
 ) -> dict[str, Any]:
     candidates = list(retrieval_result.candidates)
     vertex_ids = _candidate_ids(candidates, "vertex")
-    selected_vertices = vertex_ids[:1] if len(vertex_ids) == 1 else vertex_ids
+    requirements = _structural_requirements_for_precheck(decomposition)
+    preferred_vertex = _zero_hop_preferred_vertex(
+        requirements,
+        literal_results,
+        candidates=retrieval_result.candidates,
+    )
+    if preferred_vertex:
+        selected_vertices = [preferred_vertex]
+    else:
+        selected_vertices = vertex_ids[:1] if len(vertex_ids) == 1 else vertex_ids
     payload: dict[str, Any] = {}
+    limit_requirement = requirements.requires_limit
+    if limit_requirement.required and limit_requirement.value is not None:
+        payload["limit"] = {"value": limit_requirement.value}
 
     if shape in {QueryShape.F1_VERTEX_PROJECTION_0HOP, QueryShape.F2_VERTEX_FILTER_0HOP}:
         payload["projection"] = _projection_items_from_substantive_terms(
@@ -1539,6 +1782,8 @@ def _decomposition_user_visible_notices(decomposition: Mapping[str, Any]) -> lis
 def _with_literal_requests_from_candidates(
     decomposition: dict[str, Any],
     retrieval_result: CandidateRetrievalResult,
+    *,
+    registry: Any | None = None,
 ) -> dict[str, Any]:
     if decomposition.get("literal_requests"):
         return decomposition
@@ -1551,7 +1796,12 @@ def _with_literal_requests_from_candidates(
     requests = [
         request
         for request in (
-            _literal_request_from_candidate(literal, retrieval_result.candidates)
+            _literal_request_from_candidate(
+                literal,
+                retrieval_result.candidates,
+                decomposition,
+                registry=registry,
+            )
             for literal in literal_candidates
         )
         if request is not None
@@ -1628,21 +1878,42 @@ def _literal_candidate_payloads(decomposition: Mapping[str, Any]) -> list[dict[s
 def _literal_request_from_candidate(
     literal: Mapping[str, Any],
     candidates: list[SemanticCandidate],
+    decomposition: Mapping[str, Any] | None = None,
+    *,
+    registry: Any | None = None,
 ) -> dict[str, Any] | None:
     raw_literal = str(literal.get("text") or "").strip()
     if not raw_literal:
         return None
 
+    property_hints = _literal_filter_property_hints(literal, decomposition or {})
     attached_owners = _attached_vertex_names(str(literal.get("attached_to") or ""), candidates)
-    id_request = _id_literal_request(raw_literal, literal, attached_owners, candidates)
+    if not attached_owners:
+        attached_owners = _unique_context_vertex_names(decomposition or {}, candidates)
+    if not attached_owners and registry is not None:
+        attached_owners = _unique_context_vertex_names_from_registry(decomposition or {}, registry)
+    id_request = _id_literal_request(
+        raw_literal,
+        literal,
+        attached_owners,
+        candidates,
+        property_hints=property_hints,
+    )
     if id_request is not None:
         return id_request
 
-    property_candidate = _best_literal_property_candidate(literal, candidates)
+    property_candidate = _best_literal_property_candidate(
+        literal,
+        candidates,
+        property_hints=property_hints,
+        attached_owners=attached_owners,
+    )
     if property_candidate is None or property_candidate.owner is None:
         return None
 
     owner_kind = _candidate_owner_kind(property_candidate.owner, candidates)
+    if owner_kind is None and registry is not None:
+        owner_kind = _registry_owner_kind(property_candidate.owner, registry)
     if owner_kind is None:
         return None
 
@@ -1723,8 +1994,12 @@ def _id_literal_request(
     literal: Mapping[str, Any],
     attached_owners: set[str],
     candidates: list[SemanticCandidate],
+    *,
+    property_hints: list[str] | None = None,
 ) -> dict[str, Any] | None:
     if _normalize_literal_kind_hint(literal.get("kind_hint")) != "id" and not _looks_like_id_literal(raw_literal):
+        return None
+    if property_hints and _property_hints_prefer_non_id(property_hints):
         return None
 
     vertex_candidates = [
@@ -1754,11 +2029,14 @@ def _id_literal_request(
 def _best_literal_property_candidate(
     literal: Mapping[str, Any],
     candidates: list[SemanticCandidate],
+    *,
+    property_hints: list[str] | None = None,
+    attached_owners: set[str] | None = None,
 ) -> SemanticCandidate | None:
     raw_literal = str(literal.get("text") or "")
     kind_hint = _normalize_literal_kind_hint(literal.get("kind_hint"))
     attached_to = str(literal.get("attached_to") or "")
-    attached_owners = _attached_vertex_names(attached_to, candidates)
+    owner_hints = set(attached_owners or _attached_vertex_names(attached_to, candidates))
     property_candidates = [
         candidate
         for candidate in candidates
@@ -1768,7 +2046,13 @@ def _best_literal_property_candidate(
         return None
     return max(
         property_candidates,
-        key=lambda candidate: _literal_property_score(raw_literal, kind_hint, attached_owners, candidate),
+        key=lambda candidate: _literal_property_score(
+            raw_literal,
+            kind_hint,
+            owner_hints,
+            candidate,
+            property_hints=property_hints or [],
+        ),
     )
 
 
@@ -1777,8 +2061,12 @@ def _literal_property_score(
     kind_hint: str,
     attached_owners: set[str],
     candidate: SemanticCandidate,
+    *,
+    property_hints: list[str],
 ) -> tuple[int, float, str]:
     score = 0
+    if any(_property_hint_matches_candidate(hint, candidate) for hint in property_hints):
+        score += 120
     valid_values = candidate.metadata.get("valid_values", [])
     if any(_literal_value_matches(raw_literal, value) for value in valid_values):
         score += 100
@@ -1791,6 +2079,156 @@ def _literal_property_score(
     if candidate.semantic_name == "id" and kind_hint != "id" and not _looks_like_id_literal(raw_literal):
         score -= 50
     return (score, candidate.score, candidate.semantic_id)
+
+
+def _literal_filter_property_hints(
+    literal: Mapping[str, Any],
+    decomposition: Mapping[str, Any],
+) -> list[str]:
+    raw_literal = str(literal.get("text") or "").strip()
+    literal_owner_hint = str(literal.get("attached_to") or "").strip()
+    raw_key = _norm(raw_literal)
+    owner_key = _norm(literal_owner_hint)
+    hints: list[str] = []
+    filter_terms = [
+        term
+        for term in _substantive_term_payloads(decomposition.get("substantive_terms"))
+        if str(term.get("slot") or "").strip() == "filter"
+    ]
+    for index, term in enumerate(filter_terms):
+        text = str(term.get("text") or "").strip()
+        attached_to = str(term.get("attached_to") or "").strip()
+        if raw_key and _norm(text) == raw_key:
+            if attached_to and _norm(attached_to) != owner_key:
+                _append_unique_text(hints, attached_to)
+            elif not attached_to:
+                previous_hint = _previous_filter_property_term(filter_terms, index, raw_key)
+                if previous_hint:
+                    _append_unique_text(hints, previous_hint)
+    for term in filter_terms:
+        text = str(term.get("text") or "").strip()
+        attached_to = str(term.get("attached_to") or "").strip()
+        if not text or _norm(text) == raw_key:
+            continue
+        if owner_key and _norm(attached_to) == owner_key:
+            _append_unique_text(hints, text)
+    return hints
+
+
+def _previous_filter_property_term(
+    filter_terms: list[dict[str, Any]],
+    raw_index: int,
+    raw_key: str,
+) -> str | None:
+    for term in reversed(filter_terms[:raw_index]):
+        text = str(term.get("text") or "").strip()
+        if not text or _norm(text) == raw_key:
+            continue
+        if _is_filter_operator_term(text):
+            continue
+        return text
+    return None
+
+
+def _is_filter_operator_term(text: str) -> bool:
+    return _norm(text) in {
+        "为",
+        "是",
+        "等于",
+        "等于为",
+        "大于",
+        "小于",
+        "不小于",
+        "不大于",
+        "超过",
+        "低于",
+        "高于",
+    }
+
+
+def _property_hints_prefer_non_id(property_hints: list[str]) -> bool:
+    return any(not _property_hint_is_id(hint) for hint in property_hints)
+
+
+def _property_hint_is_id(hint: str) -> bool:
+    normalized = _norm(hint).replace(" ", "")
+    if normalized in {"id", "编号", "标识", "identifier"}:
+        return True
+    return normalized.endswith("id") or normalized.endswith("编号") or normalized.endswith("标识")
+
+
+def _property_hint_matches_candidate(hint: str, candidate: SemanticCandidate) -> bool:
+    normalized_hint = _norm(hint)
+    if not normalized_hint:
+        return False
+    surfaces = [candidate.semantic_name, candidate.semantic_id]
+    if candidate.owner:
+        surfaces.append(f"{candidate.owner}.{candidate.semantic_name}")
+    for evidence in candidate.evidence:
+        surfaces.extend([evidence.term, evidence.matched_text])
+    for surface in surfaces:
+        normalized_surface = _norm(surface)
+        if normalized_hint == normalized_surface:
+            return True
+        if normalized_surface and (
+            normalized_hint in normalized_surface or normalized_surface in normalized_hint
+        ):
+            return True
+    return False
+
+
+def _unique_context_vertex_names(
+    decomposition: Mapping[str, Any],
+    candidates: list[SemanticCandidate],
+) -> set[str]:
+    owners: set[str] = set()
+    for term in _substantive_term_payloads(decomposition.get("substantive_terms")):
+        slot = str(term.get("slot") or "").strip()
+        if slot not in {"path", "filter", "projection"}:
+            continue
+        text = str(term.get("attached_to") or term.get("text") or "").strip()
+        owners.update(_attached_vertex_names(text, candidates))
+    return owners if len(owners) == 1 else set()
+
+
+def _unique_context_vertex_names_from_registry(
+    decomposition: Mapping[str, Any],
+    registry: Any,
+) -> set[str]:
+    selected_vertices = [vertex.name for vertex in getattr(registry.model, "vertices", [])]
+    owners: set[str] = set()
+    for term in _substantive_term_payloads(decomposition.get("substantive_terms")):
+        slot = str(term.get("slot") or "").strip()
+        if slot not in {"path", "filter", "projection"}:
+            continue
+        text = str(term.get("attached_to") or term.get("text") or "").strip()
+        owners.update(
+            _attached_vertex_names_from_registry(
+                text,
+                registry=registry,
+                selected_vertices=selected_vertices,
+            )
+        )
+    return owners if len(owners) == 1 else set()
+
+
+def _registry_owner_kind(owner: str, registry: Any) -> str | None:
+    try:
+        registry.get_vertex(owner)
+        return "expected_vertex"
+    except RegistryLookupError:
+        pass
+    try:
+        registry.get_edge(owner)
+        return "expected_edge"
+    except RegistryLookupError:
+        return None
+
+
+def _append_unique_text(values: list[str], value: str) -> None:
+    text = value.strip()
+    if text and text not in values:
+        values.append(text)
 
 
 def _literal_value_matches(raw_literal: str, candidate_value: Any) -> bool:
@@ -1825,13 +2263,25 @@ def _attached_vertex_names(attached_to: str, candidates: list[SemanticCandidate]
     for candidate in candidates:
         if candidate.semantic_type != "vertex":
             continue
-        if _norm(candidate.semantic_name) == attached:
+        if _vertex_surface_matches_attached_text(attached, _norm(candidate.semantic_name)):
             owners.add(candidate.semantic_id)
             continue
         for evidence in candidate.evidence:
-            if _norm(evidence.term) == attached or _norm(evidence.matched_text) == attached:
+            if _vertex_surface_matches_attached_text(
+                attached,
+                _norm(evidence.term),
+            ) or _vertex_surface_matches_attached_text(
+                attached,
+                _norm(evidence.matched_text),
+            ):
                 owners.add(candidate.semantic_id)
     return owners
+
+
+def _vertex_surface_matches_attached_text(attached: str, surface: str) -> bool:
+    if not attached or not surface:
+        return False
+    return attached == surface or attached.startswith(surface)
 
 
 def _candidate_owner_kind(owner: str, candidates: list[SemanticCandidate]) -> str | None:

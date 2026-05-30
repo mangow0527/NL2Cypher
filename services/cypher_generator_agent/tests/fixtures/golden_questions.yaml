@@ -209,12 +209,15 @@ golden_questions:
 
   - id: gq-017
     question: 设备 ne-9999 有哪些端口
-    expected_status: clarification_required
+    expected_status: generated
     primary_ir: IR-03a
-    expected_reason_code: literal_unresolved
-    reason: failure
+    expected_reason_code: generated
     coverage: literal
     query_shape: single_hop_traversal
+    expected_dsl_ir: IR-03a
+    cypher_filled_by_ir: IR-03a
+    expected_dsl_fixture: expected_dsl/gq-017.json
+    expected_cypher_fixture: expected_cypher/gq-017.cypher
     regression_scope: smoke
     ci_smoke: true
 
@@ -396,5 +399,16 @@ golden_questions:
     cypher_filled_by_ir: MIR-001
     expected_dsl_fixture: expected_dsl/gq-033.json
     expected_cypher_fixture: expected_cypher/gq-033.cypher
+    regression_scope: full
+    ci_smoke: false
+
+  - id: gq-034
+    question: Platinum 服务使用了哪些隧道
+    expected_status: clarification_required
+    primary_ir: IR-03a
+    expected_reason_code: literal_unresolved
+    reason: failure
+    coverage: literal
+    query_shape: single_hop_traversal
     regression_scope: full
     ci_smoke: false

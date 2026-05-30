@@ -113,6 +113,22 @@ class SemanticBinder:
         metric_bindings = self._bind_metrics(grounded_understanding, candidate_index)
         path_pattern_bindings = self._bind_path_patterns(grounded_understanding, candidate_index)
         query_shape = _normalize_query_shape(grounded_understanding.get("query_shape"))
+        if (
+            query_shape == "variable_path_traversal"
+            and len(edge_bindings) > 1
+            and len(vertex_bindings) != len(edge_bindings) + 1
+        ):
+            inferred_vertices = self._infer_vertex_chain_from_edges(edge_bindings, candidate_index)
+            if inferred_vertices is not None and _selected_vertices_are_subset(vertex_bindings, inferred_vertices):
+                vertex_bindings = inferred_vertices
+                assumptions.append(
+                    {
+                        "type": "inferred_vertex_chain_from_edges",
+                        "reason": "selected edge bindings uniquely determine the missing traversal vertices",
+                        "vertices": [binding.name for binding in vertex_bindings],
+                        "edges": [binding.name for binding in edge_bindings],
+                    }
+                )
         if not edge_bindings and query_shape in {"vertex_lookup", "single_hop_traversal"}:
             inferred_edge = self._infer_unambiguous_connecting_edge(vertex_bindings, candidate_index)
             if inferred_edge is not None:
@@ -128,6 +144,23 @@ class SemanticBinder:
                 )
         if query_shape == "vertex_lookup" and edge_bindings and len(vertex_bindings) >= 2:
             query_shape = "single_hop_traversal"
+        if query_shape == "vertex_lookup" and not vertex_bindings:
+            inferred_vertex = self._infer_vertex_from_unique_property_owner(
+                property_bindings,
+                filter_bindings,
+                projection,
+                literal_bindings,
+                candidate_index,
+            )
+            if inferred_vertex is not None:
+                vertex_bindings = [inferred_vertex]
+                assumptions.append(
+                    {
+                        "type": "inferred_vertex_from_property_owner",
+                        "reason": "vertex_lookup selected only properties/literals owned by one vertex",
+                        "vertex": inferred_vertex.name,
+                    }
+                )
         if (
             query_shape == "variable_path_traversal"
             and len(edge_bindings) > 1
@@ -492,6 +525,65 @@ class SemanticBinder:
                     )
         return matches[0] if len(matches) == 1 else None
 
+    def _infer_vertex_chain_from_edges(
+        self,
+        edge_bindings: list[EdgeBinding],
+        candidate_index: "_CandidateIndex",
+    ) -> list[VertexBinding] | None:
+        names: list[str] = []
+        for edge_binding in edge_bindings:
+            edge = self.registry.get_edge(edge_binding.name)
+            start = edge.from_vertex if edge_binding.direction == "forward" else edge.to_vertex
+            end = edge.to_vertex if edge_binding.direction == "forward" else edge.from_vertex
+            if not names:
+                names.extend([start, end])
+                continue
+            if names[-1] != start:
+                return None
+            names.append(end)
+        if len(names) != len(edge_bindings) + 1:
+            return None
+        bindings: list[VertexBinding] = []
+        for name in names:
+            self._require_registry("vertex", name, self.registry.get_vertex)
+            candidate = candidate_index.get("vertex", name) or _inferred_vertex_candidate(name)
+            bindings = _append_unique_named(bindings, VertexBinding(name=name, candidate=candidate))
+        return bindings
+
+    def _infer_vertex_from_unique_property_owner(
+        self,
+        property_bindings: list[PropertyBinding],
+        filter_bindings: list[FilterBinding],
+        projection: list[dict[str, Any]],
+        literal_bindings: list[LiteralBinding],
+        candidate_index: "_CandidateIndex",
+    ) -> VertexBinding | None:
+        owners: set[str] = set()
+        for binding in property_bindings:
+            owners.add(binding.owner)
+        for binding in filter_bindings:
+            owners.add(binding.owner)
+        for item in projection:
+            owner = _projection_property_owner(item)
+            if owner is not None:
+                owners.add(owner)
+        for binding in literal_bindings:
+            if binding.owner is not None:
+                owners.add(binding.owner)
+
+        vertex_owners: set[str] = set()
+        for owner in owners:
+            try:
+                self.registry.get_vertex(owner)
+            except RegistryLookupError:
+                continue
+            vertex_owners.add(owner)
+        if len(vertex_owners) != 1:
+            return None
+        vertex_name = next(iter(vertex_owners))
+        candidate = candidate_index.get("vertex", vertex_name) or _inferred_vertex_candidate(vertex_name)
+        return VertexBinding(name=vertex_name, candidate=candidate)
+
     def _require_registry(self, object_type: str, name: str, lookup: Any) -> None:
         try:
             lookup(name)
@@ -523,6 +615,15 @@ def _filters_from_selected_literals(
             )
         )
     return filters
+
+
+def _projection_property_owner(item: Mapping[str, Any]) -> str | None:
+    property_ref = item.get("property")
+    if isinstance(property_ref, Mapping):
+        owner = property_ref.get("owner")
+        return str(owner) if owner else None
+    owner = item.get("owner")
+    return str(owner) if owner else None
 
 
 def _normalize_reference_item(item: Mapping[str, Any], *, field_name: str) -> dict[str, Any]:
@@ -654,6 +755,33 @@ def _inferred_edge_candidate(edge: Any) -> CandidateBinding:
             "to_vertex": edge.to_vertex,
         },
     )
+
+
+def _inferred_vertex_candidate(name: str) -> CandidateBinding:
+    return CandidateBinding(
+        semantic_type="vertex",
+        semantic_id=name,
+        semantic_name=name,
+        score=1.0,
+        match_type="semantic_inference",
+        owner=None,
+        evidence=[
+            {
+                "term": name,
+                "source": "semantic_model.edge_endpoint",
+                "matched_text": name,
+            }
+        ],
+        metadata={},
+    )
+
+
+def _selected_vertices_are_subset(
+    selected: list[VertexBinding],
+    inferred: list[VertexBinding],
+) -> bool:
+    inferred_names = {binding.name for binding in inferred}
+    return all(binding.name in inferred_names for binding in selected)
 
 
 def _selected_items(grounded: Mapping[str, Any], *keys: str) -> list[Any]:

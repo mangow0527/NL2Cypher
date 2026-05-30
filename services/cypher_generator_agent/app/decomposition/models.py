@@ -42,7 +42,7 @@ class SlotKind(str, Enum):
 class LiteralCandidate(DecompositionBaseModel):
     text: str
     kind_hint: LiteralKindHint
-    attached_to: str
+    attached_to: str | None = None
 
     @field_validator("text")
     @classmethod
@@ -54,11 +54,11 @@ class LiteralCandidate(DecompositionBaseModel):
 
     @field_validator("attached_to")
     @classmethod
-    def normalize_attached_to(cls, value: str) -> str:
+    def normalize_attached_to(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         text = value.strip()
-        if not text:
-            raise ValueError("literal candidate attached_to must not be empty")
-        return text
+        return text or None
 
 
 class SubstantiveTerm(DecompositionBaseModel):

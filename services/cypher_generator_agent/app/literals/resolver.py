@@ -58,7 +58,22 @@ class LiteralResolver:
         raw_literal = request.raw_literal.strip()
 
         if self._must_use_value_index_exact(request, prop):
-            return self._resolve_value_index_exact(request, owner, prop.name, value_index_miss_is_error=True)
+            index_result = self._resolve_value_index_exact(
+                request,
+                owner,
+                prop.name,
+                value_index_miss_is_error=True,
+            )
+            if index_result.resolved:
+                return index_result
+            passthrough = self._resolve_literal_passthrough(
+                request,
+                prop,
+                value_index_miss=index_result.value_index_miss,
+            )
+            if passthrough is not None:
+                return passthrough
+            return index_result
 
         exact_result = self._resolve_exact_valid_value(request, prop)
         if exact_result is not None:
@@ -127,6 +142,16 @@ class LiteralResolver:
             prop.name,
             value_index_miss_is_error=self.value_index.has_property(owner, prop.name),
         )
+        if index_result.resolved:
+            return index_result
+
+        passthrough = self._resolve_literal_passthrough(
+            request,
+            prop,
+            value_index_miss=index_result.value_index_miss,
+        )
+        if passthrough is not None:
+            return passthrough
         return index_result
 
     def _resolve_exact_valid_value(
@@ -308,6 +333,39 @@ class LiteralResolver:
     ) -> bool:
         return self._is_owner_id_property(request, prop)
 
+    def _resolve_literal_passthrough(
+        self,
+        request: LiteralResolverRequest,
+        prop: PropertyDefinition,
+        *,
+        value_index_miss: bool,
+    ) -> LiteralResolverResult | None:
+        if not self._can_passthrough_raw_literal(prop):
+            return None
+        raw_literal = request.raw_literal.strip()
+        if not raw_literal:
+            return None
+        return self._resolved_result(
+            request,
+            resolved_value=raw_literal,
+            normalized_value=raw_literal,
+            match_type="literal_passthrough",
+            confidence=0.9,
+            evidence=[
+                LiteralEvidence(
+                    source="literal_passthrough",
+                    matched=raw_literal,
+                    target=raw_literal,
+                )
+            ],
+            value_index_miss=value_index_miss,
+        )
+
+    def _can_passthrough_raw_literal(self, prop: PropertyDefinition) -> bool:
+        if prop.valid_values:
+            return False
+        return prop.type.strip().lower() in {"string", "str", "text"}
+
     def _value_index_miss(self, owner: str, property_name: str, raw_literal: str) -> bool:
         if not self.value_index.has_property(owner, property_name):
             return False
@@ -342,6 +400,7 @@ class LiteralResolver:
         confidence: float,
         evidence: list[LiteralEvidence],
         alternatives: list[LiteralAlternative] | None = None,
+        value_index_miss: bool = False,
     ) -> LiteralResolverResult:
         return LiteralResolverResult(
             raw_literal=request.raw_literal,
@@ -356,7 +415,7 @@ class LiteralResolver:
             evidence=evidence,
             alternatives=alternatives or [],
             requires_user_choice=False,
-            value_index_miss=False,
+            value_index_miss=value_index_miss,
             error_code=None,
         )
 

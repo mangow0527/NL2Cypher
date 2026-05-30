@@ -265,6 +265,7 @@ class GroundedUnderstanding(UnderstandingBaseModel):
     def to_binder_payload(self) -> dict[str, Any]:
         if self.status != "grounded":
             raise ValueError(f"cannot build binder payload for {self.status}")
+        projection = self.projection or self._projection_items_from_selected_bindings()
         return {
             "query_shape": self.query_shape,
             "selected_vertices": self._binder_items("vertex"),
@@ -274,7 +275,7 @@ class GroundedUnderstanding(UnderstandingBaseModel):
             "selected_path_patterns": self._binder_items("path_pattern"),
             "selected_literals": [literal.model_dump() for literal in self.selected_literals],
             "filters": self.filters,
-            "projection": self.projection,
+            "projection": projection,
             "group_by": self.group_by,
             "measures": self.measures,
             "sort": self.sort,
@@ -288,6 +289,20 @@ class GroundedUnderstanding(UnderstandingBaseModel):
             for binding in self.selected_bindings
             if binding.semantic_type == semantic_type
         ]
+
+    def _projection_items_from_selected_bindings(self) -> list[dict[str, Any]]:
+        projection: list[dict[str, Any]] = []
+        for binding in self.selected_bindings:
+            role = binding.role.casefold()
+            if not any(token in role for token in ("projection", "return", "field")):
+                continue
+            if binding.semantic_type != "property":
+                continue
+            owner, name = binding._property_owner_name()
+            item = {"semantic_type": "property", "owner": owner, "name": name}
+            if item not in projection:
+                projection.append(item)
+        return projection
 
 
 class GroundedUnderstandingAttemptError(UnderstandingBaseModel):

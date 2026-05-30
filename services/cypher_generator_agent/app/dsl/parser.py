@@ -148,7 +148,7 @@ def _validate_operation_sequence(dsl: RestrictedQueryDslModel) -> None:
 
     valid = False
     if shape is QueryShape.VERTEX_LOOKUP:
-        valid = ops == []
+        valid = ops == [] or ops == [OperationType.LIMIT]
     elif shape is QueryShape.SINGLE_HOP_TRAVERSAL:
         valid = _matches_traverse_chain_optional_tail(ops)
     elif shape is QueryShape.VARIABLE_PATH_TRAVERSAL:

@@ -303,6 +303,27 @@ def test_single_hop_rejects_sort_or_limit_until_compiler_supports_them(
         )
 
 
+def test_vertex_lookup_allows_limit_operation(
+    registry: GraphSemanticRegistry,
+) -> None:
+    plan = BindingPlan(
+        query_shape="vertex_lookup",
+        vertex_bindings=[VertexBinding(name="Service", candidate=_candidate("vertex", "Service"))],
+        projection=[{"semantic_type": "property", "owner": "Service", "name": "id"}],
+        limit=3,
+    )
+
+    dsl = RestrictedDslBuilder(registry).build(
+        plan,
+        source_question="查询名称为 Service_003 的服务节点，最多返回 3 条记录。",
+        query_id="q-service-limit",
+    )
+
+    assert dsl["operations"] == [{"op": "limit", "value": 3}]
+    ast = parse_restricted_query_dsl(dsl, registry)
+    assert ast.limit == 3
+
+
 def test_vertex_lookup_plan_builds_vertex_lookup_dsl(registry: GraphSemanticRegistry) -> None:
     literal = LiteralBinding(
         raw_literal="ne-0001",

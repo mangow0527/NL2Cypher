@@ -150,6 +150,37 @@ def test_literal_candidate_requires_text_kind_hint_and_attached_to_keys() -> Non
     assert result.reason == "question_decomposer_schema_invalid"
 
 
+def test_literal_candidate_allows_null_attached_to_and_normalizes_to_none() -> None:
+    question = "查询名称为Service_003的服务"
+    client = FakeStructuredLLMClient(
+        [
+            {
+                "schema_version": "question_decomposition_v1",
+                "result_type": "decomposition",
+                "intent_type": "list",
+                "original_question": question,
+                "literal_candidates": [
+                    {"text": "Service_003", "kind_hint": "id", "attached_to": None}
+                ],
+                "substantive_terms": [
+                    {"text": "名称", "slot": "filter", "attached_to": "服务"},
+                    {"text": "Service_003", "slot": "filter", "attached_to": "名称"},
+                    {"text": "服务", "slot": "projection"},
+                ],
+                "modality_terms": [],
+                "time_terms": [],
+                "unparsed_terms": [],
+                "output_shape": "rows",
+            }
+        ]
+    )
+
+    result = QuestionDecomposer(client, max_schema_retries=0).decompose(question)
+
+    assert isinstance(result, QuestionDecomposition)
+    assert result.literal_candidates[0].attached_to is None
+
+
 def test_normal_decomposition_requires_explicit_result_type() -> None:
     client = FakeStructuredLLMClient(
         [

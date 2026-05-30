@@ -24,6 +24,7 @@ MatchType = Literal[
     "fuzzy_text",
     "embedding",
     "value_index_exact",
+    "literal_passthrough",
     "distinct_candidate",
     "unresolved",
 ]

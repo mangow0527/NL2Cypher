@@ -75,6 +75,8 @@ class RestrictedDslBuilder:
 
     def _reject_uncompiled_sort_limit(self, plan: BindingPlan) -> None:
         compiled_sort_limit_shapes = {"metric_aggregate", "ad_hoc_aggregate", "top_n", "two_step_aggregate"}
+        if plan.query_shape == "vertex_lookup" and not plan.sort:
+            return
         if plan.query_shape not in compiled_sort_limit_shapes and (plan.sort or plan.limit is not None):
             raise ValueError(
                 f"{plan.query_shape} sort/limit is not supported until the Cypher compiler consumes it"

@@ -22,7 +22,10 @@ from services.cypher_generator_agent.app.retrieval.models import (
     CandidateRetrievalResult,
     SemanticCandidate,
 )
-from services.cypher_generator_agent.app.understanding.models import GroundedUnderstandingFailure
+from services.cypher_generator_agent.app.understanding.models import (
+    GroundedUnderstanding,
+    GroundedUnderstandingFailure,
+)
 
 
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures"
@@ -153,6 +156,240 @@ def test_input_clarification_gate_short_circuits_deictic_question(
     assert output.cypher is None
     assert output.dsl is None
     assert _stage_names(output.trace) == ["graph_model_loader", "input_clarification_gate", "output"]
+
+
+def test_input_clarification_gate_allows_demonstrative_with_explicit_referent() -> None:
+    assert pipeline_module._input_clarification_gate("统计这些隧道关联的服务数量") == {"status": "pass"}
+
+
+def test_literal_request_uses_filter_property_term_near_literal() -> None:
+    decomposition = {
+        "original_question": "查询延迟为20的服务的名称和延迟值。",
+        "literal_candidates": [{"text": "20", "kind_hint": "number", "attached_to": "服务"}],
+        "substantive_terms": [
+            _decomp_term("延迟", "filter", attached_to="服务"),
+            _decomp_term("20", "filter", attached_to="延迟"),
+            _decomp_term("服务", "projection"),
+            _decomp_term("名称", "projection", attached_to="服务"),
+            _decomp_term("延迟值", "projection", attached_to="服务"),
+        ],
+    }
+
+    enriched = pipeline_module._with_literal_requests_from_candidates(
+        decomposition,
+        CandidateRetrievalResult(
+            candidates=[
+                _candidate("vertex", "Service", semantic_name="服务"),
+                _candidate(
+                    "property",
+                    "Service.name",
+                    semantic_name="name",
+                    owner="Service",
+                    evidence_terms=["名称"],
+                ),
+                _candidate(
+                    "property",
+                    "Service.latency",
+                    semantic_name="latency",
+                    owner="Service",
+                    evidence_terms=["延迟", "时延"],
+                ),
+            ]
+        ),
+    )
+
+    assert enriched["literal_requests"] == [
+        {
+            "raw_literal": "20",
+            "expected_vertex": "Service",
+            "expected_property": "latency",
+            "literal_kind_hint": "numeric",
+        }
+    ]
+
+
+def test_literal_request_uses_name_filter_for_service_id_like_literal() -> None:
+    decomposition = {
+        "original_question": "查询名称为Service_003的服务的ID。",
+        "literal_candidates": [{"text": "Service_003", "kind_hint": "enum_or_name", "attached_to": "服务"}],
+        "substantive_terms": [
+            _decomp_term("名称", "filter", attached_to="服务"),
+            _decomp_term("Service_003", "filter", attached_to="名称"),
+            _decomp_term("服务", "projection"),
+            _decomp_term("ID", "projection", attached_to="服务"),
+        ],
+    }
+
+    enriched = pipeline_module._with_literal_requests_from_candidates(
+        decomposition,
+        CandidateRetrievalResult(
+            candidates=[
+                _candidate("vertex", "Service", semantic_name="服务"),
+                _candidate(
+                    "property",
+                    "Service.name",
+                    semantic_name="name",
+                    owner="Service",
+                    evidence_terms=["名称"],
+                ),
+                _candidate(
+                    "property",
+                    "Service.quality_of_service",
+                    semantic_name="quality_of_service",
+                    owner="Service",
+                    evidence_terms=["服务质量等级"],
+                    valid_values=["Gold", "Silver"],
+                ),
+            ]
+        ),
+    )
+
+    assert enriched["literal_requests"][0]["expected_vertex"] == "Service"
+    assert enriched["literal_requests"][0]["expected_property"] == "name"
+
+
+def test_literal_request_uses_type_filter_for_hyphenated_service_type() -> None:
+    decomposition = {
+        "original_question": "查询类型为MPLS-VPN的服务的ID、名称和带宽。",
+        "literal_candidates": [{"text": "MPLS-VPN", "kind_hint": "enum_or_name", "attached_to": "服务"}],
+        "substantive_terms": [
+            _decomp_term("类型", "filter", attached_to="服务"),
+            _decomp_term("MPLS-VPN", "filter", attached_to="服务"),
+            _decomp_term("服务", "path"),
+            _decomp_term("ID", "projection", attached_to="服务"),
+            _decomp_term("名称", "projection", attached_to="服务"),
+            _decomp_term("带宽", "projection", attached_to="服务"),
+        ],
+    }
+
+    enriched = pipeline_module._with_literal_requests_from_candidates(
+        decomposition,
+        CandidateRetrievalResult(
+            candidates=[
+                _candidate("vertex", "Service", semantic_name="服务"),
+                _candidate(
+                    "property",
+                    "Service.id",
+                    semantic_name="id",
+                    owner="Service",
+                    evidence_terms=["ID", "标识"],
+                ),
+                _candidate(
+                    "property",
+                    "Service.elem_type",
+                    semantic_name="elem_type",
+                    owner="Service",
+                    evidence_terms=["类型", "服务类型"],
+                    valid_values=["MPLS-VPN", "QoS"],
+                ),
+            ]
+        ),
+    )
+
+    assert enriched["literal_requests"] == [
+        {
+            "raw_literal": "MPLS-VPN",
+            "expected_vertex": "Service",
+            "expected_property": "elem_type",
+            "literal_kind_hint": "enum_or_name",
+        }
+    ]
+
+
+def test_literal_request_uses_previous_filter_term_when_literal_has_no_attachment() -> None:
+    decomposition = {
+        "original_question": "查询延迟等于23的服务名称、带宽和延迟。",
+        "literal_candidates": [{"text": "23", "kind_hint": "number", "attached_to": ""}],
+        "substantive_terms": [
+            _decomp_term("延迟", "filter"),
+            _decomp_term("等于", "filter"),
+            _decomp_term("23", "filter"),
+            _decomp_term("服务", "path"),
+            _decomp_term("名称", "projection", attached_to="服务"),
+            _decomp_term("带宽", "projection", attached_to="服务"),
+            _decomp_term("延迟", "projection", attached_to="服务"),
+        ],
+    }
+
+    enriched = pipeline_module._with_literal_requests_from_candidates(
+        decomposition,
+        CandidateRetrievalResult(
+            candidates=[
+                _candidate("vertex", "Service", semantic_name="服务"),
+                _candidate("vertex", "Tunnel", semantic_name="隧道"),
+                _candidate(
+                    "property",
+                    "Service.name",
+                    semantic_name="name",
+                    owner="Service",
+                    evidence_terms=["名称"],
+                ),
+                _candidate(
+                    "property",
+                    "Service.latency",
+                    semantic_name="latency",
+                    owner="Service",
+                    evidence_terms=["延迟", "时延"],
+                ),
+                _candidate(
+                    "property",
+                    "Tunnel.latency",
+                    semantic_name="latency",
+                    owner="Tunnel",
+                    evidence_terms=["延迟", "时延"],
+                ),
+            ]
+        ),
+    )
+
+    assert enriched["literal_requests"] == [
+        {
+            "raw_literal": "23",
+            "expected_vertex": "Service",
+            "expected_property": "latency",
+            "literal_kind_hint": "numeric",
+        }
+    ]
+
+
+def test_grounded_projection_bindings_hydrate_projection_when_projection_array_is_empty() -> None:
+    grounded = GroundedUnderstanding.model_validate(
+        {
+            "schema_version": "grounded_understanding_v1",
+            "status": "grounded",
+            "query_shape": "single_hop",
+            "selected_bindings": [
+                _grounded_binding("source", "vertex", "Service"),
+                _grounded_binding("target", "vertex", "Tunnel"),
+                _grounded_binding("projection", "property", "Tunnel.name", semantic_name="name", owner="Tunnel"),
+                _grounded_binding(
+                    "projection",
+                    "property",
+                    "Tunnel.ietf_standard",
+                    semantic_name="ietf_standard",
+                    owner="Tunnel",
+                ),
+            ],
+            "selected_literals": [],
+            "filters": [],
+            "projection": [],
+            "group_by": [],
+            "measures": [],
+            "sort": [],
+            "assumptions": [],
+            "ambiguities": [],
+            "coverage": _coverage_payload(["服务", "隧道", "名称", "IETF标准"]),
+            "unsupported": None,
+            "confidence": 0.9,
+        }
+    )
+
+    payload = grounded.to_binder_payload()
+
+    assert payload["projection"] == [
+        {"semantic_type": "property", "owner": "Tunnel", "name": "name"},
+        {"semantic_type": "property", "owner": "Tunnel", "name": "ietf_standard"},
+    ]
 
 
 def test_pipeline_semantic_artifacts_can_be_overridden_from_settings(
@@ -2435,6 +2672,31 @@ def _decomp_term(text: str, slot: str, *, attached_to: str | None = None) -> dic
     if attached_to is not None:
         payload["attached_to"] = attached_to
     return payload
+
+
+def _candidate(
+    semantic_type: str,
+    semantic_id: str,
+    *,
+    semantic_name: str | None = None,
+    owner: str | None = None,
+    evidence_terms: list[str] | None = None,
+    valid_values: list[str] | None = None,
+) -> SemanticCandidate:
+    evidence_terms = evidence_terms or [semantic_name or semantic_id]
+    return SemanticCandidate(
+        semantic_type=semantic_type,
+        semantic_id=semantic_id,
+        semantic_name=semantic_name or semantic_id,
+        owner=owner,
+        score=1.0,
+        match_type="exact",
+        evidence=[
+            CandidateEvidence(term=term, source="test", matched_text=term)
+            for term in evidence_terms
+        ],
+        metadata={"valid_values": valid_values or []},
+    )
 
 
 def _coverage_payload(covered: list[str]) -> dict[str, object]:

@@ -148,7 +148,10 @@ def validate_dsl_structural_coverage(
                 )
             )
         else:
-            covered_terms = _covered_projection_terms(projection_items)
+            covered_terms = _covered_projection_terms(
+                projection_items,
+                required_terms=req.projection_terms,
+            )
             if _has_measure_projection(projection_items):
                 for term in req.projection_terms:
                     if _is_quantity_projection_text(term) and term not in covered_terms:
@@ -245,6 +248,7 @@ def _is_required_projection_text(text: str, *, attached_to: Any) -> bool:
     field_markers = (
         "ID",
         "id",
+        "编号",
         "名称",
         "名字",
         "带宽",
@@ -260,6 +264,12 @@ def _is_required_projection_text(text: str, *, attached_to: Any) -> bool:
         "地址",
         "IP",
         "ip",
+        "节点",
+        "详细",
+        "详情",
+        "完整",
+        "全部属性",
+        "所有属性",
         "标准",
         "数量",
         "个数",
@@ -325,7 +335,7 @@ def _find_non_overlapping(question: str, term: str, occupied: list[tuple[int, in
 def _requires_aggregate(decomposition: Mapping[str, Any], terms: list[Mapping[str, Any]]) -> bool:
     intent = str(decomposition.get("intent_type") or "").strip()
     output_shape = str(decomposition.get("output_shape") or "").strip()
-    if intent in {"count", "aggregate", "top_n"} or output_shape in {"scalar", "grouped_rows"}:
+    if intent in {"count", "aggregate", "top_n"} or output_shape == "grouped_rows":
         return True
     aggregate_terms = {"统计", "数量", "多少", "个数", "总数"}
     return any(str(term.get("text") or "").strip() in aggregate_terms for term in terms)
@@ -448,19 +458,95 @@ def _projection_items(dsl: Mapping[str, Any]) -> list[Any]:
     return list(items)
 
 
-def _covered_projection_terms(items: list[Any]) -> list[str]:
+def _covered_projection_terms(items: list[Any], *, required_terms: list[str] | None = None) -> list[str]:
     covered: list[str] = []
     for item in items:
         if not isinstance(item, Mapping):
             continue
         raw_terms = item.get("projection_terms")
-        if not isinstance(raw_terms, list | tuple):
-            continue
-        for raw_term in raw_terms:
-            term = str(raw_term).strip()
-            if term and term not in covered:
+        if isinstance(raw_terms, list | tuple):
+            for raw_term in raw_terms:
+                term = str(raw_term).strip()
+                if term and term not in covered:
+                    covered.append(term)
+        for term in required_terms or []:
+            if term not in covered and _projection_item_covers_term(item, term):
                 covered.append(term)
     return covered
+
+
+def _projection_item_covers_term(item: Mapping[str, Any], term: str) -> bool:
+    normalized_term = _norm_text(term)
+    if not normalized_term:
+        return False
+    surfaces = _projection_item_surfaces(item)
+    return any(_surface_matches_projection_term(surface, normalized_term) for surface in surfaces)
+
+
+def _projection_item_surfaces(item: Mapping[str, Any]) -> list[str]:
+    surfaces: list[str] = []
+    for key in ("alias", "source", "name", "semantic_id"):
+        raw = item.get(key)
+        if raw is not None:
+            surfaces.append(str(raw))
+    if item.get("vertex_full"):
+        surfaces.extend(_VERTEX_FULL_PROJECTION_TERM_SURFACES)
+    prop = item.get("property")
+    owner = item.get("owner")
+    prop_name: Any = item.get("property_name")
+    if isinstance(prop, Mapping):
+        owner = prop.get("owner") or owner
+        prop_name = prop.get("name") or prop.get("property_name") or prop_name
+    elif isinstance(prop, str):
+        prop_name = prop
+    if prop_name is not None:
+        prop_text = str(prop_name)
+        surfaces.append(prop_text)
+        if owner is not None:
+            surfaces.append(f"{owner}.{prop_text}")
+        surfaces.extend(_PROPERTY_PROJECTION_TERM_SURFACES.get(prop_text, ()))
+    return surfaces
+
+
+def _surface_matches_projection_term(surface: str, normalized_term: str) -> bool:
+    normalized_surface = _norm_text(surface)
+    if not normalized_surface:
+        return False
+    return normalized_surface == normalized_term or normalized_term in normalized_surface
+
+
+def _norm_text(value: Any) -> str:
+    return str(value or "").casefold().strip().replace("_", "").replace("-", "").replace(" ", "")
+
+
+_PROPERTY_PROJECTION_TERM_SURFACES = {
+    "id": ("ID", "id", "编号", "服务ID", "服务编号", "隧道ID", "隧道编号", "网元ID", "网元编号", "端口ID", "端口编号", "链路ID", "链路编号", "协议ID", "协议编号", "光纤ID", "光纤编号"),
+    "name": ("名称", "名字", "服务名称"),
+    "elem_type": ("类型", "网元类型", "元素类型", "设备类型", "服务类型", "型号"),
+    "quality_of_service": ("服务质量等级", "质量等级", "等级", "等级值"),
+    "bandwidth": ("带宽",),
+    "latency": ("时延", "延迟", "延迟值"),
+    "ietf_standard": ("IETF标准", "标准"),
+    "ip_address": ("IP地址", "地址"),
+    "software_version": ("软件版本", "版本"),
+    "vendor": ("厂商", "厂家"),
+    "location": ("位置",),
+    "status": ("状态",),
+}
+
+
+_VERTEX_FULL_PROJECTION_TERM_SURFACES = (
+    "节点",
+    "详细信息",
+    "详情",
+    "完整信息",
+    "全部信息",
+    "所有信息",
+    "全部属性",
+    "全部属性信息",
+    "所有属性",
+    "所有属性信息",
+)
 
 
 def _has_measure_projection(items: list[Any]) -> bool:

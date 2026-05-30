@@ -46,6 +46,18 @@ class ZeroHopAssembler:
     ) -> ZeroHopAssemblyResult:
         projection = []
         for item in _projection_requirements(structural_requirements):
+            vertex_full_name = _vertex_full_name(item)
+            if vertex_full_name is not None:
+                if vertex_full_name != vertex_name:
+                    return _fallback("projection_owner_mismatch")
+                projection.append(
+                    _vertex_full_projection_item(
+                        vertex_name,
+                        item.get("alias") if isinstance(item, Mapping) else None,
+                        _projection_terms(item),
+                    )
+                )
+                continue
             property_name = _property_name(item)
             if property_name is None:
                 return _fallback("missing_projection_property")
@@ -67,7 +79,13 @@ class ZeroHopAssembler:
         if not projection:
             return _fallback("missing_projection_property")
 
-        return _success(_vertex_lookup_dsl(vertex_name, projection=projection))
+        return _success(
+            _vertex_lookup_dsl(
+                vertex_name,
+                projection=projection,
+                limit=_limit_value(structural_requirements),
+            )
+        )
 
     def _assemble_f2(
         self,
@@ -97,6 +115,18 @@ class ZeroHopAssembler:
 
         projection = []
         for item in _projection_requirements(structural_requirements):
+            vertex_full_name = _vertex_full_name(item)
+            if vertex_full_name is not None:
+                if vertex_full_name != vertex_name:
+                    return _fallback("projection_owner_mismatch")
+                projection.append(
+                    _vertex_full_projection_item(
+                        vertex_name,
+                        item.get("alias") if isinstance(item, Mapping) else None,
+                        _projection_terms(item),
+                    )
+                )
+                continue
             property_name = _property_name(item)
             if property_name is None:
                 return _fallback("missing_projection_property")
@@ -130,7 +160,14 @@ class ZeroHopAssembler:
                 },
             }
         ]
-        return _success(_vertex_lookup_dsl(vertex_name, filters=filters, projection=projection))
+        return _success(
+            _vertex_lookup_dsl(
+                vertex_name,
+                filters=filters,
+                projection=projection,
+                limit=_limit_value(structural_requirements),
+            )
+        )
 
     def _assemble_f3(
         self,
@@ -264,17 +301,32 @@ def _vertex_lookup_dsl(
     *,
     filters: list[dict[str, Any]] | None = None,
     projection: list[dict[str, Any]],
+    limit: int | None = None,
 ) -> dict[str, Any]:
+    operations = []
+    if limit is not None:
+        operations.append({"op": "limit", "value": limit})
     return {
         "schema_version": "restricted_query_dsl_v1",
         "query_id": "zero-hop",
         "query_shape": "vertex_lookup",
         "source_question": "",
         "bindings": {"target": {"vertex_name": vertex_name}},
-        "operations": [],
+        "operations": operations,
         "filters": filters or [],
         "projection": {"items": projection},
     }
+
+
+def _limit_value(structural_requirements: Mapping[str, Any]) -> int | None:
+    raw_limit = structural_requirements.get("limit")
+    if isinstance(raw_limit, Mapping):
+        raw_limit = raw_limit.get("value")
+    try:
+        parsed = int(raw_limit)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
 
 def _projection_item(
@@ -289,6 +341,22 @@ def _projection_item(
     }
     if alias is not None:
         item["alias"] = str(alias)
+    terms = [str(term).strip() for term in projection_terms or [] if str(term).strip()]
+    if terms:
+        item["projection_terms"] = terms
+    return item
+
+
+def _vertex_full_projection_item(
+    vertex_name: str,
+    alias: Any | None,
+    projection_terms: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    item = {
+        "target": "target",
+        "vertex_full": True,
+        "alias": str(alias) if alias is not None else _snake_case(vertex_name),
+    }
     terms = [str(term).strip() for term in projection_terms or [] if str(term).strip()]
     if terms:
         item["projection_terms"] = terms
@@ -338,6 +406,13 @@ def _property_name(item: Any) -> str | None:
         name = property_ref.get("name") or property_ref.get("property_name")
     else:
         name = property_ref or item.get("name") or item.get("property_name")
+    return str(name) if name is not None else None
+
+
+def _vertex_full_name(item: Any) -> str | None:
+    if not isinstance(item, Mapping) or item.get("semantic_type") != "vertex_full":
+        return None
+    name = item.get("name") or item.get("semantic_id") or item.get("vertex")
     return str(name) if name is not None else None
 
 

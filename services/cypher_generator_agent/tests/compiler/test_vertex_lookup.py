@@ -62,6 +62,19 @@ def test_vertex_lookup_compiles_explicit_vertex_full_projection(
     assert result.validation_result.valid is True
 
 
+def test_vertex_lookup_compiles_limit_tail(
+    registry: GraphSemanticRegistry,
+) -> None:
+    dsl = _vertex_lookup_dsl()
+    dsl["operations"] = [{"op": "limit", "value": 3}]
+    ast = parse_dsl(dsl, registry)
+
+    result = compile_restricted_query_ast(ast, registry)
+
+    assert result.cypher.endswith("RETURN ne.name AS name\nLIMIT 3")
+    assert result.validation_result.valid is True
+
+
 def test_vertex_lookup_rejects_unresolved_filter_literal(
     registry: GraphSemanticRegistry,
 ) -> None:
