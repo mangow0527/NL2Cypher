@@ -31,10 +31,11 @@
 | MIR-007 | Coverage-Aware Deterministic Grounding and LLM Handoff | 由 MIR-010 取代；不单独实施 | `qa_526d49332ed1` / `qa_c3e83dd7ad32` / `qa_a5f4b0253af3` | P0 |
 | MIR-008 | Grounded Understanding Compact Output Contract | 功能已随 MIR-010.6 接入；token / fallback 专项指标未闭环 | MIR-010 fallback output token / schema invalid | P0 |
 | MIR-009 | Retrieval Structural Relevance Reranker | 已实施并远端部署；收窄边界需持续回归 | dirty top_candidates / structure-irrelevant candidate noise | P0 |
-| MIR-010 | Deterministic Form Assembler Corpus and Main-Path Control Flow Refactor | 主控制流已远端部署；L2 澄清闭环；L2 投影 / vertex lookup 抽样残缺已远端闭环；MIR-010.8 指标未闭环 | 680-query shape analysis / MIR-007 multi-round LLM latency | P0 |
+| MIR-010 | Deterministic Form Assembler Corpus and Main-Path Control Flow Refactor | 主控制流已远端部署；680 全量暴露复杂结构未闭环；MIR-010.8 指标未闭环 | 680-query shape analysis / MIR-007 multi-round LLM latency | P0 |
 | MIR-011 | Literal Filter Binding and Static Index-Miss Pass-through | 已远端闭环；L2 literal 澄清归零 | L2 `Service_001` / `svc-mpls-vpn-1004` / `MPLS-VPN` / `延迟=23` 澄清 | P0 |
+| MIR-012 | Named Path Pattern Projection Role Binding | 待实施；680 全量新增 P0 缺口 | `qa_fe30ff3300d3` | P0 |
 
-后续新增问题按 `MIR-012`、`MIR-013` 继续追加。
+后续新增问题按 `MIR-013`、`MIR-014` 继续追加。
 
 未闭环 MIR 实施处置（2026-05-30）：
 
@@ -44,7 +45,7 @@
 | MIR-007 | B：由 MIR-010 取代，不单独落地 | 无需实施；仅保留 MIR-010.5 明确保留的机制 | MIR-010 取消 deterministic <-> LLM 多轮 handoff，因此 MIR-007 的 fingerprint 控制、交替循环检测和多轮 repair 不应再作为主控制流实现。 |
 | MIR-008 | C：功能已接入，指标未闭环 | MIR-010.6 single-shot fallback 内部；后续补 token / fallback 专项采样 | compact contract 已随 fallback 路径接入，但原目标中的 completion token 收益、fallback schema retry 率和专项远端样本尚未单独量化。 |
 | MIR-009 | 已执行：直接落地 | MIR-010 前置 | retrieval reranker 已作为确定性拼装和 single-shot fallback 的候选收窄层接入，后续只持续验证边界。 |
-| MIR-010 | A：主干已落地，业务与指标未闭环 | 继续按 failure reason 小步补齐 | 主路径控制流重构已落地并远端部署；L2 literal 澄清已由 MIR-011 收口；2026-05-30 已远端确认一批 `coverage_failure` / `compiler_shape_mismatch` 小缺口闭环（投影同义词、`vertex_full`、唯一 owner 推断、vertex lookup limit、低分 vertex 噪声防误伤）。MIR-010.8 的 680/留出指标仍未完整沉淀，L2 全量分布仍需再刷新。 |
+| MIR-010 | A：主干已落地，复杂结构与指标未闭环 | 继续按 failure reason 小步补齐；MIR-012 先处理 path pattern role binding | 主路径控制流重构已落地并远端部署；L2 literal 澄清已由 MIR-011 收口；2026-05-30 已远端确认一批 `coverage_failure` / `compiler_shape_mismatch` 小缺口闭环（投影同义词、`vertex_full`、唯一 owner 推断、vertex lookup limit、低分 vertex 噪声防误伤）。但 2026-05-31 680 全量重跑显示复杂结构仍大量失败：`generated=317`、`generation_failed=336`、`clarification_required=16`、`service_failed=11`，其中 `semantic_contract_unaligned=11`。MIR-010.8 的 680 指标已开始沉淀，但结果证明主干之外的复杂结构未闭环。 |
 
 推荐实施顺序（已按此完成主干落地）：`MIR-009 -> MIR-010 最小确定性闭环 -> MIR-010.4/.5 原子控制流切换与 MIR-007 退役 -> 修订/实施 MIR-008 fallback compact contract -> 扩展 MIR-010 F4/F6/F8`。
 
@@ -54,7 +55,7 @@
 | --- | --- | --- |
 | MIR-008 | 已并入 MIR-010.6 single-shot fallback 路径；wrapper 侧 schema-bound prompt 已收敛为 compact selection contract，operation hint hydrate 可兼容旧式字符串 projection/group_by/measures/sort/assumptions，schema invalid 失败不再被误报为 compiler_shape_mismatch。 | 本地 CGA 回归 `600 passed`；fallback 只调用一次、输出 DSL、过结构覆盖和 self-validation。未闭环：completion token 收益、fallback 命中样本 schema retry 率、fallback 专项远端样本。 |
 | MIR-009 | 已落地独立 structural reranker，接在 retriever 之后，保持“收窄不裁决”边界。 | 作为 MIR-010 前置组件参与远端部署；仍需持续回归确认 SRC/DST、PATH_THROUGH 等结构相关 edge 不被提前裁掉。 |
-| MIR-010 | 已完成第 1-4 波主干：taxonomy / direction mapper / F1-F6 形态拼装器、F6 grouped top-N DSL 扩展、主控制流切换、MIR-007 多轮 repair 退役、single-shot fallback、clarification / concede 路径；2026-05-30 已补齐 deterministic 主路径 projection term 覆盖防线，并补齐 fallback schema / hydrate 防线。随后继续小步闭环 L2 残缺：`服务名称/编号/服务ID/等级值/服务质量等级` 投影同义词、`详细信息/节点/全部属性信息` -> `vertex_full`、vertex lookup 唯一属性 owner 推断、vertex lookup `LIMIT`、低分 token 级 vertex 噪声不阻断 0-hop 收敛。 | 本地 CGA `615 passed`。远端 L2 去重 86 条上一轮重跑：`generated=63`、`generation_failed=23`、`clarification_required=0`；testing 状态 `passed=55`、`issue_ticket_created=31`。针对上一轮 8 条 L2 投影 / vertex lookup 残缺样本，远端 smoke `smoke_l2_projection_vertex_fix4_20260530T155847Z` 先确认 7/8 passed，随后 `qa_38392098b2fc` 经低分 vertex 噪声防误伤补丁在 `smoke_single_qa383_fix5_20260530T160229Z` 通过；该抽样问题集 8/8 闭环。未闭环：L2 全量分布刷新，以及 MIR-010.8 四指标。 |
+| MIR-010 | 已完成第 1-4 波主干：taxonomy / direction mapper / F1-F6 形态拼装器、F6 grouped top-N DSL 扩展、主控制流切换、MIR-007 多轮 repair 退役、single-shot fallback、clarification / concede 路径；2026-05-30 已补齐 deterministic 主路径 projection term 覆盖防线，并补齐 fallback schema / hydrate 防线。随后继续小步闭环 L2 残缺：`服务名称/编号/服务ID/等级值/服务质量等级` 投影同义词、`详细信息/节点/全部属性信息` -> `vertex_full`、vertex lookup 唯一属性 owner 推断、vertex lookup `LIMIT`、低分 token 级 vertex 噪声不阻断 0-hop 收敛。 | 本地 CGA `615 passed`。远端 L2 去重 86 条上一轮重跑：`generated=63`、`generation_failed=23`、`clarification_required=0`；testing 状态 `passed=55`、`issue_ticket_created=31`。针对上一轮 8 条 L2 投影 / vertex lookup 残缺样本，远端 smoke `smoke_l2_projection_vertex_fix4_20260530T155847Z` 先确认 7/8 passed，随后 `qa_38392098b2fc` 经低分 vertex 噪声防误伤补丁在 `smoke_single_qa383_fix5_20260530T160229Z` 通过；该抽样问题集 8/8 闭环。2026-05-31 680 全量重跑 `run680_20260531T045441Z` 已完成：`generated=317`、`generation_failed=336`、`clarification_required=16`、`service_failed=11`。结论：控制流和 L2 literal 已闭环，但复杂路径、fallback schema、coverage、compiler shape 和 path pattern projection role binding 未闭环。 |
 | MIR-011 | 已补齐 literal request 构造与 resolver pass-through 防线：hyphenated 类型值不再被 ID 快路径抢走；无 attachment 的数值 literal 可回看前置 filter 属性；明确 owner/property 的非枚举等值 literal 在静态索引 miss 时 raw pass-through。 | 本地 CGA `600 passed`。远端 L2 去重 86 条重跑后 `clarification_required=0`；典型样本 `qa_a1801a24cede` 生成 `WHERE svc.name = 'Service_001'` 并通过，`qa_78040ceec879` 生成 `WHERE svc.latency = 23.0` 并通过。 |
 
 ## 2. 总体修改原则
@@ -1285,7 +1286,7 @@ Retrieval 做“结构相关性收窄”，绝不做“路径裁决”。
 
 ## 12. MIR-010 Deterministic Form Assembler Corpus and Main-Path Control Flow Refactor
 
-状态：主控制流已实施到第 4 波并远端部署；控制流闭环。2026-05-30 已补齐 deterministic 主路径的 projection term 覆盖防线，并补齐 fallback compact schema / hydrate 防线；随后通过 MIR-011 收口 L2 literal 澄清问题。2026-05-30 继续补齐 L2 残缺投影与 vertex lookup 小缺口，本地 CGA 回归 `615 passed`；远端针对上一轮 8 条 L2 投影 / vertex lookup 残缺样本已抽样闭环。MIR-010 的剩余未闭环项已收缩为：L2 全量分布刷新、复杂结构语义正确性，以及 MIR-010.8 四指标。
+状态：主控制流已实施到第 4 波并远端部署；控制流闭环，但复杂结构生成能力未闭环。2026-05-30 已补齐 deterministic 主路径的 projection term 覆盖防线，并补齐 fallback compact schema / hydrate 防线；随后通过 MIR-011 收口 L2 literal 澄清问题。2026-05-30 继续补齐 L2 残缺投影与 vertex lookup 小缺口，本地 CGA 回归 `615 passed`；远端针对上一轮 8 条 L2 投影 / vertex lookup 残缺样本已抽样闭环。2026-05-31 680 全量重跑显示，MIR-010 仍不能标记为能力闭环：复杂路径、fallback schema、coverage、compiler shape 和 path pattern projection role binding 仍是主失败来源。
 
 实施摘要（2026-05-30）：
 
@@ -1300,13 +1301,14 @@ Retrieval 做“结构相关性收窄”，绝不做“路径裁决”。
 - 本地验证：`python -m pytest services/cypher_generator_agent/tests` -> `615 passed in 4.48s`。
 - 远端 L2 验证：280 池与 400 池去重 L2 共 86 条，dispatch log 为 `/home/mabingjie/apps/qa-agent/artifacts/experiment_runs/dispatch_l2_after_literal_fix_20260530T092405Z.jsonl`；结果为 `generated=63`、`generation_failed=23`、`clarification_required=0`、`pending=0`，testing 状态为 `passed=55`、`issue_ticket_created=31`。
 - 远端 L2 投影 / vertex lookup 抽样验证：`smoke_l2_projection_vertex_fix4_20260530T155847Z` 覆盖上一轮 8 条问题样本中的 7 条通过；剩余 `qa_38392098b2fc` 经 `smoke_single_qa383_fix5_20260530T160229Z` 单条复测通过，生成 `MATCH (svc:Service) WHERE svc.name = 'Service_003' RETURN svc AS service LIMIT 3`，testing verdict `pass`。
+- 远端 680 全量验证（2026-05-31）：使用服务器 qa-agent 样本池 `/home/mabingjie/apps/qa-agent/artifacts/experiment_pools/merged_280_400_samples_20260530T021513Z.json`，run id `run680_20260531T045441Z`。CGA 生成状态汇总：`generated=317`、`generation_failed=336`、`clarification_required=16`、`service_failed=11`。失败原因分布：`semantic_match_rejected=86`、`coverage_failure=85`、`compiler_shape_mismatch=81`、`grounded_understanding_schema_invalid=54`、`metric_dimension_invalid=23`、`semantic_contract_unaligned=11`、`edge_endpoint_mismatch=6`、`binding_plan_incomplete=1`。该数据集是 680 构造训练/回归集，不等同于真实线上分布，但足以证明 MIR-010 的复杂结构能力尚未闭环。
 
 当前边界：
 
-- MIR-010 已解决“旧多轮 LLM repair 可能拖到 60s”的控制流问题，但尚未解决全部复杂语义正确性。
+- MIR-010 已解决“旧多轮 LLM repair 可能拖到 60s”的控制流问题，但尚未解决全部复杂语义正确性和 DSL 落位能力。
 - L1 / L2 样本表现明显好于中高难度，说明确定性主路径对简单形态已生效。
 - L2 literal 澄清已由 MIR-011 收口，不再作为当前 L2 主失败类型。
-- 上一轮 L2 未通过项集中在：`coverage_failure=14`、`compiler_shape_mismatch=7`、`grounded_understanding_schema_invalid=1`、`semantic_match_rejected=1`。其中已抽样确认投影 surface / `vertex_full` / vertex lookup owner 推断 / vertex lookup limit / 低分 vertex 噪声防误伤闭环；仍需远端全量 L2 重跑刷新剩余分布，其余失败继续分别回到结构覆盖 / DSL 表达 / fallback schema / semantic verdict 线处理。
+- 680 全量新增关键缺口：`qa_fe30ff3300d3` 暴露 `named_path_pattern + 多 owner projection` 在 DSL builder 中没有 owner -> path template role 映射，导致 `KeyError: 'Service'` 并被包装为 `service_failed / semantic_contract_unaligned`。这不是 testing-agent verdict 问题，而是 CGA builder 能力缺口，已拆出 MIR-012。
 
 ### 12.1 首要原则：确定性拼装，不启发式猜测
 
@@ -1801,13 +1803,219 @@ docs/experiments/2026-05-28-runtime-center-cga-job-analysis.md
 | 项 | 所属 MIR | 当前证据 | 下一步 |
 | --- | --- | --- | --- |
 | fallback compact contract 性能收益未量化 | MIR-008 | 功能接入、本地 `600 passed`，但没有单独统计 fallback completion tokens、schema retry 率、端到端耗时。 | 选取 fallback 命中样本做 token / latency / schema retry 专项采样；若收益未达标，再决定是否继续压缩 prompt。 |
-| MIR-010.8 四指标未完整沉淀 | MIR-010 | 已有 86 条 L2 结果，但尚未对 680 条训练集和留出集输出形态覆盖率、确定性命中率、fallback 触发率、认输率。 | 跑 680 条形态回归；若有 680 外样本，单独标注为留出泛化；文档中区分训练集自验证与泛化。 |
-| L2 剩余 `coverage_failure` | MIR-010 / MIR-006 边界 | 上一轮 L2 86 条中有 14 条 `coverage_failure`；本轮已抽样闭环 `服务ID/服务名称/编号/等级值/服务质量等级` 投影 surface 与 `详细信息/节点/全部属性信息` -> `vertex_full`，8 条问题样本中的 coverage 类已远端通过。 | 远端全量 L2 重跑后刷新剩余分布；若仍有 coverage failure，继续按 structural_requirements vs DSL 差异分类，不扩大为架构改动。 |
-| L2 剩余 `compiler_shape_mismatch` | MIR-010 / DSL 表达力 | 上一轮 L2 86 条中有 7 条 `compiler_shape_mismatch`；已远端验证 vertex lookup limit-only tail、fallback 仅有同 owner 属性时的 target vertex 推断，以及低分 token 级 vertex 噪声不阻断 0-hop 收敛。 | 远端全量 L2 重跑后确认是否还存在 compiler shape；剩余项再区分 DSL 表达力缺口、assembler dispatch 误判或 fallback hydrate 失败。 |
-| fallback schema / grounded 输出仍有个别失败 | MIR-008 / MIR-010.6 | L2 86 条中仍有 1 条 `grounded_understanding_schema_invalid`。 | 拉 trace 看 schema invalid 的具体字段；若是 compact contract 仍不稳定，补最小 schema / hydrate 测试。 |
-| semantic verdict / 语义等价仍有失败 | testing-agent / verdict 线，非本 MIR 闭环 | L2 86 条中仍有 1 条 `semantic_match_rejected`；历史上 alias strict mismatch 与结构等价 verdict 一直是独立线。 | 不混入 CGA 主路径；单独审 testing-agent verdict 和 alias/结构等价口径。 |
+| MIR-010.8 四指标仍未达验收 | MIR-010 | 680 全量重跑 `run680_20260531T045441Z` 已完成，但只得到生成状态 / failure reason 分布：`generated=317`、`generation_failed=336`、`clarification_required=16`、`service_failed=11`。尚未按形态输出确定性命中率、fallback 触发率、认输率、延迟分布、留出集泛化。 | 补 680 结果的形态级聚合；把训练集自验证和留出泛化分开；按 deterministic / fallback / clarification / generation_failed 四类输出指标。 |
+| `named_path_pattern + 多 owner projection` 服务失败 | MIR-012 / MIR-010.2 | `qa_fe30ff3300d3`：CGA 选中 `query_shape=named_path_pattern` 和 `tunnel_full_path`，projection 包含 `Service.elem_type`、`Tunnel.elem_type`、`NetworkElement.model`、`Port.elem_type`，但 binding plan 无 `vertex_bindings`；DSL builder 的 `role_by_owner={}`，处理 `Service.elem_type` 时抛 `KeyError: 'Service'`，最终 `service_failed / semantic_contract_unaligned`。 | 先落 MIR-012：为 path pattern 输出建立 owner -> role/alias 的确定性映射，或在无法映射时给出 `generation_failed / compiler_shape_mismatch`，不得再抛 service_failed。 |
+| 680 中 `coverage_failure` 仍高 | MIR-010 / MIR-006 边界 | 680 全量有 `coverage_failure=85`。此前 L2 抽样修复过投影 surface 和 `vertex_full`，但 680 证明 coverage 问题远超 L2 小样本。 | 按 `projection_terms`、path hop、aggregate/group/order/limit 分类抽样，不扩大架构；每类只补通用派生或 DSL 落位规则。 |
+| 680 中 `compiler_shape_mismatch` 仍高 | MIR-010 / DSL 表达力 | 680 全量有 `compiler_shape_mismatch=81`。说明 F6/F8、path pattern、fallback hydrate 或 DSL parser/compiler 表达仍存在系统缺口。 | 聚类 trace：区分 DSL 表达力缺口、assembler dispatch 误判、fallback hydrate 失败、compiler 不支持；每类单独小步修复。 |
+| fallback schema / grounded 输出不稳定 | MIR-008 / MIR-010.6 | 680 全量有 `grounded_understanding_schema_invalid=54`，远高于 L2 86 条中的 1 条。compact contract 已接入，但并未在全量 fallback 上闭环。 | 拉取 schema invalid trace，统计字段级原因；先修 contract/hydrate 的最小共性问题，再重新采样 token 和 schema retry。 |
+| semantic verdict / 语义等价失败较多 | testing-agent / verdict 线，非 CGA 主 MIR 闭环 | 680 全量有 `semantic_match_rejected=86`。其中可能混有 CGA 语义错误、alias/返回列口径、testing-agent 结构等价不足。 | 不混入 CGA 主路径；单独审 testing-agent verdict、alias 口径和结构等价规则。 |
+| 澄清仍未归零 | MIR-011 / MIR-010.7 | 680 全量仍有 `clarification_required=16`。L2 literal 澄清已归零，但中高难度仍存在真实歧义或错误反问混杂。 | 分离真实澄清与误澄清；真实歧义保留，误澄清回到 literal owner/property、coverage 或 fallback 决策线。 |
 
-## 15. 后续 MIR 模板
+## 15. MIR-012 Named Path Pattern Projection Role Binding
+
+状态：待实施。该 MIR 是 2026-05-31 680 全量重跑暴露出的 P0 缺口，属于 MIR-010 的复杂路径 / path pattern DSL 落位能力残余，不是新架构调整。
+
+### 15.1 背景
+
+触发样本：`qa_fe30ff3300d3`
+
+问题：
+
+```text
+查询业务经隧道到达网元下的端口，返回业务类型、隧道类型、网元型号及端口节点信息。
+```
+
+期望 Cypher：
+
+```cypher
+MATCH (a:Service)-[:SERVICE_USES_TUNNEL]->(b:Tunnel)-[:PATH_THROUGH]->(c:NetworkElement)-[:HAS_PORT]->(d:Port)
+RETURN a.elem_type AS source, b.elem_type AS via1, c.model AS via2, d AS target
+```
+
+实际行为：
+
+- CGA 没有生成 Cypher。
+- testing-agent 收到 `generation_status=service_failed`。
+- failure reason 为 `semantic_contract_unaligned`。
+- trace final failure message 为 `"'Service'"`。
+
+trace 证据：
+
+- `question_decomposer` 成功，识别 path terms：`业务 / 经 / 隧道 / 到达 / 网元 / 下 / 端口`；projection terms：`业务类型 / 隧道类型 / 网元型号 / 端口节点信息`。
+- `grounded_understanding` / `semantic_binder` 成功，得到：
+  - `query_shape = named_path_pattern`
+  - `selected_path_patterns = tunnel_full_path`
+  - projection：
+    - `Service.elem_type`
+    - `Tunnel.elem_type`
+    - `NetworkElement.model`
+    - `Port.elem_type`
+- binding plan 中没有 `vertex_bindings`。
+- `dsl_builder` 进入 `_build_named_path_pattern()` 后，`role_by_owner` 为空；处理 `Service.elem_type` projection 时需要 `role_by_owner["Service"]`，触发 `KeyError: 'Service'`。
+
+一句话核心：**path pattern 模板能表达多 hop 路径，但 DSL builder 没有把 path pattern 内部的 vertex owner 映射到模板变量 / projection target，导致多 owner projection 无法落位，并被错误包装成 service_failed。**
+
+### 15.2 失效链路
+
+| 层级 | 失效点 | 影响 |
+| --- | --- | --- |
+| grounded understanding / binder | 选择了 `named_path_pattern=tunnel_full_path`，并选择了跨 `Service/Tunnel/NetworkElement/Port` 的 projection，但没有提供这些 owner 在 path pattern 模板中的 role / alias。 | 下游只有“使用哪个 path pattern”和“要返回哪些 owner 属性”，缺少二者之间的连接。 |
+| DSL builder | `_build_named_path_pattern()` 只建立 `primary_vertex` binding；当没有 primary vertex 时，`role_by_owner={}`。 | 多 owner projection 调用 `_projection_items()` 时无法确定 target。 |
+| 错误处理 | `KeyError: 'Service'` 被包装为 `semantic_contract_unaligned / service_failed`。 | 这是 CGA 内部能力缺口，却被展示为服务失败，降低可诊断性。 |
+| 回归覆盖 | 现有 named path pattern 测试只覆盖参数化模板或简单输出，没有覆盖 path pattern 内部多 owner projection。 | 本类问题未被单元测试拦住。 |
+
+### 15.3 修改目标
+
+- 为 `named_path_pattern` 的 projection 建立确定性 owner -> role / alias 映射。
+- 映射来源必须从语义层 path pattern 模板、registry 或模板静态解析派生，不在 builder 中硬编码 `Service -> a`、`Tunnel -> b` 这类平行表。
+- 支持 path pattern 内部多 owner projection，例如 `Service.elem_type`、`Tunnel.elem_type`、`NetworkElement.model`、`Port vertex_full` 同时返回。
+- 如果 path pattern 模板无法唯一暴露某 owner 的变量 alias，应返回 `generation_failed / compiler_shape_mismatch` 或等价 DSL 表达失败，而不是抛 `service_failed`。
+- 保留 MIR-010 红线：不按样本写分支，不猜 owner 对应哪个变量，不绕过 DSL 直接拼 Cypher。
+- 沉淀 `qa_fe30ff3300d3` 和同类 multi-owner path projection 回归。
+
+非目标：
+
+- 不重写 path pattern 机制。
+- 不把所有复杂路径都改成裸 Cypher fallback。
+- 不解决 `semantic_match_rejected` verdict 口径。
+- 不解决 path pattern 参数绑定以外的 literal resolver 问题。
+
+### 15.4 子 IR 总览
+
+| 子 IR | 名称 | 优先级 | 估算 | 角色 | 依赖 |
+| --- | --- | --- | --- | --- | --- |
+| MIR-012.0 | Baseline and Failing Regression | P0 | S | QA/backend | MIR-010 |
+| MIR-012.1 | Path Pattern Output Role Map Derivation | P0 | M | backend | .0 |
+| MIR-012.2 | Named Path Pattern Projection Builder | P0 | M | backend | .1 |
+| MIR-012.3 | Failure Classification and Trace | P0 | S | backend/infra | .2 |
+| MIR-012.4 | Regression Matrix | P0 | S | QA/backend | .0 到 .3 |
+
+### MIR-012.0 Baseline and Failing Regression
+
+目标：固化 `qa_fe30ff3300d3` 的失败链路，避免把内部 KeyError 当成服务失败长期隐藏。
+
+建议文件：
+
+```text
+services/cypher_generator_agent/tests/dsl/
+services/cypher_generator_agent/tests/integration/
+docs/experiments/2026-05-28-runtime-center-cga-job-analysis.md
+```
+
+开发内容：
+
+- 增加最小 binding plan fixture：`query_shape=named_path_pattern`、`path_pattern_bindings=[tunnel_full_path]`、projection 包含 `Service/Tunnel/NetworkElement/Port` 多 owner。
+- 当前实现下应复现 `KeyError: 'Service'` 或等价 builder failure。
+- 把 `qa_fe30ff3300d3` 加入回归样本。
+
+验收：
+
+- 修复前测试能稳定暴露 named path pattern projection target 缺失。
+- trace 中能看出失败发生在 `dsl_builder`，而不是 testing-agent verdict。
+
+### MIR-012.1 Path Pattern Output Role Map Derivation
+
+目标：从 path pattern 模板 / semantic registry 派生 owner 到模板变量的映射。
+
+建议文件：
+
+```text
+services/cypher_generator_agent/app/semantic_model/
+services/cypher_generator_agent/app/dsl/
+services/cypher_generator_agent/app/compiler/templates.py
+```
+
+开发内容：
+
+- 静态解析 path pattern Cypher 模板中的 vertex alias 和 label，例如 `(a:Service)`、`(b:Tunnel)`、`(c:NetworkElement)`、`(d:Port)`。
+- 生成 owner -> alias / role map，例如 `Service -> a`、`Tunnel -> b`、`NetworkElement -> c`、`Port -> d`。
+- 如果同一 owner 在模板中出现多次且无法唯一确定，标记为 ambiguous，不进入确定性 projection builder。
+- 该派生层只读取模板结构，不根据样本问题猜测。
+
+验收：
+
+- `tunnel_full_path` 可派生出四个 owner 的唯一 role。
+- owner 重复或无法解析时不会猜测，会返回明确 failure。
+
+### MIR-012.2 Named Path Pattern Projection Builder
+
+目标：让 `_build_named_path_pattern()` 能消费 MIR-012.1 的 role map，把多 owner projection 落成 DSL projection item。
+
+建议文件：
+
+```text
+services/cypher_generator_agent/app/dsl/builder.py
+services/cypher_generator_agent/app/dsl/parser.py
+services/cypher_generator_agent/app/compiler/compiler.py
+```
+
+开发内容：
+
+- `_build_named_path_pattern()` 构造 `role_by_owner` 时合并 path pattern role map。
+- projection item 的 `target` 指向 path pattern 内部 role / alias，而不是依赖 `vertex_bindings`。
+- 对 `vertex_full` projection 也要支持 path pattern 内部 owner，例如 `Port` 节点整体返回。
+- 不改变 path pattern 参数绑定语义；已有参数化 path pattern 用例不得回归。
+
+验收：
+
+- `Service.elem_type`、`Tunnel.elem_type`、`NetworkElement.model`、`Port vertex_full` 可同时落位。
+- 生成 Cypher 仍通过现有 DSL parser / compiler / self-validation。
+- 无样本 ID 分支，无裸 Cypher 旁路。
+
+### MIR-012.3 Failure Classification and Trace
+
+目标：无法派生 role map 或 projection 无法落位时，输出可诊断的 generation failure，而不是 service failure。
+
+建议文件：
+
+```text
+services/cypher_generator_agent/app/core/errors.py
+services/cypher_generator_agent/app/core/pipeline.py
+services/cypher_generator_agent/app/observability/trace.py
+```
+
+开发内容：
+
+- 捕获 named path pattern projection role 缺失，转为 `compiler_shape_mismatch` 或更精确的 existing failure reason。
+- trace 记录：
+  - path pattern name。
+  - 派生出的 owner -> role map。
+  - 未能落位的 projection owner/property。
+- 保留 `service_failed` 给真正的依赖、配置、语义资产异常，不再用于普通 DSL 表达缺口。
+
+验收：
+
+- 不再出现 `KeyError: 'Service'` 这类裸异常。
+- 如果无法唯一映射，运行中心能看到明确的 DSL 表达失败原因。
+
+### MIR-012.4 Regression Matrix
+
+目标：覆盖 named path pattern 的多 owner projection 及防误伤。
+
+建议文件：
+
+```text
+services/cypher_generator_agent/tests/dsl/
+services/cypher_generator_agent/tests/integration/
+tests/test_runtime_results_service_api.py
+```
+
+开发内容：
+
+- 正向样本：`qa_fe30ff3300d3`。
+- 同类样本：Service -> Tunnel -> NetworkElement -> Port 路径，返回多个 owner 的属性或节点整体。
+- 防误伤：
+  - 只有 path pattern 参数、无多 owner projection 的旧用例不回归。
+  - owner 重复或 role 不唯一时退 failure，不猜测。
+  - path pattern edge/direction 选择仍不由本 MIR 裁决。
+
+验收：
+
+- `qa_fe30ff3300d3` 不再 `service_failed`。
+- named path pattern 多 owner projection 至少能生成可评测 Cypher；是否语义等价交给 testing-agent verdict。
+- 680 全量中 `semantic_contract_unaligned` 对应的 KeyError 类问题归零或显著下降。
+
+## 16. 后续 MIR 模板
 
 新增修改项时按以下模板追加：
 
@@ -1846,7 +2054,7 @@ docs/experiments/2026-05-28-runtime-center-cga-job-analysis.md
 验收：
 ```
 
-## 14. 审核结论与后续 MIR 检查
+## 17. 审核结论与后续 MIR 检查
 
 MIR-001 审核后的当前默认决策：
 
