@@ -4,6 +4,7 @@ import json
 import re
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,9 @@ class ServiceHealthClient:
 
 class RuntimeResultsService:
     _TOP_LEVEL_JSON_FIELD_RE = re.compile(r'^\s{2}"(?P<key>[^"]+)":\s*(?P<value>.*)$')
+    _CGA_SNAPSHOT_STARTED_AT_RE = re.compile(r'(?:\\"|")started_at(?:\\"|")\s*:\s*(?:\\"|")(?P<value>[^"\\]*)')
+    _CGA_SNAPSHOT_FINISHED_AT_RE = re.compile(r'(?:\\"|")finished_at(?:\\"|")\s*:\s*(?:\\"|")(?P<value>[^"\\]*)')
+    _CGA_SNAPSHOT_STAGE_DURATION_RE = re.compile(r'(?:\\"|")duration_ms(?:\\"|")\s*:\s*(?P<value>-?\d+(?:\.\d+)?)')
     _LIGHTWEIGHT_SUBMISSION_KEYS = {
         "id",
         "attempt_no",
@@ -211,6 +215,9 @@ class RuntimeResultsService:
                 "clarification_required": 0,
                 "unsupported_query_shape": 0,
                 "pending": 0,
+                "cga_duration_total_ms": 0.0,
+                "cga_duration_count": 0,
+                "avg_cga_duration_ms": None,
             }
             for difficulty in self._DIFFICULTY_ORDER
         }
@@ -223,6 +230,14 @@ class RuntimeResultsService:
                 status = "pending"
             buckets[difficulty]["total"] += 1
             buckets[difficulty][status] += 1
+            duration_ms = self._coerce_positive_number(task.get("cga_duration_ms"))
+            if duration_ms is not None:
+                buckets[difficulty]["cga_duration_total_ms"] += duration_ms
+                buckets[difficulty]["cga_duration_count"] += 1
+        for bucket in buckets.values():
+            count = bucket["cga_duration_count"]
+            bucket["avg_cga_duration_ms"] = round(bucket["cga_duration_total_ms"] / count) if count else None
+            bucket.pop("cga_duration_total_ms", None)
         return {
             "title_zh": "难度结论概览",
             "title_en": "Final Verdict Summary by Difficulty",
@@ -370,6 +385,7 @@ class RuntimeResultsService:
         verdict = evaluation.get("verdict")
         final_verdict = self._final_verdict_from_state(state=state, verdict=verdict, generation_failure=generation_failure)
         clarification = self._clarification_from(record, generation_failure)
+        cga_duration_ms = self._cga_duration_ms_from_record(record)
         return {
             "id": id,
             "source": "testing_agent",
@@ -386,6 +402,7 @@ class RuntimeResultsService:
             if question_receipt is not None and submission is None and generation_failure is None
             else self._current_stage_from_state(state=state, generation_failure=generation_failure),
             "final_verdict": final_verdict,
+            "cga_duration_ms": cga_duration_ms,
         }
 
     def _recent_task_ids(self) -> list[str]:
@@ -628,6 +645,7 @@ class RuntimeResultsService:
         record = submission or generation_failure or question_receipt or {}
         clarification = self._clarification_from(record, generation_failure)
         snapshot = self._decode_generation_snapshot(record.get("input_prompt_snapshot") or "")
+        cga_duration_ms = self._cga_duration_ms_from_record(record)
         if self._is_cga_graph_trace(snapshot):
             clarification = self._graph_clarification_from_flow(self._graph_generation_flow(snapshot), clarification)
         return {
@@ -640,6 +658,7 @@ class RuntimeResultsService:
             "clarification_summary": self._clarification_summary(clarification),
             "current_stage": self._current_stage(stages),
             "final_verdict": self._final_verdict(stages),
+            "cga_duration_ms": cga_duration_ms,
             "received_at": record.get("received_at"),
             "updated_at": self._latest_timestamp(golden, submission, generation_failure, question_receipt, ticket),
         }
@@ -735,6 +754,7 @@ class RuntimeResultsService:
         )
         prompt_snapshot = source.get("input_prompt_snapshot") or ""
         snapshot = self._decode_generation_snapshot(prompt_snapshot)
+        cga_duration_ms = self._cga_duration_ms_from_record(source)
         clarification = self._clarification_from(source, generation_failure)
         trace_schema_version = self._generation_trace_schema_version(snapshot)
         failure_reason = source.get("failure_reason") or (generation_failure or {}).get("failure_reason")
@@ -757,6 +777,7 @@ class RuntimeResultsService:
                 "generation_status": generation_status or snapshot.get("final_status"),
                 "trace_profile": "graph",
                 "trace_schema_version": trace_schema_version,
+                "cga_duration_ms": cga_duration_ms,
                 "cga_flow": cga_flow,
                 "trace_layers": [],
                 "llm_prompts": self._graph_generation_llm_prompts(cga_flow.get("llm_calls") or []),
@@ -775,6 +796,7 @@ class RuntimeResultsService:
             "generation_status": generation_status,
             "trace_profile": self._record_trace_profile(source),
             "trace_schema_version": trace_schema_version,
+            "cga_duration_ms": cga_duration_ms,
             "trace_layers": self._generation_trace_layers(
                 snapshot=snapshot,
                 source=source,
@@ -820,6 +842,7 @@ class RuntimeResultsService:
         final_outputs = self._trace_object(snapshot.get("final_outputs"))
         semantic_model = self._trace_object(snapshot.get("semantic_model"))
         current_stage = self._graph_current_stage(stages, str(snapshot.get("final_status") or ""))
+        cga_duration_ms = self._cga_duration_ms_from_snapshot(snapshot)
         return {
             "schema_version": "cga_graph_trace_v1",
             "trace_id": snapshot.get("trace_id"),
@@ -836,6 +859,7 @@ class RuntimeResultsService:
                 "current_stage": current_stage.get("key"),
                 "current_stage_title_zh": current_stage.get("title_zh"),
                 "llm_call_count": len(llm_calls),
+                "duration_ms": round(cga_duration_ms) if cga_duration_ms is not None else None,
                 "semantic_model": semantic_model.get("name") or "未记录",
                 "model_checksum": semantic_model.get("checksum"),
             },
@@ -1212,6 +1236,77 @@ class RuntimeResultsService:
         ):
             return "ontology"
         return "legacy"
+
+    def _cga_duration_ms_from_record(self, record: dict[str, Any] | None) -> int | None:
+        if not isinstance(record, dict):
+            return None
+        hint = self._coerce_positive_number(record.get("_cga_duration_ms_hint"))
+        if hint is not None:
+            return round(hint)
+        snapshot = self._decode_generation_snapshot(record.get("input_prompt_snapshot") or "")
+        duration_ms = self._cga_duration_ms_from_snapshot(snapshot)
+        return round(duration_ms) if duration_ms is not None else None
+
+    def _cga_duration_ms_from_snapshot(self, snapshot: dict[str, Any]) -> float | None:
+        if not isinstance(snapshot, dict) or not self._is_cga_graph_trace(snapshot):
+            return None
+        started_at = self._parse_iso_datetime(snapshot.get("started_at"))
+        finished_at = self._parse_iso_datetime(snapshot.get("finished_at"))
+        if started_at is not None and finished_at is not None:
+            try:
+                duration_ms = (finished_at - started_at).total_seconds() * 1000
+            except TypeError:
+                duration_ms = -1
+            if duration_ms >= 0:
+                return duration_ms
+        total_duration_ms = 0.0
+        has_stage_duration = False
+        for stage in self._trace_dicts(snapshot.get("stages")):
+            duration_ms = self._coerce_positive_number(stage.get("duration_ms"))
+            if duration_ms is None:
+                continue
+            total_duration_ms += duration_ms
+            has_stage_duration = True
+        return total_duration_ms if has_stage_duration else None
+
+    def _cga_duration_ms_from_snapshot_line(self, raw_value: str) -> int | None:
+        if "cga_graph_trace_v1" not in raw_value:
+            return None
+        started_match = self._CGA_SNAPSHOT_STARTED_AT_RE.search(raw_value)
+        finished_match = self._CGA_SNAPSHOT_FINISHED_AT_RE.search(raw_value)
+        if started_match is not None and finished_match is not None:
+            started_at = self._parse_iso_datetime(started_match.group("value"))
+            finished_at = self._parse_iso_datetime(finished_match.group("value"))
+            if started_at is not None and finished_at is not None:
+                try:
+                    duration_ms = (finished_at - started_at).total_seconds() * 1000
+                except TypeError:
+                    duration_ms = -1
+                if duration_ms >= 0:
+                    return round(duration_ms)
+        durations = [
+            self._coerce_positive_number(match.group("value"))
+            for match in self._CGA_SNAPSHOT_STAGE_DURATION_RE.finditer(raw_value)
+        ]
+        durations = [duration for duration in durations if duration is not None]
+        return round(sum(durations)) if durations else None
+
+    def _parse_iso_datetime(self, value: Any) -> datetime | None:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        try:
+            return datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    def _coerce_positive_number(self, value: Any) -> float | None:
+        if isinstance(value, bool) or value is None:
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return number if number >= 0 else None
 
     def _trace_object(self, value: Any) -> dict[str, Any]:
         return value if isinstance(value, dict) else {}
@@ -2844,6 +2939,7 @@ class RuntimeResultsService:
             "_source_path": str(path),
         }
         remaining = set(keys)
+        saw_snapshot_line = False
         try:
             with path.open("r", encoding="utf-8") as file:
                 line_iter = iter(file)
@@ -2853,16 +2949,23 @@ class RuntimeResultsService:
                         continue
                     key = match.group("key")
                     raw_value = match.group("value")
-                    if key == "input_prompt_snapshot" and "_trace_profile_hint" not in result:
-                        result["_trace_profile_hint"] = self._trace_profile_hint_from_snapshot_line(raw_value)
+                    if key == "input_prompt_snapshot":
+                        saw_snapshot_line = True
+                        if "_trace_profile_hint" not in result:
+                            result["_trace_profile_hint"] = self._trace_profile_hint_from_snapshot_line(raw_value)
+                        duration_ms = self._cga_duration_ms_from_snapshot_line(raw_value)
+                        if duration_ms is not None:
+                            result["_cga_duration_ms_hint"] = duration_ms
                     if key not in remaining:
+                        if not remaining and saw_snapshot_line:
+                            break
                         continue
                     parsed = self._parse_top_level_json_value(raw_value, line_iter)
                     if parsed is _UNPARSED_JSON_VALUE:
                         continue
                     result[key] = parsed
                     remaining.remove(key)
-                    if not remaining:
+                    if not remaining and saw_snapshot_line:
                         break
         except OSError:
             return None

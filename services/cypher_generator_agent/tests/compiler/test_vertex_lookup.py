@@ -75,6 +75,27 @@ def test_vertex_lookup_compiles_limit_tail(
     assert result.validation_result.valid is True
 
 
+def test_projection_alias_with_chinese_surface_text_uses_legal_canonical_alias(
+    registry: GraphSemanticRegistry,
+) -> None:
+    dsl = _vertex_lookup_dsl()
+    dsl["projection"]["items"][0] = {
+        "alias": "网元位置",
+        "target": "target",
+        "property": {"owner": "NetworkElement", "name": "location"},
+    }
+    ast = parse_dsl(dsl, registry)
+
+    result = compile_restricted_query_ast(ast, registry)
+
+    assert result.cypher == (
+        "MATCH (ne:NetworkElement)\n"
+        "WHERE ne.id = 'ne-0001'\n"
+        "RETURN ne.location AS location"
+    )
+    assert result.validation_result.valid is True
+
+
 def test_vertex_lookup_rejects_unresolved_filter_literal(
     registry: GraphSemanticRegistry,
 ) -> None:

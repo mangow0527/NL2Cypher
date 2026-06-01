@@ -568,7 +568,11 @@ def _compile_filters(
 
 
 def _compile_return(projection: Projection, role_variables: Mapping[str, str]) -> str:
-    items = [_compile_projection_item(item, role_variables) for item in projection.items]
+    aliases = projection_aliases(projection)
+    items = [
+        _compile_projection_item(item, role_variables, alias=alias)
+        for item, alias in zip(projection.items, aliases, strict=True)
+    ]
     return f"RETURN {', '.join(items)}"
 
 
@@ -576,20 +580,26 @@ def _compile_source_return(
     projection: Projection,
     source_expressions: Mapping[tuple[str, str], str],
 ) -> str:
-    items = [_compile_source_projection_item(item, source_expressions) for item in projection.items]
+    aliases = projection_aliases(projection)
+    items = [
+        _compile_source_projection_item(item, source_expressions, alias=alias)
+        for item, alias in zip(projection.items, aliases, strict=True)
+    ]
     return f"RETURN {', '.join(items)}"
 
 
 def _compile_source_projection_item(
     item: ProjectionItem,
     source_expressions: Mapping[tuple[str, str], str],
+    *,
+    alias: str | None = None,
 ) -> str:
     if item.source is None:
         raise CypherCompilerError("source projection is required for aggregate compiler MVP")
     expression = source_expressions.get((item.source.namespace, item.source.name))
     if expression is None:
         raise CypherCompilerError(f"unknown aggregate projection source: {item.source.raw}")
-    alias = projection_item_alias(item)
+    alias = alias or projection_item_alias(item)
     if not is_cypher_identifier(alias):
         raise CypherCompilerError(f"invalid projection alias: {alias}")
     return f"{expression} AS {alias}"
@@ -600,11 +610,12 @@ def _compile_mixed_return(
     role_variables: Mapping[str, str],
     source_expressions: Mapping[tuple[str, str], str],
 ) -> str:
+    aliases = projection_aliases(projection)
     items = [
-        _compile_source_projection_item(item, source_expressions)
+        _compile_source_projection_item(item, source_expressions, alias=alias)
         if item.source is not None
-        else _compile_projection_item(item, role_variables)
-        for item in projection.items
+        else _compile_projection_item(item, role_variables, alias=alias)
+        for item, alias in zip(projection.items, aliases, strict=True)
     ]
     return f"RETURN {', '.join(items)}"
 
@@ -630,29 +641,34 @@ def _append_order_limit(
 
 def _projection_source_aliases(projection: Projection) -> dict[tuple[str, str], str]:
     aliases: dict[tuple[str, str], str] = {}
-    for item in projection.items:
+    projection_alias_plan = projection_aliases(projection)
+    for item, alias in zip(projection.items, projection_alias_plan, strict=True):
         if item.source is None:
             continue
-        alias = projection_item_alias(item)
         if not is_cypher_identifier(alias):
             raise CypherCompilerError(f"invalid projection alias: {alias}")
         aliases[(item.source.namespace, item.source.name)] = alias
     return aliases
 
 
-def _compile_projection_item(item: ProjectionItem, role_variables: Mapping[str, str]) -> str:
+def _compile_projection_item(
+    item: ProjectionItem,
+    role_variables: Mapping[str, str],
+    *,
+    alias: str | None = None,
+) -> str:
     if item.vertex_full:
         if item.target is None:
             raise CypherCompilerError("vertex_full projection requires target")
         variable = role_variables[item.target.alias]
-        alias = projection_item_alias(item)
+        alias = alias or projection_item_alias(item)
         if not is_cypher_identifier(alias):
             raise CypherCompilerError(f"invalid projection alias: {alias}")
         return f"{variable} AS {alias}"
     if item.target is None or item.property is None:
         raise CypherCompilerError("target/property projection is required for generated query compiler MVP")
     variable = role_variables[item.target.alias]
-    alias = projection_item_alias(item)
+    alias = alias or projection_item_alias(item)
     if not is_cypher_identifier(alias):
         raise CypherCompilerError(f"invalid projection alias: {alias}")
     return f"{variable}.{item.property.name} AS {alias}"

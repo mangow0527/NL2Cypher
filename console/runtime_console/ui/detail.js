@@ -193,6 +193,21 @@ function inlineValue(value) {
   return String(value);
 }
 
+function formatDurationMs(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return '未记录';
+  }
+  if (value >= 60000) {
+    const minutes = Math.round((value / 60000) * 10) / 10;
+    return `${minutes} min`;
+  }
+  if (value >= 1000) {
+    const seconds = Math.round((value / 1000) * 10) / 10;
+    return `${seconds} s`;
+  }
+  return `${Math.round(value)} ms`;
+}
+
 const stageMetricLabels = {
   llm_call_count: ['LLM 调用', '次'],
   candidate_count: ['候选召回', '个'],
@@ -899,6 +914,7 @@ function renderOverview(detail) {
     metricCard('难度', summary.difficulty || '未标注'),
     metricCard('当前尝试次数', summary.attempt_no || 0),
     metricCard('生成状态', summary.generation_status || '未提供', summary.generation_status),
+    metricCard('CGA 耗时', formatDurationMs(summary.cga_duration_ms ?? generator.cga_duration_ms)),
     metricCard('最终结论', summary.final_verdict || detail.final_verdict, summary.final_verdict || detail.final_verdict),
     metricCard('当前阶段', summary.current_stage || 'pending'),
     metricCard('澄清反问', summary.clarification_summary || '未触发澄清'),

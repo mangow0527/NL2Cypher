@@ -186,6 +186,17 @@ function renderDifficultyCounts(bucket, statuses) {
     .join('');
 }
 
+function renderDifficultyDuration(bucket) {
+  const count = bucket.cga_duration_count || 0;
+  return `
+    <div class="difficulty-duration-card">
+      <span>平均 CGA 耗时</span>
+      <strong>${escapeHtml(formatDurationMs(bucket.avg_cga_duration_ms))}</strong>
+      <small>${count ? `${escapeHtml(count)} 条已记录` : '暂无已记录样本'}</small>
+    </div>
+  `;
+}
+
 function renderDifficultySummary(summary) {
   const buckets = summary.buckets || [];
   const statuses = summary.statuses || Object.keys(verdictLabels).map((key) => ({key, label_zh: verdictLabels[key]}));
@@ -202,6 +213,7 @@ function renderDifficultySummary(summary) {
             <span>${escapeHtml(bucket.total)} 个样本</span>
           </div>
           <div class="pie" style="${pieStyle(bucket)}" aria-label="${escapeHtml(bucket.difficulty)} 最终结论分布"></div>
+          ${renderDifficultyDuration(bucket)}
           <div class="difficulty-counts">
             ${renderDifficultyCounts(bucket, statuses)}
           </div>

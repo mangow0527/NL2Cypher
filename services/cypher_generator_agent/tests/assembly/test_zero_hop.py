@@ -10,9 +10,12 @@ from services.cypher_generator_agent.app.binding.models import CandidateBinding
 from services.cypher_generator_agent.app.core.pipeline import (
     _projection_items_from_substantive_terms,
     _with_literal_requests_from_candidates,
+    _zero_hop_assembler_requirements,
     _zero_hop_candidates_for_assembler,
 )
 from services.cypher_generator_agent.app.dsl.parser import parse_restricted_query_dsl
+from services.cypher_generator_agent.app.assembly.taxonomy import QueryShape
+from services.cypher_generator_agent.app.literals.models import LiteralResolverResult
 from services.cypher_generator_agent.app.retrieval.models import CandidateRetrievalResult, SemanticCandidate
 from services.cypher_generator_agent.app.semantic_model import GraphSemanticRegistry, load_graph_semantic_model
 from services.cypher_generator_agent.app.validation.structural_requirements import StructuralRequirements
@@ -136,6 +139,121 @@ def test_f2_unique_filter_property_and_literal_builds_parseable_filter(
     assert ast.filters[0].property.name == "quality_of_service"
     assert ast.filters[0].value.normalized == "GOLD"
     assert ast.projection.items[0].property.name == "id"
+
+
+def test_f2_comparison_operator_from_closed_mapping_reaches_dsl(
+    registry: GraphSemanticRegistry,
+) -> None:
+    retrieval = CandidateRetrievalResult(
+        candidates=[
+            _semantic_candidate("vertex", "Tunnel"),
+            _semantic_candidate("property", "Tunnel.bandwidth", owner="Tunnel", semantic_name="bandwidth"),
+            _semantic_candidate("property", "Tunnel.id", owner="Tunnel", semantic_name="id"),
+        ],
+    )
+    literal = LiteralResolverResult(
+        raw_literal="100",
+        resolved=True,
+        resolved_value=100.0,
+        normalized_value=100.0,
+        match_type="literal_passthrough",
+        confidence=1.0,
+        expected_vertex="Tunnel",
+        expected_property="bandwidth",
+    )
+
+    requirements = _zero_hop_assembler_requirements(
+        shape=QueryShape.F2_VERTEX_FILTER_0HOP,
+        decomposition={
+            "original_question": "查询带宽大于100的隧道ID。",
+            "substantive_terms": [
+                {"text": "带宽", "slot": "filter", "attached_to": "隧道"},
+                {"text": "大于", "slot": "filter", "attached_to": "带宽"},
+                {"text": "100", "slot": "filter", "attached_to": "带宽"},
+                {"text": "ID", "slot": "projection", "attached_to": "隧道"},
+            ],
+        },
+        retrieval_result=retrieval,
+        literal_results=[literal],
+        registry=registry,
+    )
+
+    result = ZeroHopAssembler(registry).assemble(
+        "F2",
+        candidates=_zero_hop_candidates_for_assembler(retrieval.candidates),
+        structural_requirements=requirements,
+        literals=[
+            {
+                "property": "bandwidth",
+                "owner": "Tunnel",
+                "raw": "100",
+                "normalized": 100.0,
+                "resolver_match_type": "literal_passthrough",
+            }
+        ],
+    )
+
+    assert result.success is True
+    assert result.dsl is not None
+    assert result.dsl["filters"][0]["operator"] == "gt"
+
+
+def test_zero_hop_requirements_report_uncovered_projection_slot_before_assembly(
+    registry: GraphSemanticRegistry,
+) -> None:
+    retrieval = CandidateRetrievalResult(
+        candidates=[
+            _semantic_candidate("vertex", "Service"),
+            _semantic_candidate("property", "Service.id", owner="Service", semantic_name="id"),
+        ],
+    )
+
+    requirements = _zero_hop_assembler_requirements(
+        shape=QueryShape.F1_VERTEX_PROJECTION_0HOP,
+        decomposition={
+            "original_question": "查询服务的ID和厂商。",
+            "substantive_terms": [
+                {"text": "服务", "slot": "path"},
+                {"text": "ID", "slot": "projection", "attached_to": "服务"},
+                {"text": "厂商", "slot": "projection", "attached_to": "服务"},
+            ],
+        },
+        retrieval_result=retrieval,
+        literal_results=[],
+        registry=registry,
+    )
+
+    assert requirements["projection_uncovered_terms"] == ["服务.厂商"]
+
+
+def test_f2_unknown_filter_operator_falls_back_before_dsl_boundary(
+    registry: GraphSemanticRegistry,
+) -> None:
+    result = ZeroHopAssembler(registry).assemble(
+        "F2",
+        candidates=[
+            _candidate("vertex", "Service"),
+            _candidate("property", "Service.quality_of_service", owner="Service", semantic_name="quality_of_service"),
+            _candidate("property", "Service.id", owner="Service", semantic_name="id"),
+        ],
+        structural_requirements={
+            "filters": [{"property": "quality_of_service", "operator": "__unsupported__"}],
+            "projection": [{"property": "id", "alias": "service_id"}],
+        },
+        literals=[
+            {
+                "property": "quality_of_service",
+                "owner": "Service",
+                "raw": "100",
+                "normalized": 100.0,
+                "resolver_match_type": "literal_passthrough",
+            }
+        ],
+    )
+
+    assert result.success is False
+    assert result.dsl is None
+    assert result.fallback_reason == "unsupported_filter_operator"
 
 
 def test_f2_covers_service_quality_projection_when_filter_uses_same_property(

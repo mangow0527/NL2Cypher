@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
 
 import pytest
 from pydantic import ValidationError
 
+import services.cypher_generator_agent.app.api.main as main_module
 import services.cypher_generator_agent.app.api.service as service_module
 from services.cypher_generator_agent.app.api.main import parse_semantics
 from services.cypher_generator_agent.app.api.models import (
@@ -300,6 +302,32 @@ async def test_generation_pipeline_is_offloaded_from_event_loop(monkeypatch) -> 
     assert not task.done()
     await task
     assert client.generated is not None
+
+
+@pytest.mark.asyncio
+async def test_semantic_parse_offloads_concurrent_pipeline_requests(monkeypatch) -> None:
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+
+    def slow_run_pipeline(**_: object) -> GenerationOutput:
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.05)
+        with lock:
+            active -= 1
+        return _generated_output()
+
+    monkeypatch.setattr(main_module, "run_pipeline", slow_run_pipeline)
+
+    await asyncio.gather(
+        parse_semantics(SemanticParseRequest(id="qa-a", question="query a", generation_run_id="run-a")),
+        parse_semantics(SemanticParseRequest(id="qa-b", question="query b", generation_run_id="run-b")),
+    )
+
+    assert max_active == 2
 
 
 @pytest.mark.asyncio

@@ -1,3 +1,4 @@
+import asyncio
 from typing import Dict
 
 from fastapi import BackgroundTasks, FastAPI
@@ -47,7 +48,8 @@ async def recognize_intent(request: IntentRecognitionRequest) -> Dict[str, objec
 
 @app.post("/api/v1/semantic/parse")
 async def parse_semantics(request: SemanticParseRequest) -> Dict[str, object]:
-    output = run_pipeline(
+    output = await asyncio.to_thread(
+        run_pipeline,
         qa_id=request.id,
         question=request.question,
         generation_run_id=request.generation_run_id or request.id or "api",

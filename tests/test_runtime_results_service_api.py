@@ -795,6 +795,17 @@ def test_runtime_results_generated_cypher_overview_card_has_no_status_pill():
     assert "cypherOverviewCard('生成 Cypher', generationCypherText({ ...generator, generated_cypher: generatedCypher }), summary.generation_status)" not in script
 
 
+def test_runtime_results_ui_renders_cga_duration_cards():
+    root = Path(__file__).resolve().parents[1]
+    app_script = (root / "console" / "runtime_console" / "ui" / "app.js").read_text(encoding="utf-8")
+    detail_script = (root / "console" / "runtime_console" / "ui" / "detail.js").read_text(encoding="utf-8")
+
+    assert "平均 CGA 耗时" in app_script
+    assert "avg_cga_duration_ms" in app_script
+    assert "CGA 耗时" in detail_script
+    assert "cga_duration_ms" in detail_script
+
+
 def test_runtime_results_detail_ui_omits_retired_repair_and_knowledge_sections():
     root = Path(__file__).resolve().parents[1]
     html = (root / "console" / "runtime_console" / "ui" / "detail.html").read_text(encoding="utf-8")
@@ -1296,6 +1307,8 @@ def test_runtime_results_task_summary_groups_final_verdict_by_difficulty(monkeyp
         "clarification_required": 0,
         "unsupported_query_shape": 0,
         "pending": 0,
+        "cga_duration_count": 0,
+        "avg_cga_duration_ms": None,
     }
     assert buckets["L2"]["total"] == 2
     assert buckets["L2"]["clarification_required"] == 1
@@ -2260,6 +2273,104 @@ def _graph_stage(
         "errors": errors or [],
         "warnings": warnings or [],
     }
+
+
+def _graph_trace_snapshot(
+    *,
+    trace_id: str,
+    question_id: str,
+    started_at: str,
+    finished_at: str,
+    stage_duration_ms: int = 0,
+) -> dict:
+    return {
+        "trace_schema_version": "cga_graph_trace_v1",
+        "trace_id": trace_id,
+        "question_id": question_id,
+        "generation_run_id": trace_id,
+        "source_question": "查询服务名称。",
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "final_status": "generated",
+        "semantic_model": {"name": "network_schema_v10", "checksum": "sha256:test"},
+        "stages": [
+            _graph_stage("graph_model_loader", output={"model_name": "network_schema_v10"}, duration_ms=stage_duration_ms),
+        ],
+        "final_outputs": {
+            "dsl": {"schema_version": "restricted_query_dsl_v1", "operations": []},
+            "cypher": "MATCH (s:Service) RETURN s.name AS service_name",
+            "clarification": None,
+            "failure": None,
+        },
+    }
+
+
+def test_runtime_results_summary_includes_average_cga_duration(monkeypatch, tmp_path: Path):
+    testing_dir = tmp_path / "testing"
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_TESTING_DATA_DIR", str(testing_dir))
+    monkeypatch.setenv("RUNTIME_RESULTS_SERVICE_REPAIR_DATA_DIR", str(tmp_path / "repair"))
+    cases = [
+        (
+            "qa_duration_one",
+            "L1",
+            _graph_trace_snapshot(
+                trace_id="run-duration-one",
+                question_id="qa_duration_one",
+                started_at="2026-05-28T00:00:00+00:00",
+                finished_at="2026-05-28T00:00:01+00:00",
+            ),
+        ),
+        (
+            "qa_duration_two",
+            "L1",
+            _graph_trace_snapshot(
+                trace_id="run-duration-two",
+                question_id="qa_duration_two",
+                started_at="2026-05-28T00:00:00+00:00",
+                finished_at="2026-05-28T00:00:03+00:00",
+            ),
+        ),
+        (
+            "qa_duration_other",
+            "L2",
+            _graph_trace_snapshot(
+                trace_id="run-duration-other",
+                question_id="qa_duration_other",
+                started_at="",
+                finished_at="",
+                stage_duration_ms=2500,
+            ),
+        ),
+    ]
+    for task_id, difficulty, snapshot in cases:
+        _write_json(testing_dir / "goldens" / f"{task_id}.json", {"id": task_id, "difficulty": difficulty})
+        _write_json(
+            testing_dir / "submissions" / f"{task_id}.json",
+            {
+                "id": task_id,
+                "attempt_no": 1,
+                "question": "查询服务名称。",
+                "generation_run_id": snapshot["generation_run_id"],
+                "generated_cypher": snapshot["final_outputs"]["cypher"],
+                "input_prompt_snapshot": json.dumps(snapshot, ensure_ascii=False),
+                "generation_status": "generated",
+                "state": "passed",
+                "received_at": "2026-05-28T00:00:01+00:00",
+                "updated_at": "2026-05-28T00:00:01+00:00",
+            },
+        )
+
+    from console.runtime_console.app.main import create_app
+
+    client = TestClient(create_app())
+    response = client.get("/api/v1/tasks/summary")
+
+    assert response.status_code == 200
+    buckets = {bucket["difficulty"]: bucket for bucket in response.json()["buckets"]}
+    assert buckets["L1"]["avg_cga_duration_ms"] == 2000
+    assert buckets["L1"]["cga_duration_count"] == 2
+    assert buckets["L2"]["avg_cga_duration_ms"] == 2500
+    assert buckets["L2"]["cga_duration_count"] == 1
 
 
 def test_runtime_results_generator_section_parses_cga_graph_trace_v1(monkeypatch, tmp_path: Path):

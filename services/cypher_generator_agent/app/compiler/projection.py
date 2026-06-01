@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 import re
 
 from services.cypher_generator_agent.app.dsl.ast import Projection, ProjectionItem
@@ -16,21 +17,31 @@ PARAMETER_RE = re.compile(r"(?<![A-Za-z0-9_])\$(?P<name>[A-Za-z_][A-Za-z0-9_]*)"
 
 
 def projection_aliases(projection: Projection) -> list[str]:
+    base_aliases = [projection_item_alias(item) for item in projection.items]
+    base_counts = Counter(base_aliases)
     aliases: list[str] = []
-    for item in projection.items:
-        aliases.append(projection_item_alias(item))
+    used: set[str] = set()
+    for item, base_alias in zip(projection.items, base_aliases, strict=True):
+        alias = base_alias
+        if base_counts[base_alias] > 1:
+            owner_prefix = _owner_prefix(item)
+            if owner_prefix:
+                alias = f"{owner_prefix}_{base_alias}"
+        alias = _dedupe_alias(alias, used)
+        used.add(alias)
+        aliases.append(alias)
     return aliases
 
 
 def projection_item_alias(item: ProjectionItem) -> str:
-    if item.alias:
+    if item.alias and is_cypher_identifier(item.alias):
         return item.alias
     if item.property is not None:
-        return item.property.name
+        return _sanitize_identifier(item.property.name)
     if item.source is not None:
-        return item.source.name
+        return _sanitize_identifier(item.source.name)
     if item.vertex_full and item.target is not None:
-        return item.target.alias
+        return _sanitize_identifier(item.target.alias)
     raise ValueError("projection item must include alias, property, or source")
 
 
@@ -63,3 +74,38 @@ def extract_parameter_names(cypher: str) -> set[str]:
 
 def is_cypher_identifier(value: str) -> bool:
     return IDENTIFIER_RE.fullmatch(value) is not None
+
+
+def _owner_prefix(item: ProjectionItem) -> str | None:
+    if item.property is not None:
+        return _snake_case_identifier(item.property.owner)
+    if item.vertex_full and item.target is not None:
+        return _snake_case_identifier(item.target.vertex_name)
+    if item.source is not None and item.source.namespace:
+        return _snake_case_identifier(item.source.namespace)
+    return None
+
+
+def _dedupe_alias(alias: str, used: set[str]) -> str:
+    if alias not in used:
+        return alias
+    index = 2
+    while f"{alias}_{index}" in used:
+        index += 1
+    return f"{alias}_{index}"
+
+
+def _sanitize_identifier(value: str) -> str:
+    if is_cypher_identifier(value):
+        return value
+    sanitized = re.sub(r"[^A-Za-z0-9_]+", "_", value).strip("_")
+    if not sanitized:
+        return "field"
+    if sanitized[0].isdigit():
+        sanitized = f"field_{sanitized}"
+    return sanitized
+
+
+def _snake_case_identifier(value: str) -> str:
+    pieces = re.sub(r"(?<!^)(?=[A-Z])", "_", value).split("_")
+    return _sanitize_identifier("_".join(piece.lower() for piece in pieces if piece))

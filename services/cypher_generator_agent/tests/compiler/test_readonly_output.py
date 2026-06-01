@@ -35,15 +35,17 @@ def test_compiler_blocks_mutating_template_output(
         compiler.compile(ast)
 
 
-def test_compiler_rejects_invalid_projection_alias(
+def test_compiler_canonicalizes_invalid_projection_alias(
     registry: GraphSemanticRegistry,
 ) -> None:
     dsl = single_hop_dsl()
     dsl["projection"]["items"][0]["alias"] = "bad alias"
     ast = parse_dsl(dsl, registry)
 
-    with pytest.raises(CypherCompilerError, match="invalid projection alias"):
-        CypherCompiler(registry).compile(ast)
+    result = CypherCompiler(registry).compile(ast)
+
+    assert result.cypher.endswith("RETURN tun.id AS id")
+    assert result.validation_result.valid is True
 
 
 def test_named_path_pattern_template_parameters_must_match_dsl_parameters(

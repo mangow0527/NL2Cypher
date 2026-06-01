@@ -537,7 +537,7 @@ def _deterministic_grounding_from_slots(
     vertex_ids = _candidate_ids(candidates, "vertex")
     edge_candidates = [candidate for candidate in candidates if candidate.semantic_type == "edge"]
     literal_payloads = [result.model_dump(mode="json") for result in literal_results]
-    filters = _filters_from_literal_results(literal_results)
+    filters = _filters_from_literal_results(literal_results, decomposition=decomposition)
     selected_properties = _property_refs_from_filters(filters)
     coverage = decomposition.get("coverage") or _coverage(covered=_substantive_term_texts(decomposition))
 
@@ -627,7 +627,11 @@ def _candidate_ids(candidates: list[SemanticCandidate], semantic_type: str) -> l
     return ids
 
 
-def _filters_from_literal_results(results: list[LiteralResolverResult]) -> list[dict[str, Any]]:
+def _filters_from_literal_results(
+    results: list[LiteralResolverResult],
+    *,
+    decomposition: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     filters: list[dict[str, Any]] = []
     for result in results:
         if not result.resolved or result.expected_property is None:
@@ -639,7 +643,7 @@ def _filters_from_literal_results(results: list[LiteralResolverResult]) -> list[
             {
                 "owner": owner,
                 "property": result.expected_property,
-                "operator": "=",
+                "operator": _filter_operator_for_literal(decomposition or {}, result),
                 "raw_literal": result.raw_literal,
             }
         )
@@ -735,25 +739,38 @@ def _projection_items_from_substantive_terms(
     registry: Any,
     selected_vertices: list[str],
 ) -> list[dict[str, Any]]:
+    attachment_anchors = _projection_attachment_anchor_terms(decomposition)
     projection_terms = [
         item
         for item in _substantive_terms_with_slot(decomposition, slot="projection")
+        if _norm(str(item.get("text") or "")) not in attachment_anchors
         if not _resolve_projection_vertex_full(
             item,
             candidates=candidates,
             registry=registry,
             selected_vertices=selected_vertices,
         )
-        and _projection_slot_term_requires_property(
-            item,
-            candidates=candidates,
-            registry=registry,
-            selected_vertices=selected_vertices,
+        and (
+            _resolve_projection_object_owner(
+                item,
+                candidates=candidates,
+                registry=registry,
+                selected_vertices=selected_vertices,
+            )
+            is not None
+            or _projection_slot_term_requires_property(
+                item,
+                candidates=candidates,
+                registry=registry,
+                selected_vertices=selected_vertices,
+            )
         )
     ]
 
     items: list[dict[str, Any]] = []
     for slot_term in _substantive_terms_with_slot(decomposition, slot="projection"):
+        if _norm(str(slot_term.get("text") or "")) in attachment_anchors:
+            continue
         vertex_name = _resolve_projection_vertex_full(
             slot_term,
             candidates=candidates,
@@ -785,36 +802,131 @@ def _projection_items_from_substantive_terms(
                 existing_terms.append(term)
 
     for slot_term in projection_terms:
-        property_ref = _resolve_projection_property(
+        object_owner = _resolve_projection_object_owner(
             slot_term,
             candidates=candidates,
             registry=registry,
             selected_vertices=selected_vertices,
         )
-        if property_ref is None:
+        if object_owner is not None:
+            item = _id_projection_item(object_owner, registry)
+            item["projection_terms"] = [str(slot_term["text"])]
+            if not any(
+                existing.get("owner") == item["owner"] and existing.get("name") == item["name"]
+                for existing in items
+            ):
+                items.append(item)
+                continue
+            for existing in items:
+                if existing.get("owner") == item["owner"] and existing.get("name") == item["name"]:
+                    existing_terms = existing.setdefault("projection_terms", [])
+                    term = str(slot_term["text"])
+                    if term not in existing_terms:
+                        existing_terms.append(term)
+                    break
             continue
-        owner, property_name = property_ref
-        item = {
-            "semantic_type": "property",
-            "owner": owner,
-            "name": property_name,
-            "alias": f"{_snake_case(owner)}_{property_name}",
-            "projection_terms": [str(slot_term["text"])],
-        }
-        if not any(
-            existing.get("owner") == owner and existing.get("name") == property_name
-            for existing in items
-        ):
-            items.append(item)
+
+        property_refs = _resolve_projection_property_refs(
+            slot_term,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+        if property_refs is None:
             continue
-        for existing in items:
-            if existing.get("owner") == owner and existing.get("name") == property_name:
-                existing_terms = existing.setdefault("projection_terms", [])
-                term = str(slot_term["text"])
-                if term not in existing_terms:
-                    existing_terms.append(term)
-                break
+        for owner, property_name in property_refs:
+            item = {
+                "semantic_type": "property",
+                "owner": owner,
+                "name": property_name,
+                "alias": f"{_snake_case(owner)}_{property_name}",
+                "projection_terms": [str(slot_term["text"])],
+            }
+            if not any(
+                existing.get("owner") == owner and existing.get("name") == property_name
+                for existing in items
+            ):
+                items.append(item)
+                continue
+            for existing in items:
+                if existing.get("owner") == owner and existing.get("name") == property_name:
+                    existing_terms = existing.setdefault("projection_terms", [])
+                    term = str(slot_term["text"])
+                    if term not in existing_terms:
+                        existing_terms.append(term)
+                    break
     return items
+
+
+def _projection_attachment_anchor_terms(decomposition: Mapping[str, Any]) -> set[str]:
+    projection_terms = list(_substantive_terms_with_slot(decomposition, slot="projection"))
+    term_texts = {
+        _norm(str(item.get("text") or ""))
+        for item in projection_terms
+        if str(item.get("text") or "").strip()
+    }
+    anchors: set[str] = set()
+    for item in projection_terms:
+        attached_to = _norm(str(item.get("attached_to") or ""))
+        if not attached_to:
+            continue
+        anchors.update(
+            term
+            for term in term_texts
+            if len(term) >= 2 and (attached_to == term or term in attached_to)
+        )
+    return anchors
+
+
+def _resolve_projection_object_owner(
+    slot_term: Mapping[str, Any],
+    *,
+    candidates: list[SemanticCandidate],
+    registry: Any,
+    selected_vertices: list[str],
+) -> str | None:
+    text = str(slot_term.get("text") or "").strip()
+    normalized_text = _norm(text)
+    compact_text = _compact_surface(normalized_text)
+    if not normalized_text:
+        return None
+
+    matches: list[str] = []
+    for owner in selected_vertices:
+        try:
+            vertex = registry.get_vertex(owner)
+        except RegistryLookupError:
+            continue
+        surfaces = [
+            owner,
+            vertex.name,
+            *(
+                item
+                for item in vertex.ai_context.get("synonyms", [])
+                if isinstance(item, str)
+            ),
+        ]
+        candidate = next(
+            (
+                candidate
+                for candidate in candidates
+                if candidate.semantic_type == "vertex" and candidate.semantic_id == owner
+            ),
+            None,
+        )
+        if candidate is not None:
+            surfaces.append(candidate.semantic_name)
+            surfaces.extend(evidence.term for evidence in candidate.evidence)
+            surfaces.extend(evidence.matched_text for evidence in candidate.evidence)
+        if any(
+            normalized_text == _norm(surface)
+            or compact_text == _compact_surface(_norm(surface))
+            for surface in surfaces
+            if str(surface).strip()
+        ):
+            matches.append(owner)
+
+    return matches[0] if len(matches) == 1 else None
 
 
 def _resolve_projection_vertex_full(
@@ -829,15 +941,14 @@ def _resolve_projection_vertex_full(
         return None
 
     attached_to = str(slot_term.get("attached_to") or "").strip()
-    attached_owners = _attached_vertex_names(attached_to or text, candidates)
-    if not attached_owners and attached_to:
-        attached_owners = _attached_vertex_names_from_registry(
-            attached_to,
-            registry=registry,
-            selected_vertices=selected_vertices,
-        )
+    attached_owners = _projection_attached_owner_names(
+        attached_to or text,
+        candidates=candidates,
+        registry=registry,
+        selected_vertices=selected_vertices,
+    )
     if not attached_owners and len(selected_vertices) == 1:
-        attached_owners = {selected_vertices[0]}
+        attached_owners = [selected_vertices[0]]
 
     owners = [owner for owner in selected_vertices if owner in attached_owners]
     if len(owners) != 1:
@@ -889,22 +1000,67 @@ def _resolve_projection_property(
     registry: Any,
     selected_vertices: list[str],
 ) -> tuple[str, str] | None:
+    refs = _resolve_projection_property_refs(
+        slot_term,
+        candidates=candidates,
+        registry=registry,
+        selected_vertices=selected_vertices,
+    )
+    if refs is None or len(refs) != 1:
+        return None
+    return refs[0]
+
+
+def _resolve_projection_property_refs(
+    slot_term: Mapping[str, Any],
+    *,
+    candidates: list[SemanticCandidate],
+    registry: Any,
+    selected_vertices: list[str],
+) -> list[tuple[str, str]] | None:
     term = str(slot_term.get("text") or "").strip()
     if not term:
         return None
 
     attached_to = str(slot_term.get("attached_to") or "").strip()
-    attached_owners = _attached_vertex_names(attached_to, candidates)
-    if attached_to and not attached_owners:
-        attached_owners = _attached_vertex_names_from_registry(
-            attached_to,
-            registry=registry,
-            selected_vertices=selected_vertices,
-        )
+    attached_owners = _projection_attached_owner_names(
+        attached_to,
+        candidates=candidates,
+        registry=registry,
+        selected_vertices=selected_vertices,
+    )
+    if len(attached_owners) > 1:
+        refs: list[tuple[str, str]] = []
+        for owner in attached_owners:
+            property_ref = _resolve_projection_property_for_owners(
+                term,
+                owners=[owner],
+                registry=registry,
+            )
+            if property_ref is None:
+                return None
+            refs.append(property_ref)
+        return refs
+
     owners = [owner for owner in selected_vertices if not attached_owners or owner in attached_owners]
     if not owners:
         owners = selected_vertices
+    property_ref = _resolve_projection_property_for_owners(
+        term,
+        owners=owners,
+        registry=registry,
+        require_unique_across_owners=(attached_to == "" and len(selected_vertices) > 1),
+    )
+    return [property_ref] if property_ref is not None else None
 
+
+def _resolve_projection_property_for_owners(
+    term: str,
+    *,
+    owners: list[str],
+    registry: Any,
+    require_unique_across_owners: bool = True,
+) -> tuple[str, str] | None:
     matches: list[tuple[int, int, str, str]] = []
     for owner_index, owner in enumerate(owners):
         try:
@@ -922,13 +1078,92 @@ def _resolve_projection_property(
     matches.sort(reverse=True)
     best_score, _, best_owner, best_name = matches[0]
     same_score = [(owner, name) for score, _, owner, name in matches if score == best_score]
-    if len({(owner, name) for owner, name in same_score}) > 1 and attached_to == "" and len(selected_vertices) > 1:
+    if require_unique_across_owners and len({(owner, name) for owner, name in same_score}) > 1:
+        return None
+    same_owner_best = [(owner, name) for owner, name in same_score if owner == best_owner]
+    if len({name for _, name in same_owner_best}) > 1:
         return None
     return best_owner, best_name
 
 
+def _projection_attached_owner_names(
+    attached_to: str,
+    *,
+    candidates: list[SemanticCandidate],
+    registry: Any,
+    selected_vertices: list[str],
+) -> list[str]:
+    attached = _norm(attached_to)
+    if not attached:
+        return []
+
+    selected_index = {owner: index for index, owner in enumerate(selected_vertices)}
+    matches: list[tuple[int, int, str]] = []
+    seen: set[str] = set()
+    for owner in selected_vertices:
+        try:
+            vertex = registry.get_vertex(owner)
+        except RegistryLookupError:
+            continue
+        surfaces = [
+            owner,
+            vertex.name,
+            *(
+                item
+                for item in vertex.ai_context.get("synonyms", [])
+                if isinstance(item, str)
+            ),
+        ]
+        candidate = next(
+            (
+                candidate
+                for candidate in candidates
+                if candidate.semantic_type == "vertex" and candidate.semantic_id == owner
+            ),
+            None,
+        )
+        if candidate is not None:
+            surfaces.append(candidate.semantic_name)
+            surfaces.extend(evidence.term for evidence in candidate.evidence)
+            surfaces.extend(evidence.matched_text for evidence in candidate.evidence)
+        positions = [
+            position
+            for surface in surfaces
+            for position in [_projection_surface_position(attached, _norm(surface))]
+            if position is not None
+        ]
+        if not positions or owner in seen:
+            continue
+        matches.append((min(positions), selected_index.get(owner, len(selected_vertices)), owner))
+        seen.add(owner)
+
+    if not matches:
+        return []
+    matches.sort()
+    owners = [owner for _, _, owner in matches]
+    if len(owners) == 1:
+        return owners
+    if _projection_attachment_is_coordinated(attached):
+        return owners
+    return [owners[-1]]
+
+
+def _projection_surface_position(attached: str, surface: str) -> int | None:
+    if not attached or not surface or len(surface) < 2:
+        return None
+    if attached == surface or attached.startswith(surface):
+        return 0
+    position = attached.find(surface)
+    return position if position >= 0 else None
+
+
+def _projection_attachment_is_coordinated(attached: str) -> bool:
+    return any(marker in attached for marker in ("及其", "以及", "和", "与", "各自", "双方", "两端", "分别"))
+
+
 def _property_surface_match_score(term: str, owner: str, prop: Any) -> int:
     normalized_term = _norm(term)
+    compact_term = _compact_surface(normalized_term)
     if not normalized_term:
         return 0
     surfaces = [
@@ -943,15 +1178,32 @@ def _property_surface_match_score(term: str, owner: str, prop: Any) -> int:
     ]
     for surface in surfaces:
         normalized_surface = _norm(surface)
-        if normalized_term == normalized_surface:
+        compact_surface = _compact_surface(normalized_surface)
+        if normalized_term == normalized_surface or compact_term == compact_surface:
             return 100
     for surface in surfaces:
         normalized_surface = _norm(surface)
+        compact_surface = _compact_surface(normalized_surface)
         if normalized_surface and (
             normalized_term in normalized_surface or normalized_surface in normalized_term
+            or compact_term in compact_surface
+            or compact_surface in compact_term
         ):
+            if (
+                normalized_surface in _GENERIC_PROPERTY_NAME_SURFACES
+                and normalized_term != normalized_surface
+                and compact_term != compact_surface
+            ):
+                return 60
             return 70
     return 0
+
+
+def _compact_surface(value: str) -> str:
+    return value.replace(" ", "")
+
+
+_GENERIC_PROPERTY_NAME_SURFACES = {"名称", "名字", "name", "id", "ID", "编号"}
 
 
 def _has_exact_projection_property_match(
@@ -1141,6 +1393,95 @@ def _covered_projection_terms(projection: list[dict[str, Any]]) -> list[str]:
     return covered
 
 
+def _required_projection_slot_terms(
+    decomposition: Mapping[str, Any],
+    *,
+    candidates: list[SemanticCandidate],
+    registry: Any,
+    selected_vertices: list[str],
+) -> list[dict[str, Any]]:
+    terms: list[dict[str, Any]] = []
+    attachment_anchors = _projection_attachment_anchor_terms(decomposition)
+    for item in _substantive_terms_with_slot(decomposition, slot="projection"):
+        if _norm(str(item.get("text") or "")) in attachment_anchors:
+            continue
+        if _resolve_projection_vertex_full(
+            item,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        ) or _resolve_projection_object_owner(
+            item,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        ) or _projection_slot_term_requires_property(
+            item,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        ):
+            terms.append(item)
+    return terms
+
+
+def _uncovered_projection_slots(
+    *,
+    decomposition: Mapping[str, Any],
+    projection: list[dict[str, Any]],
+    candidates: list[SemanticCandidate],
+    registry: Any,
+    selected_vertices: list[str],
+) -> list[str]:
+    uncovered: list[str] = []
+    for slot_term in _required_projection_slot_terms(
+        decomposition,
+        candidates=candidates,
+        registry=registry,
+        selected_vertices=selected_vertices,
+    ):
+        label = _projection_slot_label(slot_term)
+        vertex_name = _resolve_projection_vertex_full(
+            slot_term,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+        if vertex_name is not None:
+            if not any(
+                item.get("semantic_type") == "vertex_full" and item.get("name") == vertex_name
+                for item in projection
+            ):
+                uncovered.append(label)
+            continue
+
+        property_refs = _resolve_projection_property_refs(
+            slot_term,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+        if not property_refs:
+            uncovered.append(label)
+            continue
+        for owner, property_name in property_refs:
+            if not any(
+                item.get("semantic_type") == "property"
+                and item.get("owner") == owner
+                and item.get("name") == property_name
+                for item in projection
+            ):
+                uncovered.append(label)
+                break
+    return uncovered
+
+
+def _projection_slot_label(slot_term: Mapping[str, Any]) -> str:
+    text = str(slot_term.get("text") or "").strip()
+    attached_to = str(slot_term.get("attached_to") or "").strip()
+    return f"{attached_to}.{text}" if attached_to else text
+
+
 def _snake_case(value: str) -> str:
     text = value.replace("-", "_")
     text = "".join(f"_{char.lower()}" if char.isupper() else char for char in text)
@@ -1285,6 +1626,14 @@ def _deterministic_assembler_payload(
             literal_results=literal_results,
             registry=registry,
         )
+        uncovered_projection_terms = assembler_requirements.get("projection_uncovered_terms")
+        if uncovered_projection_terms:
+            return {
+                **base,
+                "success": False,
+                "fallback_reason": "unresolved_projection_terms",
+                "uncovered_projection_terms": uncovered_projection_terms,
+            }
         assembler_candidates = _zero_hop_candidates_for_assembler(
             retrieval_result.candidates,
             preferred_vertex=preferred_vertex,
@@ -1380,8 +1729,13 @@ def _multihop_assembler_requirements(
     )
     projection_terms = _required_projection_terms(decomposition)
     if shape in {QueryShape.F4_PATH_PROJECTION_MULTIHOP, QueryShape.F5_PATH_FILTER_MULTIHOP} and projection_terms:
-        covered_terms = _covered_projection_terms(projection)
-        uncovered_terms = [term for term in projection_terms if term not in covered_terms]
+        uncovered_terms = _uncovered_projection_slots(
+            decomposition=decomposition,
+            projection=projection,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=vertex_ids,
+        )
         if uncovered_terms:
             requirements["projection_uncovered_terms"] = uncovered_terms
     if (
@@ -1403,7 +1757,7 @@ def _multihop_assembler_requirements(
         if item.get("semantic_type") == "property" and item.get("owner") and item.get("name")
     ]
 
-    filters = _filters_from_literal_results(literal_results)
+    filters = _filters_from_literal_results(literal_results, decomposition=decomposition)
     if filters:
         requirements["filters"] = [
             {
@@ -1637,23 +1991,39 @@ def _zero_hop_assembler_requirements(
         payload["limit"] = {"value": limit_requirement.value}
 
     if shape in {QueryShape.F1_VERTEX_PROJECTION_0HOP, QueryShape.F2_VERTEX_FILTER_0HOP}:
-        payload["projection"] = _projection_items_from_substantive_terms(
+        projection = _projection_items_from_substantive_terms(
             decomposition=decomposition,
             candidates=candidates,
             registry=registry,
             selected_vertices=selected_vertices,
         )
+        payload["projection"] = projection
+        uncovered_terms = _uncovered_projection_slots(
+            decomposition=decomposition,
+            projection=projection,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+        if uncovered_terms:
+            payload["projection_uncovered_terms"] = uncovered_terms
 
     if shape == QueryShape.F2_VERTEX_FILTER_0HOP:
         payload["filters"] = [
-            {"property": result.expected_property, "operator": "eq"}
+            {
+                "property": result.expected_property,
+                "operator": _filter_operator_for_literal(decomposition, result),
+            }
             for result in literal_results
             if result.resolved and result.expected_property
         ]
 
     if shape == QueryShape.F3_VERTEX_AGGREGATE_0HOP:
         payload["filters"] = [
-            {"property": result.expected_property, "operator": "eq"}
+            {
+                "property": result.expected_property,
+                "operator": _filter_operator_for_literal(decomposition, result),
+            }
             for result in literal_results
             if result.resolved and result.expected_property
         ]
@@ -2130,20 +2500,73 @@ def _previous_filter_property_term(
     return None
 
 
+def _filter_operator_for_literal(
+    decomposition: Mapping[str, Any],
+    result: LiteralResolverResult,
+) -> str:
+    operators: list[str] = []
+    property_key = _norm(result.expected_property or "")
+    raw_key = _norm(result.raw_literal)
+    for term in _substantive_terms_with_slot(decomposition, slot="filter"):
+        text = str(term.get("text") or "").strip()
+        if not text:
+            continue
+        normalized = _norm(text)
+        if normalized == property_key or normalized == raw_key:
+            continue
+        operator = _closed_filter_operator(text)
+        if operator is None:
+            continue
+        if operator not in operators:
+            operators.append(operator)
+    if len(operators) == 1:
+        return operators[0]
+    if len(operators) > 1:
+        return "__unsupported__"
+    return "eq"
+
+
+def _closed_filter_operator(text: str) -> str | None:
+    return _FILTER_OPERATOR_ALIASES.get(_norm(text))
+
+
+_FILTER_OPERATOR_ALIASES = {
+    "为": "eq",
+    "是": "eq",
+    "等于": "eq",
+    "等于为": "eq",
+    "=": "eq",
+    "==": "eq",
+    "不等于": "neq",
+    "不是": "neq",
+    "!=": "neq",
+    "<>": "neq",
+    "大于": "gt",
+    "超过": "gt",
+    "高于": "gt",
+    "多于": "gt",
+    ">": "gt",
+    "小于": "lt",
+    "低于": "lt",
+    "少于": "lt",
+    "<": "lt",
+    "不小于": "gte",
+    "不少于": "gte",
+    "至少": "gte",
+    "大于等于": "gte",
+    "不低于": "gte",
+    ">=": "gte",
+    "不大于": "lte",
+    "不超过": "lte",
+    "最多": "lte",
+    "小于等于": "lte",
+    "不高于": "lte",
+    "<=": "lte",
+}
+
+
 def _is_filter_operator_term(text: str) -> bool:
-    return _norm(text) in {
-        "为",
-        "是",
-        "等于",
-        "等于为",
-        "大于",
-        "小于",
-        "不小于",
-        "不大于",
-        "超过",
-        "低于",
-        "高于",
-    }
+    return _closed_filter_operator(text) is not None
 
 
 def _property_hints_prefer_non_id(property_hints: list[str]) -> bool:

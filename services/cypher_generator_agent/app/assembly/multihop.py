@@ -87,11 +87,14 @@ class MultihopAssembler:
             literal = _unique_literal(literals, owner, name)
             if literal is None:
                 return _fallback("missing_filter_literal")
+            operator = _operator(item)
+            if operator is None:
+                return _fallback("unsupported_filter_operator")
             filters.append(
                 {
                     "target": target,
                     "property": {"owner": owner, "name": name},
-                    "operator": _operator(item),
+                    "operator": operator,
                     "value": _literal_value(literal),
                 }
             )
@@ -197,6 +200,14 @@ class MultihopAssembler:
         if not edge_candidates:
             return _fallback("missing_path_candidate")
 
+        vertex_names, extension_contexts = self._extend_vertex_names_for_projection_endpoints(
+            vertex_names,
+            candidates=candidates,
+            requirements=requirements,
+            edge_candidates=edge_candidates,
+            path_terms=path_terms,
+        )
+
         vertex_roles = {vertex_name: f"v{index}" for index, vertex_name in enumerate(vertex_names)}
         role_by_owner = dict(vertex_roles)
         steps: list[_EdgeStep] = []
@@ -205,7 +216,10 @@ class MultihopAssembler:
                 edge_candidates=edge_candidates,
                 start=start,
                 end=end,
-                context=_path_segment_context(path_terms, start, end, self.registry),
+                context=extension_contexts.get(
+                    (start, end),
+                    _path_segment_context(path_terms, start, end, self.registry),
+                ),
                 index=index,
                 vertex_roles=vertex_roles,
             )
@@ -244,6 +258,74 @@ class MultihopAssembler:
             return _fallback("ambiguous_vertex_candidate")
         return vertex_names
 
+    def _extend_vertex_names_for_projection_endpoints(
+        self,
+        vertex_names: list[str],
+        *,
+        candidates: Sequence[Any],
+        requirements: Mapping[str, Any],
+        edge_candidates: Sequence[Any],
+        path_terms: Sequence[str],
+    ) -> tuple[list[str], dict[tuple[str, str], str]]:
+        extended = list(vertex_names)
+        extension_contexts: dict[tuple[str, str], str] = {}
+        candidate_vertices = _candidate_vertex_names(candidates)
+        pending = [
+            owner
+            for owner in _projection_owner_names(requirements)
+            if owner not in extended and owner in candidate_vertices
+        ]
+        while pending and extended:
+            for owner in list(pending):
+                start = extended[-1]
+                context = self._endpoint_extension_context(
+                    edge_candidates=edge_candidates,
+                    path_terms=path_terms,
+                    start=start,
+                    end=owner,
+                )
+                if context is None:
+                    continue
+                extension_contexts[(start, owner)] = context
+                extended.append(owner)
+                pending.remove(owner)
+                break
+            else:
+                break
+        return extended, extension_contexts
+
+    def _endpoint_extension_context(
+        self,
+        *,
+        edge_candidates: Sequence[Any],
+        path_terms: Sequence[str],
+        start: str,
+        end: str,
+    ) -> str | None:
+        contexts = [
+            _path_segment_context(path_terms, start, end, self.registry),
+            _path_tail_context(path_terms, start, self.registry),
+            "",
+        ]
+        seen: set[str] = set()
+        for context in contexts:
+            if context is None:
+                continue
+            if context in seen:
+                continue
+            seen.add(context)
+            step = self._resolve_step_edge(
+                edge_candidates=edge_candidates,
+                start=start,
+                end=end,
+                context=context,
+                index=0,
+                vertex_roles={start: "start", end: "end"},
+            )
+            if not isinstance(step, MultihopAssemblyResult):
+                return context
+        return None
+
     def _resolve_step_edge(
         self,
         *,
@@ -272,11 +354,30 @@ class MultihopAssembler:
             return _fallback("missing_path_candidate")
         direction = DirectionMapper(self.registry).resolve_direction_terms(context)
         if direction.status == DirectionStatus.AMBIGUOUS:
-            return _fallback("ambiguous_direction_terms")
-        if len(connecting) == 1:
+            step_direction_edges = _direction_edge_names_for_step(
+                direction.edge_names,
+                start=start,
+                end=end,
+                registry=self.registry,
+            )
+            narrowed = [edge for edge in connecting if edge.name in step_direction_edges]
+            if len(narrowed) == 1 and len(step_direction_edges) == 1:
+                edge = narrowed[0]
+            elif len(connecting) == 1 and not step_direction_edges:
+                edge = connecting[0]
+            else:
+                return _fallback("ambiguous_direction_terms")
+        elif len(connecting) == 1:
             edge = connecting[0]
             if direction.status == DirectionStatus.RESOLVED and edge.name not in direction.edge_names:
-                return _fallback("direction_edge_mismatch")
+                step_direction_edges = _direction_edge_names_for_step(
+                    direction.edge_names,
+                    start=start,
+                    end=end,
+                    registry=self.registry,
+                )
+                if step_direction_edges:
+                    return _fallback("direction_edge_mismatch")
         else:
             if direction.status == DirectionStatus.UNRESOLVED:
                 return _fallback("unresolved_direction_terms")
@@ -512,6 +613,42 @@ def _projection_requirements(requirements: Mapping[str, Any]) -> list[Any]:
     return _as_list(requirements.get("projection_terms"))
 
 
+def _projection_owner_names(requirements: Mapping[str, Any]) -> list[str]:
+    owners: list[str] = []
+    for item in _projection_requirements(requirements):
+        owner = _owner_name(item)
+        if owner is not None and owner not in owners:
+            owners.append(owner)
+    return owners
+
+
+def _candidate_vertex_names(candidates: Sequence[Any]) -> set[str]:
+    return {
+        vertex_name
+        for candidate in candidates
+        if _candidate_type(candidate) == "vertex"
+        for vertex_name in [_candidate_name(candidate)]
+        if vertex_name
+    }
+
+
+def _direction_edge_names_for_step(
+    edge_names: Sequence[str],
+    *,
+    start: str,
+    end: str,
+    registry: GraphSemanticRegistry,
+) -> set[str]:
+    step_edges: set[str] = set()
+    for edge_name in edge_names:
+        try:
+            if registry.edge_connects(edge_name, start, end, "either"):
+                step_edges.add(edge_name)
+        except RegistryLookupError:
+            continue
+    return step_edges
+
+
 def _aggregate_requirement(requirements: Mapping[str, Any]) -> Any | None:
     measures = _as_list(requirements.get("measures"))
     if len(measures) > 1:
@@ -568,6 +705,20 @@ def _path_segment_context(
         return " ".join(path_terms)
     low, high = sorted((start_index, end_index))
     return " ".join(path_terms[low : high + 1])
+
+
+def _path_tail_context(
+    path_terms: Sequence[str],
+    start: str,
+    registry: GraphSemanticRegistry,
+) -> str | None:
+    try:
+        start_index = _first_vertex_path_term_index(path_terms, registry.get_vertex(start))
+    except RegistryLookupError:
+        return None
+    if start_index is None:
+        return None
+    return " ".join(path_terms[start_index:])
 
 
 def _first_vertex_term_position(context: str, vertex: VertexDefinition) -> int | None:
@@ -632,12 +783,52 @@ def _literal_value(literal: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _operator(item: Any) -> str:
+def _operator(item: Any) -> str | None:
     if isinstance(item, Mapping):
         operator = item.get("operator") or "eq"
     else:
         operator = "eq"
-    return {"=": "eq", "==": "eq"}.get(str(operator), str(operator))
+    return _OPERATOR_ALIASES.get(str(operator))
+
+
+_OPERATOR_ALIASES = {
+    "=": "eq",
+    "==": "eq",
+    "eq": "eq",
+    "等于": "eq",
+    "为": "eq",
+    "是": "eq",
+    "!=": "neq",
+    "<>": "neq",
+    "neq": "neq",
+    "不等于": "neq",
+    "不是": "neq",
+    ">": "gt",
+    "gt": "gt",
+    "大于": "gt",
+    "超过": "gt",
+    "高于": "gt",
+    "多于": "gt",
+    "<": "lt",
+    "lt": "lt",
+    "小于": "lt",
+    "低于": "lt",
+    "少于": "lt",
+    ">=": "gte",
+    "gte": "gte",
+    "大于等于": "gte",
+    "不少于": "gte",
+    "不小于": "gte",
+    "至少": "gte",
+    "不低于": "gte",
+    "<=": "lte",
+    "lte": "lte",
+    "小于等于": "lte",
+    "不超过": "lte",
+    "不大于": "lte",
+    "最多": "lte",
+    "不高于": "lte",
+}
 
 
 _AMBIGUOUS_LIMIT = object()

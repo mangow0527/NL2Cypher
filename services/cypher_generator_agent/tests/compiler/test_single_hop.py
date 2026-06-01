@@ -81,3 +81,40 @@ def test_projection_alias_controls_return_alias(
     result = compile_restricted_query_ast(ast, registry)
 
     assert result.cypher.endswith("RETURN tun.id AS service_tunnel")
+
+
+def test_duplicate_projection_aliases_are_canonicalized_per_return_clause(
+    registry: GraphSemanticRegistry,
+) -> None:
+    dsl = single_hop_dsl()
+    dsl["projection"]["items"] = [
+        {
+            "target": "start",
+            "property": {"owner": "Service", "name": "id"},
+            "alias": "id",
+        },
+        {
+            "target": "end",
+            "property": {"owner": "Tunnel", "name": "id"},
+            "alias": "id",
+        },
+        {
+            "target": "start",
+            "property": {"owner": "Service", "name": "quality_of_service"},
+            "alias": "value",
+        },
+        {
+            "target": "end",
+            "property": {"owner": "Tunnel", "name": "bandwidth"},
+            "alias": "value",
+        },
+    ]
+    ast = parse_dsl(dsl, registry)
+
+    result = compile_restricted_query_ast(ast, registry)
+
+    assert result.cypher.endswith(
+        "RETURN svc.id AS service_id, tun.id AS tunnel_id, "
+        "svc.quality_of_service AS service_value, tun.bandwidth AS tunnel_value"
+    )
+    assert result.validation_result.valid is True

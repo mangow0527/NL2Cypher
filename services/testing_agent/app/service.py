@@ -10,7 +10,6 @@ from .clients import (
     GrammarExplanationClient,
     InvalidSemanticReviewResponse,
     OpenAIChatCompletionLLMClient,
-    RepairServiceClient,
     SemanticReviewClient,
 )
 from .comparison import compare_answers
@@ -49,7 +48,6 @@ class TestingAgentService:
         self,
         *,
         repository: TestingRepository,
-        repair_client: RepairServiceClient,
         tugraph_client: TuGraphClient,
         grammar_checker: GrammarChecker,
         grammar_explainer: GrammarExplanationClient,
@@ -57,7 +55,6 @@ class TestingAgentService:
         settings: Settings,
     ) -> None:
         self.repository = repository
-        self.repair_client = repair_client
         self.tugraph_client = tugraph_client
         self.grammar_checker = grammar_checker
         self.grammar_explainer = grammar_explainer
@@ -65,7 +62,6 @@ class TestingAgentService:
         self.settings = settings
         self._background_tasks: dict[tuple[str, int], asyncio.Task[Any]] = {}
         self._evaluation_locks: dict[tuple[str, int], asyncio.Lock] = {}
-        self._repair_tasks: dict[str, asyncio.Task[Any]] = {}
 
     async def ingest_golden(self, request: QAGoldenRequest) -> QAGoldenResponse:
         self.repository.save_golden(request)
@@ -83,14 +79,12 @@ class TestingAgentService:
                 issue_ticket_id=latest_submission.get("issue_ticket_id"),
             )
 
-        self.repository.update_submission_state(request.id, int(latest_submission["attempt_no"]), "ready_to_evaluate")
-        evaluation = await self._evaluate_attempt(request.id, int(latest_submission["attempt_no"]))
-        updated = self.repository.get_submission_attempt(request.id, int(latest_submission["attempt_no"])) or {}
+        attempt_no = int(latest_submission["attempt_no"])
+        self.repository.update_submission_state(request.id, attempt_no, "ready_to_evaluate")
+        self._schedule_attempt_evaluation(request.id, attempt_no)
         return QAGoldenResponse(
             id=request.id,
-            status=updated.get("state", "ready_to_evaluate"),
-            verdict=None if evaluation is None else evaluation.verdict,
-            issue_ticket_id=updated.get("issue_ticket_id"),
+            status="ready_to_evaluate",
         )
 
     async def ingest_submission(self, request: GeneratedCypherSubmissionRequest) -> SubmissionReceipt:
@@ -315,7 +309,6 @@ class TestingAgentService:
             )
             self.repository.save_issue_ticket(ticket, attempt_no=attempt_no)
             self.repository.update_submission_state(qa_id, attempt_no, "issue_ticket_created")
-            self._schedule_repair_submission(ticket, attempt_no)
 
         previous = self._previous_evaluated_attempt(qa_id, attempt_no)
         if previous and previous.get("evaluation"):
@@ -329,28 +322,6 @@ class TestingAgentService:
             self.repository.save_improvement_assessment(qa_id, attempt_no, assessment)
 
         return evaluation
-
-    def _schedule_repair_submission(self, ticket: IssueTicket, attempt_no: int) -> None:
-        existing = self._repair_tasks.get(ticket.ticket_id)
-        if existing is not None and not existing.done():
-            return
-        task = asyncio.create_task(self._submit_repair_ticket(ticket, attempt_no))
-        self._repair_tasks[ticket.ticket_id] = task
-        task.add_done_callback(lambda completed: self._log_background_repair_failure(ticket=ticket, task=completed))
-
-    async def _submit_repair_ticket(self, ticket: IssueTicket, attempt_no: int) -> None:
-        response = await self.repair_client.submit_issue_ticket(ticket)
-        self.repository.save_repair_response(ticket.id, attempt_no, response)
-
-    def _log_background_repair_failure(self, *, ticket: IssueTicket, task: asyncio.Task[Any]) -> None:
-        self._repair_tasks.pop(ticket.ticket_id, None)
-        try:
-            task.result()
-        except Exception:
-            logger.exception(
-                "repair_submission_failed",
-                extra={"qa_id": ticket.id, "ticket_id": ticket.ticket_id},
-            )
 
     def _previous_evaluated_attempt(self, qa_id: str, current_attempt_no: int) -> dict[str, Any] | None:
         for attempt_no in range(current_attempt_no - 1, 0, -1):
@@ -448,7 +419,7 @@ class TestingAgentService:
         return {
             "status": "ok",
             "storage": self.settings.data_dir,
-            "repair_service_url": self.settings.repair_service_url,
+            "repair_agent_submission": "disabled",
             "llm_model": self.settings.llm_model,
             "llm_enabled": self.settings.llm_enabled,
         }
@@ -466,7 +437,6 @@ def get_testing_service() -> TestingAgentService:
     )
     return TestingAgentService(
         repository=TestingRepository(settings.data_dir),
-        repair_client=RepairServiceClient(settings.repair_service_url, settings.request_timeout_seconds),
         tugraph_client=TuGraphClient(
             base_url=settings.tugraph_url,
             username=settings.tugraph_username,

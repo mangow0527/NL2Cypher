@@ -112,6 +112,9 @@ class ZeroHopAssembler:
         literal = _unique_literal(literals, filter_owner, filter_name)
         if literal is None:
             return _fallback("missing_filter_literal")
+        operator = _operator(filter_items[0])
+        if operator is None:
+            return _fallback("unsupported_filter_operator")
 
         projection = []
         for item in _projection_requirements(structural_requirements):
@@ -152,7 +155,7 @@ class ZeroHopAssembler:
             {
                 "target": "target",
                 "property": {"owner": filter_owner, "name": filter_name},
-                "operator": _operator(filter_items[0]),
+                "operator": operator,
                 "value": {
                     "raw": literal.get("raw"),
                     "normalized": literal.get("normalized", literal.get("value")),
@@ -205,11 +208,14 @@ class ZeroHopAssembler:
             literal = _unique_literal(literals, filter_owner, filter_name)
             if literal is None:
                 return _fallback("missing_filter_literal")
+            operator = _operator(item)
+            if operator is None:
+                return _fallback("unsupported_filter_operator")
             filters.append(
                 {
                     "target": "target",
                     "property": {"owner": filter_owner, "name": filter_name},
-                    "operator": _operator(item),
+                    "operator": operator,
                     "value": {
                         "raw": literal.get("raw"),
                         "normalized": literal.get("normalized", literal.get("value")),
@@ -425,12 +431,52 @@ def _projection_terms(item: Any) -> list[str]:
     return [str(term).strip() for term in raw_terms if str(term).strip()]
 
 
-def _operator(item: Any) -> str:
+def _operator(item: Any) -> str | None:
     if isinstance(item, Mapping):
         operator = item.get("operator") or "eq"
     else:
         operator = "eq"
-    return "eq" if operator == "=" else str(operator)
+    return _OPERATOR_ALIASES.get(str(operator))
+
+
+_OPERATOR_ALIASES = {
+    "=": "eq",
+    "==": "eq",
+    "eq": "eq",
+    "等于": "eq",
+    "为": "eq",
+    "是": "eq",
+    "!=": "neq",
+    "<>": "neq",
+    "neq": "neq",
+    "不等于": "neq",
+    "不是": "neq",
+    ">": "gt",
+    "gt": "gt",
+    "大于": "gt",
+    "超过": "gt",
+    "高于": "gt",
+    "多于": "gt",
+    "<": "lt",
+    "lt": "lt",
+    "小于": "lt",
+    "低于": "lt",
+    "少于": "lt",
+    ">=": "gte",
+    "gte": "gte",
+    "大于等于": "gte",
+    "不少于": "gte",
+    "不小于": "gte",
+    "至少": "gte",
+    "不低于": "gte",
+    "<=": "lte",
+    "lte": "lte",
+    "小于等于": "lte",
+    "不超过": "lte",
+    "不大于": "lte",
+    "最多": "lte",
+    "不高于": "lte",
+}
 
 
 def _projection_requirements(structural_requirements: Mapping[str, Any]) -> list[Any]:

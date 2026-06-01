@@ -34,8 +34,9 @@
 | MIR-010 | Deterministic Form Assembler Corpus and Main-Path Control Flow Refactor | 主控制流已远端部署；680 全量暴露复杂结构未闭环；MIR-010.8 指标未闭环 | 680-query shape analysis / MIR-007 multi-round LLM latency | P0 |
 | MIR-011 | Literal Filter Binding and Static Index-Miss Pass-through | 已远端闭环；L2 literal 澄清归零 | L2 `Service_001` / `svc-mpls-vpn-1004` / `MPLS-VPN` / `延迟=23` 澄清 | P0 |
 | MIR-012 | Named Path Pattern Projection Role Binding | 待实施；680 全量新增 P0 缺口 | `qa_fe30ff3300d3` | P0 |
+| MIR-013 | Deterministic Projection Coverage Contract | 已完成并远端部署；簇一 projection 覆盖收口，剩余问题转后续 MIR | 680 cluster-one projection incomplete / multi-owner / endpoint projection | P0 |
 
-后续新增问题按 `MIR-013`、`MIR-014` 继续追加。
+后续新增问题按 `MIR-014`、`MIR-015` 继续追加。
 
 未闭环 MIR 实施处置（2026-05-30）：
 
@@ -1805,7 +1806,7 @@ docs/experiments/2026-05-28-runtime-center-cga-job-analysis.md
 | fallback compact contract 性能收益未量化 | MIR-008 | 功能接入、本地 `600 passed`，但没有单独统计 fallback completion tokens、schema retry 率、端到端耗时。 | 选取 fallback 命中样本做 token / latency / schema retry 专项采样；若收益未达标，再决定是否继续压缩 prompt。 |
 | MIR-010.8 四指标仍未达验收 | MIR-010 | 680 全量重跑 `run680_20260531T045441Z` 已完成，但只得到生成状态 / failure reason 分布：`generated=317`、`generation_failed=336`、`clarification_required=16`、`service_failed=11`。尚未按形态输出确定性命中率、fallback 触发率、认输率、延迟分布、留出集泛化。 | 补 680 结果的形态级聚合；把训练集自验证和留出泛化分开；按 deterministic / fallback / clarification / generation_failed 四类输出指标。 |
 | `named_path_pattern + 多 owner projection` 服务失败 | MIR-012 / MIR-010.2 | `qa_fe30ff3300d3`：CGA 选中 `query_shape=named_path_pattern` 和 `tunnel_full_path`，projection 包含 `Service.elem_type`、`Tunnel.elem_type`、`NetworkElement.model`、`Port.elem_type`，但 binding plan 无 `vertex_bindings`；DSL builder 的 `role_by_owner={}`，处理 `Service.elem_type` 时抛 `KeyError: 'Service'`，最终 `service_failed / semantic_contract_unaligned`。 | 先落 MIR-012：为 path pattern 输出建立 owner -> role/alias 的确定性映射，或在无法映射时给出 `generation_failed / compiler_shape_mismatch`，不得再抛 service_failed。 |
-| 680 中 `coverage_failure` 仍高 | MIR-010 / MIR-006 边界 | 680 全量有 `coverage_failure=85`。此前 L2 抽样修复过投影 surface 和 `vertex_full`，但 680 证明 coverage 问题远超 L2 小样本。 | 按 `projection_terms`、path hop、aggregate/group/order/limit 分类抽样，不扩大架构；每类只补通用派生或 DSL 落位规则。 |
+| 680 中 `coverage_failure` 仍高 | MIR-010 / MIR-006 / MIR-013 边界 | 680 全量有 `coverage_failure=85`。其中簇一 projection 未覆盖约 86 条，根因是 deterministic assembler 未把 required projection slots 当完整性契约。 | 先落 MIR-013，只修 projection 覆盖完整性；path hop、aggregate/group/order/limit 另行分诊，不在本轮扩散。 |
 | 680 中 `compiler_shape_mismatch` 仍高 | MIR-010 / DSL 表达力 | 680 全量有 `compiler_shape_mismatch=81`。说明 F6/F8、path pattern、fallback hydrate 或 DSL parser/compiler 表达仍存在系统缺口。 | 聚类 trace：区分 DSL 表达力缺口、assembler dispatch 误判、fallback hydrate 失败、compiler 不支持；每类单独小步修复。 |
 | fallback schema / grounded 输出不稳定 | MIR-008 / MIR-010.6 | 680 全量有 `grounded_understanding_schema_invalid=54`，远高于 L2 86 条中的 1 条。compact contract 已接入，但并未在全量 fallback 上闭环。 | 拉取 schema invalid trace，统计字段级原因；先修 contract/hydrate 的最小共性问题，再重新采样 token 和 schema retry。 |
 | semantic verdict / 语义等价失败较多 | testing-agent / verdict 线，非 CGA 主 MIR 闭环 | 680 全量有 `semantic_match_rejected=86`。其中可能混有 CGA 语义错误、alias/返回列口径、testing-agent 结构等价不足。 | 不混入 CGA 主路径；单独审 testing-agent verdict、alias 口径和结构等价规则。 |
@@ -2015,7 +2016,189 @@ tests/test_runtime_results_service_api.py
 - named path pattern 多 owner projection 至少能生成可评测 Cypher；是否语义等价交给 testing-agent verdict。
 - 680 全量中 `semantic_contract_unaligned` 对应的 KeyError 类问题归零或显著下降。
 
-## 16. 后续 MIR 模板
+## 16. MIR-013 Deterministic Projection Coverage Contract
+
+状态：已完成并远端部署（2026-06-01）。该 MIR 只修 2026-05-31 680 分诊中的簇一：确定性 assembler projection 构建未覆盖题干字段。簇二 GU 绑定 / 幻化、簇三 fallback schema、语义层内容提升均不在本 MIR 范围。
+
+### 16.1 背景
+
+触发问题：680 全量重跑 `run680_20260531T045441Z` 中，projection 相关簇一约 86 条失败，分为：
+
+- 投影未覆盖：约 67 条。
+- 多 owner 投影只落一个 owner：约 14 条。
+- 路径终点对象字段未进投影：约 5 条。
+
+核心根因：确定性 assembler 拼 projection 时，只保证 DSL projection 语法合法，没有把 `structural_requirements.projection_terms` / decomposition projection slots 当成完整性契约。结果是题干要求 N 个字段，DSL 只落了其中一部分；或者同一个字段词修饰多个 owner（如服务时延 + 隧道时延）时，只落其中一个 owner。
+
+这属于 MIR-001 “projection 塌缩”在 MIR-010 确定性主路径上的复发：新 assembler 路径没有继承“显式 projection 必须完整覆盖”的约束。
+
+### 16.2 失效链路
+
+| 层级 | 失效点 | 影响 |
+| --- | --- | --- |
+| structural requirements / projection slots | projection term 只按文本去重，无法表达同一字段词对应多个 owner 的完整性要求。 | “服务时延 + 隧道时延”可能被当成一个“时延”覆盖。 |
+| deterministic assembler requirements | projection 构建可返回部分字段；zero-hop / grouped top-N / endpoint projection 缺少统一完整性预检。 | assembler 生成合法但不完整的 DSL，后续才暴露 coverage failure 或 testing mismatch。 |
+| assembler | required projection term 无法唯一绑定时，可能静默缺字段或退化为少量字段。 | 违背“不能丢字段、不猜 owner”的总原则。 |
+| regression | 现有回归覆盖单 owner 与部分多跳，未覆盖多 owner 同字段词和路径终点字段。 | 簇一问题在 680 泛化时集中暴露。 |
+
+### 16.3 修改目标
+
+- 确定性 assembler 的 projection 构建以 required projection slots 为完整性契约：每个 required projection slot 必须唯一绑定到 owner.property 或 vertex_full，并落进 DSL projection。
+- required projection slot 的内部判定使用 `text + attached_to`，避免同一字段词跨多个 owner 时被文本去重掩盖。
+- 覆盖不全或 owner/property 无法唯一绑定时，退 single-shot fallback；不得静默丢字段、不得猜 owner、不得降级成单字段。
+- 支持跨多个 owner 的 projection（例如服务字段 + 隧道字段同时返回）。
+- 支持多跳路径终点对象字段进入 projection（例如 Port 的 ID / 名称 / vertex_full）。
+- 保持语义层内容不变；本 MIR 只正确消费现有 registry / candidates / decomposition，不扩词表、不写样本分支。
+
+非目标：
+
+- 不修 GU 绑定 / 幻化。
+- 不修 fallback schema。
+- 不提升语义层资产质量。
+- 不在 compiler 或 coverage gate 下游补丁绕过 projection 根因。
+- 不为单个 `qa_xxx` 写专用分支。
+
+### 16.4 子 IR 总览
+
+| 子 IR | 名称 | 优先级 | 估算 | 角色 | 依赖 |
+| --- | --- | --- | --- | --- | --- |
+| MIR-013.0 | Baseline and Projection Slot Contract | P0 | S | QA/backend | MIR-010 |
+| MIR-013.1 | Single-owner Completeness Gate | P0 | S | backend | .0 |
+| MIR-013.2 | Multi-owner Projection Slot Coverage | P0 | M | backend | .1 |
+| MIR-013.3 | Path Endpoint Projection Coverage | P0 | S | backend | .1 |
+| MIR-013.4 | Regression and 680 Re-run Metrics | P0 | M | QA/infra | .1 到 .3 |
+
+### MIR-013.0 Baseline and Projection Slot Contract
+
+目标：把簇一 86 条 projection 失败拆成可验证回归，并明确完整性契约。
+
+建议文件：
+
+```text
+services/cypher_generator_agent/app/core/pipeline.py
+services/cypher_generator_agent/tests/assembly/
+services/cypher_generator_agent/tests/integration/
+docs/experiments/2026-05-28-runtime-center-cga-job-analysis.md
+```
+
+开发内容：
+
+- 固化单 owner 投影未覆盖、多 owner 同字段词、路径终点字段三个最小失败 fixture。
+- 定义 required projection slot 为内部契约：优先使用 decomposition 中 slot=`projection` 的 `text + attached_to`，而不是只看文本去重后的 projection term。
+- 对 vertex_full projection 保持同样完整性要求。
+
+验收：
+
+- 修复前 fixture 能暴露“不完整 projection 也进入 DSL”的问题。
+- trace / failure reason 能区分 unresolved projection term 与下游 compiler 或 verdict 问题。
+
+### MIR-013.1 Single-owner Completeness Gate
+
+目标：先收口最大主体：单 owner 的 required projection terms 必须全部落入 deterministic DSL。
+
+开发内容：
+
+- zero-hop 与 deterministic path projection 在 assembler 前检查 required projection slots。
+- 每个 slot 能唯一解析到 owner.property / vertex_full 时才继续 deterministic assembly。
+- 任何 slot 无法唯一绑定，返回 `unresolved_projection_terms` 或等价 fallback reason，进入 single-shot fallback。
+
+验收：
+
+- 单 owner 多字段查询不再只返回部分字段。
+- 无法绑定的 projection term 不再默认 ID 或静默缺失。
+
+### MIR-013.2 Multi-owner Projection Slot Coverage
+
+目标：同一字段词修饰多个 owner 时，每个 owner 的字段都要落出。
+
+开发内容：
+
+- projection 完整性按 `text + attached_to` 判定，不把多个 owner 的同名字段合并成一个覆盖项。
+- 支持如“服务的时延和隧道的时延”同时生成 `Service.latency` 与 `Tunnel.latency`。
+- owner 歧义时退 fallback，不取最高分或默认 owner。
+
+验收：
+
+- 服务字段 + 隧道字段同时返回。
+- 缺少任一 owner 的字段时 deterministic assembler 不放行。
+
+### MIR-013.3 Path Endpoint Projection Coverage
+
+目标：多跳路径终点对象字段（如 Port）进入 deterministic projection。
+
+开发内容：
+
+- endpoint owner 能由 path terms / candidates / registry 唯一识别时，允许终点 owner.property 或 vertex_full projection 落位。
+- endpoint owner 不唯一时退 fallback。
+
+验收：
+
+- Service -> Tunnel -> NetworkElement -> Port 类路径中，Port 的 ID / 名称 / 节点整体可落入 DSL projection。
+- 不影响已有单跳、多跳非终点 projection。
+
+### MIR-013.4 Regression and 680 Re-run Metrics
+
+目标：度量簇一修复真实收益，不把其他簇混入本轮。
+
+开发内容：
+
+- 本地跑簇一回归与现有 CGA 回归。
+- 远端重跑 run680，记录：
+  - projection incomplete / multi-owner / endpoint projection 下降数。
+  - `coverage_failure` 中 projection 类下降数。
+  - 整体 passed 从 271 提升到多少。
+- 分开记录 .1 主体 67 条和 .2/.3 的 19 条收益。
+
+验收：
+
+- 簇一 projection 相关失败显著下降。
+- 簇二 / 簇三问题仍保留为后续决策，不在本 MIR 假装闭环。
+
+### 16.5 实施与验收记录（2026-06-01）
+
+本轮实现只改 projection 覆盖契约及 deterministic multihop endpoint 扩展逻辑：
+
+- projection surface 匹配支持紧凑写法，例如 `IP地址` / `MAC地址` 与 registry 中 `IP 地址` / `MAC 地址` 的一致匹配。
+- required projection slot 完整性按 `text + attached_to` 判定，同字段多 owner 不再被文本去重吞掉。
+- 多 owner attachment 会解析成多个 owner.property projection；无法唯一绑定时保留 coverage failure，不静默猜 owner。
+- path tail 可在候选与边唯一时为 endpoint projection 扩展路径，例如 `Service -> Tunnel -> NetworkElement -> Port`。
+- projection attachment anchor 不再被误当作独立字段投影，例如“端口的 MAC 地址和状态”不额外返回 `NetworkElement.id`。
+- projection 对象词能唯一匹配 vertex surface 时落到该 vertex 的 ID 投影，例如“隧道所经过的网元”返回 `NetworkElement.id`。
+
+本地回归：
+
+- `python -m pytest -q services/cypher_generator_agent/tests/assembly/test_zero_hop.py services/cypher_generator_agent/tests/assembly/test_multihop.py`：30 passed。
+- `python -m pytest -q services/cypher_generator_agent/tests/integration/test_pipeline_mvp.py`：49 passed。
+- `python -m pytest -q services/cypher_generator_agent/tests/compiler/test_readonly_output.py services/cypher_generator_agent/tests/compiler/test_single_hop.py services/cypher_generator_agent/tests/compiler/test_vertex_lookup.py`：14 passed。
+- `python -m pytest -q services/cypher_generator_agent/tests/integration/test_api_contract.py services/cypher_generator_agent/tests/integration/test_testing_agent_submission.py tests/test_runtime_results_service_api.py`：78 passed。
+- `python -m compileall -q services/cypher_generator_agent/app console/runtime_console/app services/testing_agent/app`：通过。
+
+远端部署与 680 重跑：
+
+- 最终 run id：`run680_after_mir013_patch2_20260601T045909Z`。
+- JSONL：`/home/mabingjie/apps/qa-agent/artifacts/experiment_runs/run680_after_mir013_patch2_20260601T045909Z.jsonl`。
+- summary：`/home/mabingjie/apps/qa-agent/artifacts/experiment_runs/run680_after_mir013_patch2_20260601T045909Z_summary.json`。
+- parse counters：total 680，generated 370，generation_failed 279，clarification_required 16，service_failed 15。
+- failure reasons：coverage_failure 81，semantic_match_rejected 77，grounded_understanding_schema_invalid 54，compiler_shape_mismatch 37，metric_dimension_invalid 21，semantic_contract_unaligned 15，edge_endpoint_mismatch 7，binding_plan_incomplete 2。
+- testing-agent rollup：pass 318，fail 346，clarification_required 16，total 680。
+
+相对 baseline `run680_20260531T045441Z`：
+
+- generated：317 -> 370（+53）。
+- generation_failed：336 -> 279（-57）。
+- coverage_failure：85 -> 81（-4）。
+- runtime verdict baseline 观测值：pass 305 -> 318（+13），clarification_required 17 -> 16。
+
+代表样本：
+
+- `qa_64884ae1c4ee`（查询所有服务使用的隧道所经过的网元）：已生成 `Service -> Tunnel -> NetworkElement`，返回 `ne.id`，testing verdict pass。
+- `qa_0894cec1e379`：已生成 `Service -> Tunnel -> NetworkElement`，返回网元 ID / IP / location，testing verdict pass。
+- `qa_19cb778ef4eb`：已生成 `Service -> Tunnel -> NetworkElement -> Port`，只返回端口 MAC 地址和状态，testing verdict pass。
+- `qa_0b78651a1986`：endpoint coverage 已能生成网元位置与端口 MAC，但 testing verdict 仍 fail；该差异属于 gold / semantic strict match 层，不继续纳入 MIR-013。
+
+剩余 `coverage_failure` 分布：`None` 38，`unresolved_projection_terms` 28，`missing_group_by_requirement` 8，`missing_aggregate_requirement` 2，`unresolved_direction_terms` 1，`group_by_owner_mismatch` 1，`multiple_shape_signals` 1，`missing_vertex_candidate` 1，`missing_path_candidate` 1。高频 unresolved projection terms 包括“服务节点”“网元.时延”“服务”“网元”“隧道.目的”“网元.目的”等，下一步应拆到聚合 / group-by / path direction / semantic vocabulary 后续 MIR，不在本 MIR 继续扩边界。
+
+## 17. 后续 MIR 模板
 
 新增修改项时按以下模板追加：
 
@@ -2054,7 +2237,7 @@ tests/test_runtime_results_service_api.py
 验收：
 ```
 
-## 17. 审核结论与后续 MIR 检查
+## 18. 审核结论与后续 MIR 检查
 
 MIR-001 审核后的当前默认决策：
 

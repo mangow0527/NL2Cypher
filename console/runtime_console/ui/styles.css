@@ -273,6 +273,26 @@ h3 span {
   gap: 6px;
 }
 
+.difficulty-duration-card {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid rgba(64, 51, 41, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 249, 240, 0.76);
+}
+
+.difficulty-duration-card span,
+.difficulty-duration-card small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.difficulty-duration-card strong {
+  font-size: 18px;
+  line-height: 1.15;
+}
+
 .difficulty-counts span {
   display: inline-flex;
   align-items: center;
