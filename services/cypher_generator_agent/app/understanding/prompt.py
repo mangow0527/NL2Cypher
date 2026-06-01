@@ -32,6 +32,7 @@ def build_grounded_understanding_prompt(
         f"只返回符合 {GROUNDED_UNDERSTANDING_SCHEMA_VERSION} compact schema 的结构化结果。",
         "这是单次兜底裁决：只选择能确定性落到 DSL 的语义对象，不生成 Cypher，也不进行多轮修复。",
         "只能从 top_candidates 中按 candidate_id 选择候选项；selected_bindings 只填写 candidate_id，可选 role 和边方向 direction。",
+        "selected_bindings 不要填写候选详情字段；这些字段由 candidate_id 回填。",
         "candidate_id 能确定的候选详情由下游代码补齐；不要复述候选 payload 中可推导的字段。",
         "literal_resolver_results 中已解析成功的字面值是过滤条件的权威来源：如需选择字面值，只把对应 literal_id 写入 selected_literal_ids。",
         "如果存在匹配 expected_vertex/expected_edge + expected_property 的属性候选，必须选择该属性候选。",

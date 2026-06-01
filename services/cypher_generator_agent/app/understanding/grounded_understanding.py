@@ -82,7 +82,7 @@ class GroundedUnderstandingSelector:
 
             try:
                 parsed = parse_grounded_understanding_response(payload)
-            except ValidationError as exc:
+            except (ValidationError, ValueError) as exc:
                 errors.append(_attempt_error(attempt, exc))
                 if attempt <= self._max_schema_retries:
                     continue
@@ -387,6 +387,14 @@ class _OperationHydrationContext:
                 if "source" in item or item.get("semantic_type") == "vertex_full":
                     normalized.append(item)
                     continue
+                if item.get("semantic_type") == "vertex":
+                    vertex_full = self._vertex_full_projection(item)
+                    normalized.append(vertex_full or item)
+                    continue
+                source_item = self._source_projection_from_item(item)
+                if aggregate_shape and source_item is not None:
+                    normalized.append(source_item)
+                    continue
                 prop = self._property_ref(item, field_name="projection")
                 if prop is not None:
                     source_item = self._aggregate_source_projection(prop) if aggregate_shape else None
@@ -414,6 +422,31 @@ class _OperationHydrationContext:
         if alias:
             return {"alias": alias, "source": f"group.{alias}"}
         return None
+
+    def _source_projection_from_item(self, item: Mapping[str, Any]) -> dict[str, Any] | None:
+        for hint in _source_hints(item):
+            source = self._source_for_label(hint)
+            if source:
+                alias = item.get("alias") or source.split(".", 1)[1]
+                return {"alias": str(alias), "source": source}
+        return None
+
+    def _vertex_full_projection(self, item: Mapping[str, Any]) -> dict[str, Any] | None:
+        vertex = item.get("semantic_id") or item.get("name") or item.get("vertex") or item.get("vertex_full")
+        if not vertex:
+            return None
+        candidate = self.index.require(f"vertex:{vertex}")
+        payload: dict[str, Any] = {
+            "semantic_type": "vertex_full",
+            "name": candidate.semantic_id,
+        }
+        alias = item.get("alias")
+        if alias:
+            payload["alias"] = alias
+        projection_terms = item.get("projection_terms")
+        if projection_terms:
+            payload["projection_terms"] = projection_terms
+        return payload
 
     def _source_for_label(self, raw: Any) -> str | None:
         text = str(raw or "").strip()
@@ -561,6 +594,15 @@ def _string_hint(value: Any) -> str:
                 return str(raw)
         return ""
     return str(value or "")
+
+
+def _source_hints(value: Mapping[str, Any]) -> list[str]:
+    hints: list[str] = []
+    for key in ("source", "label", "alias", "name", "semantic_id"):
+        raw = value.get(key)
+        if raw:
+            hints.append(str(raw))
+    return hints
 
 
 def _sort_label(value: str) -> str:

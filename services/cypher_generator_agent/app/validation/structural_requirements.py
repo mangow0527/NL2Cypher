@@ -156,7 +156,20 @@ def validate_dsl_structural_coverage(
                 for term in req.projection_terms:
                     if _is_quantity_projection_text(term) and term not in covered_terms:
                         covered_terms.append(term)
-            uncovered_terms = [term for term in req.projection_terms if term not in covered_terms]
+                    if (
+                        _is_node_count_projection_text(term)
+                        and term not in covered_terms
+                        and _has_count_measure(operations)
+                    ):
+                        covered_terms.append(term)
+            required_projection_terms = _projection_terms_requiring_coverage(
+                req.projection_terms,
+                covered_terms=covered_terms,
+            )
+            for term in req.projection_terms:
+                if term not in required_projection_terms and term not in covered_terms:
+                    covered_terms.append(term)
+            uncovered_terms = [term for term in required_projection_terms if term not in covered_terms]
             if uncovered_terms:
                 missing.append(
                     _missing(
@@ -400,7 +413,12 @@ def _is_relation_only_path_text(text: str) -> bool:
         "经过",
         "穿过",
         "关联",
+        "关联关系",
+        "对应",
+        "对应关系",
+        "连接关系",
         "之间",
+        "节点",
         "目的",
         "源",
         "到达",
@@ -558,8 +576,33 @@ def _surface_matches_projection_term(surface: str, normalized_term: str) -> bool
     return normalized_surface == normalized_term or normalized_term in normalized_surface
 
 
+def _projection_terms_requiring_coverage(required_terms: list[str], *, covered_terms: list[str]) -> list[str]:
+    concrete_terms = [term for term in required_terms if not _is_closed_generic_projection_modifier(term)]
+    has_covered_concrete_term = any(term in covered_terms for term in concrete_terms)
+    if not has_covered_concrete_term:
+        return list(required_terms)
+    return [term for term in required_terms if not _is_closed_generic_projection_modifier(term)]
+
+
+def _is_closed_generic_projection_modifier(term: str) -> bool:
+    return term.strip() in _CLOSED_GENERIC_PROJECTION_MODIFIER_TERMS
+
+
 def _norm_text(value: Any) -> str:
     return str(value or "").casefold().strip().replace("_", "").replace("-", "").replace(" ", "")
+
+
+_CLOSED_GENERIC_PROJECTION_MODIFIER_TERMS = {
+    "实例",
+    "服务节点",
+    "业务节点",
+    "属性",
+    "属性值",
+    "属性记录",
+    "记录",
+    "值",
+    "非空值",
+}
 
 
 _PROPERTY_PROJECTION_TERM_SURFACES = {
@@ -572,7 +615,7 @@ _PROPERTY_PROJECTION_TERM_SURFACES = {
     "ietf_standard": ("IETF标准", "标准"),
     "ip_address": ("IP地址", "地址"),
     "software_version": ("软件版本", "版本"),
-    "vendor": ("厂商", "厂家"),
+    "vendor": ("厂商", "厂家", "厂商信息", "厂家信息"),
     "location": ("位置",),
     "status": ("状态",),
 }
@@ -607,6 +650,25 @@ def _has_measure_projection(items: list[Any]) -> bool:
 
 def _is_quantity_projection_text(term: str) -> bool:
     return any(marker in term for marker in ("数量", "个数", "总数", "多少"))
+
+
+def _is_node_count_projection_text(term: str) -> bool:
+    return term.strip() in {"节点", "节点数", "节点数量", "节点总数"}
+
+
+def _has_count_measure(operations: list[Mapping[str, Any]]) -> bool:
+    for op in operations:
+        if str(op.get("op") or "") == "metric_aggregate" and "count" in str(op.get("metric_name") or ""):
+            return True
+        raw_measures = op.get("measures")
+        if not isinstance(raw_measures, list | tuple):
+            continue
+        for measure in raw_measures:
+            if not isinstance(measure, Mapping):
+                continue
+            if str(measure.get("function") or "").strip().lower() == "count":
+                return True
+    return False
 
 
 def _missing(code: str, message: str, **details: Any) -> dict[str, Any]:

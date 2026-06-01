@@ -58,6 +58,16 @@ from services.cypher_generator_agent.app.validation.structural_requirements impo
 
 
 _STRUCTURAL_LITERAL_SKIP_SLOTS = {"limit", "order_by", "group_by", "path", "projection"}
+_PROPERTY_COUNT_MODIFIER_TERMS = {
+    "属性",
+    "属性值",
+    "属性记录",
+    "记录",
+    "非空值",
+    "字段值",
+    "值",
+    "条目",
+}
 
 
 def run_pipeline(
@@ -2008,6 +2018,14 @@ def _is_aggregate_modifier_projection_text(term: str) -> bool:
     return term.strip() in {"属性值", "属性", "条目", "记录", "节点", "实例"}
 
 
+def _is_property_count_modifier_text(term: str) -> bool:
+    return term.strip() in _PROPERTY_COUNT_MODIFIER_TERMS
+
+
+def _is_non_empty_filter_text(term: str) -> bool:
+    return term.strip() in {"非空", "不为空", "不为空值", "not null", "NOT NULL"}
+
+
 def _unique_texts(values: list[str]) -> list[str]:
     texts: list[str] = []
     for value in values:
@@ -2200,16 +2218,20 @@ def _zero_hop_count_measure_from_projection_terms(
     quantity_terms = _zero_hop_quantity_projection_terms(decomposition)
     if not quantity_terms:
         return None
-    if not any(
-        _is_aggregate_modifier_projection_text(str(slot_term.get("text") or ""))
-        for slot_term in _substantive_terms_with_slot(decomposition, slot="projection")
-    ):
+    modifier_terms = _zero_hop_property_count_modifier_terms(decomposition)
+    if not modifier_terms:
         return None
     property_terms: list[str] = []
     property_refs: list[tuple[str, str]] = []
-    for slot_term in _substantive_terms_with_slot(decomposition, slot="projection"):
+    for slot_term in _zero_hop_property_count_candidate_terms(decomposition):
         text = str(slot_term.get("text") or "").strip()
-        if not text or _is_quantity_projection_text(text) or _is_aggregate_modifier_projection_text(text):
+        if (
+            not text
+            or _is_quantity_projection_text(text)
+            or _is_property_count_modifier_text(text)
+            or _is_distribution_noise_term(text)
+            or _is_non_empty_filter_text(text)
+        ):
             continue
         refs = _resolve_projection_property_refs(
             slot_term,
@@ -2231,8 +2253,35 @@ def _zero_hop_count_measure_from_projection_terms(
         "owner": owner,
         "property": property_name,
         "alias": f"{_snake_case(owner)}_{property_name}_count",
-        "projection_terms": _unique_texts([*property_terms, *quantity_terms]),
+        "projection_terms": _unique_texts([*property_terms, *modifier_terms, *quantity_terms]),
     }
+
+
+def _zero_hop_property_count_candidate_terms(decomposition: Mapping[str, Any]) -> list[dict[str, Any]]:
+    terms: list[dict[str, Any]] = []
+    for slot in ("projection", "filter"):
+        for slot_term in _substantive_terms_with_slot(decomposition, slot=slot):
+            terms.append(slot_term)
+            text = str(slot_term.get("text") or "").strip()
+            attached_to = str(slot_term.get("attached_to") or "").strip()
+            if _is_property_count_modifier_text(text) and attached_to:
+                terms.append({"text": attached_to, "slot": slot})
+    return terms
+
+
+def _zero_hop_property_count_modifier_terms(decomposition: Mapping[str, Any]) -> list[str]:
+    raw_terms = decomposition.get("substantive_terms")
+    if not isinstance(raw_terms, list | tuple):
+        return []
+    return _unique_texts(
+        [
+            str(slot_term.get("text") or "").strip()
+            for slot_term in raw_terms
+            if isinstance(slot_term, Mapping)
+            and str(slot_term.get("slot") or "").strip() in {"projection", "filter"}
+            and _is_property_count_modifier_text(str(slot_term.get("text") or ""))
+        ]
+    )
 
 
 def _zero_hop_quantity_projection_terms(decomposition: Mapping[str, Any]) -> list[str]:
@@ -2241,6 +2290,7 @@ def _zero_hop_quantity_projection_terms(decomposition: Mapping[str, Any]) -> lis
         for slot_term in _substantive_terms_with_slot(decomposition, slot="projection")
         if _is_quantity_projection_text(str(slot_term.get("text") or ""))
         or _is_aggregate_modifier_projection_text(str(slot_term.get("text") or ""))
+        or _is_property_count_modifier_text(str(slot_term.get("text") or ""))
     ]
     return _unique_texts(terms)
 

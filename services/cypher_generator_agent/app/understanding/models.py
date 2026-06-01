@@ -162,6 +162,20 @@ class CompactGroundedUnderstanding(UnderstandingBaseModel):
     ambiguities: list[GroundedAmbiguity] = Field(default_factory=list)
     unsupported: GroundedUnsupported | None = None
 
+    @field_validator(
+        "filters",
+        "projection",
+        "group_by",
+        "measures",
+        "sort",
+        "assumptions",
+        "ambiguities",
+        mode="before",
+    )
+    @classmethod
+    def empty_list_for_null_sequences(cls, value: Any) -> Any:
+        return [] if value is None else value
+
     @field_validator("query_shape")
     @classmethod
     def strip_query_shape(cls, value: str) -> str:
@@ -343,6 +357,7 @@ def _looks_like_projection_property(item: dict[str, Any]) -> bool:
 
 
 def parse_grounded_understanding_response(payload: Any) -> CompactGroundedUnderstanding | GroundedUnderstanding:
+    _reject_compact_binding_details(payload)
     try:
         return GROUNDED_UNDERSTANDING_RESPONSE_ADAPTER.validate_python(payload)
     except ValidationError as full_exc:
@@ -356,6 +371,32 @@ def parse_grounded_understanding_response(payload: Any) -> CompactGroundedUnders
 
 def grounded_understanding_json_schema() -> dict[str, Any]:
     return COMPACT_GROUNDED_UNDERSTANDING_RESPONSE_ADAPTER.json_schema()
+
+
+def _reject_compact_binding_details(payload: Any) -> None:
+    if _has_legacy_full_top_level_payload(payload):
+        return
+    if not isinstance(payload, Mapping):
+        return
+    selected_bindings = payload.get("selected_bindings")
+    if not isinstance(selected_bindings, list | tuple):
+        return
+    forbidden_keys = {"semantic_type", "semantic_id", "semantic_name", "owner", "confidence", "rationale"}
+    for index, binding in enumerate(selected_bindings):
+        if not isinstance(binding, Mapping) or "candidate_id" not in binding:
+            continue
+        extra_keys = sorted(forbidden_keys.intersection(binding))
+        if extra_keys:
+            raise ValueError(
+                "compact selected_bindings must only include candidate_id, role, and direction; "
+                f"binding[{index}] included {extra_keys}"
+            )
+
+
+def _has_legacy_full_top_level_payload(payload: Any) -> bool:
+    return isinstance(payload, Mapping) and any(
+        key in payload for key in ("coverage", "selected_literals", "confidence")
+    )
 
 
 def _looks_like_legacy_full_grounding_payload(payload: Any) -> bool:

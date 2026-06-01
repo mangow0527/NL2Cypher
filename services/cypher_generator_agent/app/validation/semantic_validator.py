@@ -317,16 +317,21 @@ class SemanticValidator:
                         )
                     )
                     continue
-                if dimension in valid_dimensions:
+                canonical_dimension = _canonical_metric_dimension(
+                    item,
+                    valid_dimensions=valid_dimensions,
+                    metric_aliases=metric_aliases,
+                )
+                if canonical_dimension is not None:
                     owner = _dimension_owner(item)
-                    target = str(item.get("target"))
+                    target = canonical_dimension.split(".", 1)[0]
                     expected_owner = metric_aliases.get(target)
                     if expected_owner is not None and owner != expected_owner:
                         errors.append(
                             SemanticValidationIssue(
                                 code="metric_dimension_invalid",
                                 message=(
-                                    f"Metric {metric_binding.name} dimension {dimension} uses "
+                                    f"Metric {metric_binding.name} dimension {canonical_dimension} uses "
                                     f"property owner {owner}, but alias {target} refers to {expected_owner}."
                                 ),
                                 severity="error",
@@ -334,7 +339,7 @@ class SemanticValidator:
                                 action="repair_binding",
                                 details={
                                     "metric": metric_binding.name,
-                                    "dimension": dimension,
+                                    "dimension": canonical_dimension,
                                     "location": f"group_by[{index}]",
                                     "expected_owner": expected_owner,
                                     "actual_owner": owner,
@@ -480,6 +485,29 @@ def _dimension_owner(item: Mapping[str, Any]) -> str | None:
         return None
     owner = nested.get("owner")
     return str(owner) if owner else None
+
+
+def _canonical_metric_dimension(
+    item: Mapping[str, Any],
+    *,
+    valid_dimensions: set[str],
+    metric_aliases: Mapping[str, str],
+) -> str | None:
+    dimension = _dimension_key(item)
+    if dimension in valid_dimensions:
+        return dimension
+    property_ref = item.get("property")
+    if not isinstance(property_ref, Mapping):
+        return None
+    owner = property_ref.get("owner")
+    name = property_ref.get("name") or property_ref.get("property_name")
+    if not owner or not name:
+        return None
+    for alias, alias_owner in metric_aliases.items():
+        candidate = f"{alias}.{name}"
+        if alias_owner == owner and candidate in valid_dimensions:
+            return candidate
+    return None
 
 
 def _metric_pattern_aliases(pattern: str) -> dict[str, str]:

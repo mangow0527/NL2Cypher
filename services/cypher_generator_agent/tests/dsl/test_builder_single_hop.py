@@ -279,6 +279,48 @@ def test_builder_accepts_explicit_vertex_full_projection(
     assert ast.projection.items[0].vertex_full is True
 
 
+def test_builder_rejects_property_projection_when_owner_is_not_bound(
+    registry: GraphSemanticRegistry,
+) -> None:
+    plan = BindingPlan(
+        query_shape="single_hop_traversal",
+        vertex_bindings=[
+            VertexBinding(name="Service", candidate=_candidate("vertex", "Service")),
+            VertexBinding(name="Tunnel", candidate=_candidate("vertex", "Tunnel")),
+        ],
+        edge_bindings=[
+            EdgeBinding(name="SERVICE_USES_TUNNEL", candidate=_candidate("edge", "SERVICE_USES_TUNNEL")),
+        ],
+        projection=[{"semantic_type": "property", "owner": "Port", "name": "id"}],
+    )
+
+    with pytest.raises(ValueError, match="projection owner Port is not bound"):
+        RestrictedDslBuilder(registry).build(
+            plan,
+            source_question="查询服务相关端口",
+            query_id="q-missing-projection-owner",
+        )
+
+
+def test_builder_rejects_vertex_full_projection_when_owner_is_not_bound(
+    registry: GraphSemanticRegistry,
+) -> None:
+    plan = BindingPlan(
+        query_shape="vertex_lookup",
+        vertex_bindings=[
+            VertexBinding(name="Port", candidate=_candidate("vertex", "Port")),
+        ],
+        projection=[{"semantic_type": "vertex_full", "name": "Service"}],
+    )
+
+    with pytest.raises(ValueError, match="projection owner Service is not bound"):
+        RestrictedDslBuilder(registry).build(
+            plan,
+            source_question="查询端口关联服务",
+            query_id="q-missing-vertex-full-owner",
+        )
+
+
 def test_single_hop_rejects_sort_or_limit_until_compiler_supports_them(
     registry: GraphSemanticRegistry,
 ) -> None:

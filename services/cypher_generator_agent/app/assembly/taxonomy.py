@@ -67,7 +67,10 @@ def _zero_hop_candidates(requirements: StructuralRequirements, decomposition: Ma
     candidates: list[QueryShape] = []
     if requirements.requires_aggregate and not _has_group_topn_signal(requirements):
         candidates.append(QueryShape.F3_VERTEX_AGGREGATE_0HOP)
-    if _has_filter_or_literal_hint(decomposition):
+    filter_signal = _has_filter_or_literal_hint(decomposition)
+    if requirements.requires_aggregate and _has_property_count_object_signal(decomposition):
+        filter_signal = _has_explicit_literal_hint(decomposition)
+    if filter_signal:
         candidates.append(QueryShape.F2_VERTEX_FILTER_0HOP)
     if not candidates and requirements.projection_terms:
         candidates.append(QueryShape.F1_VERTEX_PROJECTION_0HOP)
@@ -98,6 +101,41 @@ def _has_filter_or_literal_hint(decomposition: Mapping[str, Any]) -> bool:
     return any(isinstance(term, Mapping) and term.get("slot") in {"filter", "literal", "value"} for term in raw_terms)
 
 
+def _has_explicit_literal_hint(decomposition: Mapping[str, Any]) -> bool:
+    return any(
+        _truthy_sequence(decomposition.get(key))
+        for key in ("literal_hints", "literal_candidates", "literal_candidate_objects")
+    )
+
+
+def _has_property_count_object_signal(decomposition: Mapping[str, Any]) -> bool:
+    raw_terms = decomposition.get("substantive_terms")
+    if not isinstance(raw_terms, list | tuple):
+        return False
+    texts = [
+        str(term.get("text") or "").strip()
+        for term in raw_terms
+        if isinstance(term, Mapping)
+    ]
+    return any(_is_property_count_modifier_text(text) for text in texts) and (
+        any(_is_quantity_text(text) for text in texts) or _is_count_intent(decomposition)
+    )
+
+
+def _is_property_count_modifier_text(text: str) -> bool:
+    return text.strip() in _PROPERTY_COUNT_MODIFIER_TERMS
+
+
+def _is_quantity_text(text: str) -> bool:
+    return any(marker in text for marker in ("数量", "个数", "总数", "多少", "次数", "频率", "count", "Count"))
+
+
+def _is_count_intent(decomposition: Mapping[str, Any]) -> bool:
+    return str(decomposition.get("intent_type") or "").strip() == "count" or str(
+        decomposition.get("output_shape") or ""
+    ).strip() == "scalar"
+
+
 def _truthy_sequence(value: Any) -> bool:
     return isinstance(value, list | tuple | set) and bool(value)
 
@@ -108,3 +146,15 @@ def _is_explicit_two_stage(decomposition: Mapping[str, Any]) -> bool:
         str(decomposition.get("intent_type") or "").strip().lower(),
     }
     return bool(values & {"two_stage_aggregate", "two-stage-aggregate", "two stage aggregate"})
+
+
+_PROPERTY_COUNT_MODIFIER_TERMS = {
+    "属性",
+    "属性值",
+    "属性记录",
+    "记录",
+    "非空值",
+    "字段值",
+    "值",
+    "条目",
+}

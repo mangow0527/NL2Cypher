@@ -95,6 +95,26 @@ def test_top_n_metric_group_by_dimension_must_be_declared_valid_dimension(
     assert "ne.id" in result.errors[0].message
 
 
+def test_metric_group_by_dimension_accepts_target_alias_normalization(
+    validator: SemanticValidator,
+) -> None:
+    plan = BindingPlan(
+        query_shape="top_n",
+        metric_bindings=[MetricBinding(name="device_count", candidate=_candidate("metric", "device_count"))],
+        group_by=[
+            {
+                "alias": "network_element_location",
+                "target": "network_element",
+                "property": {"owner": "NetworkElement", "name": "location"},
+            }
+        ],
+    )
+
+    result = validator.validate(plan)
+
+    assert result.is_valid is True
+
+
 def _candidate(semantic_type: str, semantic_id: str, *, metadata: dict[str, Any] | None = None) -> CandidateBinding:
     return CandidateBinding(
         semantic_type=semantic_type,

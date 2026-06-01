@@ -517,6 +517,128 @@ def test_f3_property_value_count_uses_unique_measure_property(
     ]
 
 
+def test_zero_hop_requirements_count_filter_slot_property_modifier_as_measure_property(
+    registry: GraphSemanticRegistry,
+) -> None:
+    retrieval = CandidateRetrievalResult(
+        candidates=[
+            _semantic_candidate("vertex", "Service"),
+            _semantic_candidate("property", "Service.id", owner="Service", semantic_name="id"),
+            _semantic_candidate(
+                "property",
+                "Service.quality_of_service",
+                owner="Service",
+                semantic_name="quality_of_service",
+            ),
+        ],
+    )
+
+    requirements = _zero_hop_assembler_requirements(
+        shape=QueryShape.F3_VERTEX_AGGREGATE_0HOP,
+        decomposition={
+            "original_question": "统计所有服务节点中服务质量属性的数量。",
+            "intent_type": "count",
+            "output_shape": "scalar",
+            "substantive_terms": [
+                {"text": "服务", "slot": "path"},
+                {"text": "节点", "slot": "path"},
+                {"text": "服务质量", "slot": "filter", "attached_to": "服务"},
+                {"text": "属性", "slot": "filter", "attached_to": "服务质量"},
+                {"text": "数量", "slot": "projection"},
+            ],
+        },
+        retrieval_result=retrieval,
+        literal_results=[],
+        registry=registry,
+    )
+
+    assert requirements["aggregate"] == {
+        "function": "count",
+        "owner": "Service",
+        "property": "quality_of_service",
+        "alias": "service_quality_of_service_count",
+        "projection_terms": ["服务质量", "属性", "数量"],
+    }
+
+
+def test_zero_hop_requirements_counts_id_property_values_when_value_is_quantity_term(
+    registry: GraphSemanticRegistry,
+) -> None:
+    retrieval = CandidateRetrievalResult(
+        candidates=[
+            _semantic_candidate("vertex", "Service"),
+            _semantic_candidate("property", "Service.id", owner="Service", semantic_name="id"),
+        ],
+    )
+
+    requirements = _zero_hop_assembler_requirements(
+        shape=QueryShape.F3_VERTEX_AGGREGATE_0HOP,
+        decomposition={
+            "original_question": "统计服务节点的ID属性共有多少个值。",
+            "intent_type": "count",
+            "output_shape": "scalar",
+            "substantive_terms": [
+                {"text": "服务", "slot": "path"},
+                {"text": "节点", "slot": "path"},
+                {"text": "ID", "slot": "filter", "attached_to": "服务"},
+                {"text": "属性", "slot": "filter", "attached_to": "服务"},
+                {"text": "值", "slot": "projection"},
+            ],
+        },
+        retrieval_result=retrieval,
+        literal_results=[],
+        registry=registry,
+    )
+
+    assert requirements["aggregate"] == {
+        "function": "count",
+        "owner": "Service",
+        "property": "id",
+        "alias": "service_id_count",
+        "projection_terms": ["ID", "属性", "值"],
+    }
+
+
+def test_zero_hop_requirements_does_not_count_property_without_closed_modifier(
+    registry: GraphSemanticRegistry,
+) -> None:
+    retrieval = CandidateRetrievalResult(
+        candidates=[
+            _semantic_candidate("vertex", "Service"),
+            _semantic_candidate("property", "Service.id", owner="Service", semantic_name="id"),
+            _semantic_candidate(
+                "property",
+                "Service.quality_of_service",
+                owner="Service",
+                semantic_name="quality_of_service",
+            ),
+        ],
+    )
+
+    requirements = _zero_hop_assembler_requirements(
+        shape=QueryShape.F3_VERTEX_AGGREGATE_0HOP,
+        decomposition={
+            "original_question": "统计服务质量不为空的服务数量。",
+            "intent_type": "count",
+            "output_shape": "scalar",
+            "substantive_terms": [
+                {"text": "服务质量", "slot": "filter", "attached_to": "服务"},
+                {"text": "不为空", "slot": "filter", "attached_to": "服务质量"},
+                {"text": "服务", "slot": "projection"},
+                {"text": "数量", "slot": "projection", "attached_to": "服务"},
+            ],
+        },
+        retrieval_result=retrieval,
+        literal_results=[],
+        registry=registry,
+    )
+
+    assert requirements["aggregate"] == {
+        "function": "count",
+        "alias": "service_count",
+    }
+
+
 def test_f3_with_group_order_or_limit_falls_back(registry: GraphSemanticRegistry) -> None:
     for structural_requirements in (
         {"aggregate": {"function": "count"}, "group_by": [{"property": "quality_of_service"}]},

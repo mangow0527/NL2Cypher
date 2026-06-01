@@ -364,7 +364,11 @@ class RestrictedDslBuilder:
             }
         ]
         dsl["projection"] = {"items": self._two_step_projection_items(plan, bind_as)}
-        self._append_sort_limit(dsl, plan)
+        self._append_sort_limit(
+            dsl,
+            plan,
+            source_namespace_overrides={"group": bind_as, "measure": bind_as},
+        )
         return dsl
 
     def _base_payload(
@@ -458,9 +462,12 @@ class RestrictedDslBuilder:
 
         if item.get("semantic_type") == "vertex_full":
             vertex_name = str(item["name"])
+            target = role_by_owner.get(vertex_name)
+            if target is None:
+                raise ValueError(f"projection owner {vertex_name} is not bound in query roles")
             projection = {
                 "alias": item.get("alias") or _snake_case(vertex_name),
-                "target": role_by_owner[vertex_name],
+                "target": target,
                 "vertex_full": True,
             }
             _copy_projection_terms(item, projection)
@@ -469,9 +476,12 @@ class RestrictedDslBuilder:
         if item.get("semantic_type") == "property":
             owner = str(item["owner"])
             name = str(item["name"])
+            target = role_by_owner.get(owner)
+            if target is None:
+                raise ValueError(f"projection owner {owner} is not bound in query roles")
             projection = {
                 "alias": item.get("alias") or name,
-                "target": role_by_owner[owner],
+                "target": target,
                 "property": {"owner": owner, "name": name},
             }
             _copy_projection_terms(item, projection)
@@ -489,12 +499,23 @@ class RestrictedDslBuilder:
         if target in role_by_owner.values():
             return str(target)
         owner = str(property_ref["owner"])
-        return role_by_owner.get(owner, str(target))
+        owner_target = role_by_owner.get(owner)
+        if owner_target is None:
+            raise ValueError(f"projection owner {owner} is not bound in query roles")
+        return owner_target
 
-    def _sort_item(self, item: Mapping[str, Any]) -> dict[str, Any]:
+    def _sort_item(
+        self,
+        item: Mapping[str, Any],
+        *,
+        source_namespace_overrides: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
         if "source" not in item:
             raise ValueError(f"restricted DSL sort item requires a source reference: {item!r}")
-        return {"source": item["source"], "direction": item.get("direction", "asc")}
+        return {
+            "source": _normalize_source_namespace(str(item["source"]), source_namespace_overrides or {}),
+            "direction": item.get("direction", "asc"),
+        }
 
     def _dimension_item(
         self,
@@ -554,7 +575,7 @@ class RestrictedDslBuilder:
 
     def _aggregate_projection_items(self, plan: BindingPlan) -> list[dict[str, Any]]:
         if plan.projection:
-            return self._projection_items(plan, {})
+            return self._aggregate_output_projection_items(plan, source_namespace_by_kind={})
         return [
             *({"alias": str(item["alias"]), "source": f"group.{item['alias']}"} for item in plan.group_by),
             *({"alias": str(item["alias"]), "source": f"measure.{item['alias']}"} for item in plan.measures),
@@ -562,15 +583,63 @@ class RestrictedDslBuilder:
 
     def _two_step_projection_items(self, plan: BindingPlan, bind_as: str) -> list[dict[str, Any]]:
         if plan.projection:
-            return self._projection_items(plan, {})
+            return self._aggregate_output_projection_items(
+                plan,
+                source_namespace_by_kind={"group": bind_as, "measure": bind_as},
+            )
         return [
             *({"alias": str(item["alias"]), "source": f"{bind_as}.{item['alias']}"} for item in plan.group_by),
             *({"alias": str(item["alias"]), "source": f"{bind_as}.{item['alias']}"} for item in plan.measures),
         ]
 
-    def _append_sort_limit(self, dsl: dict[str, Any], plan: BindingPlan) -> None:
+    def _aggregate_output_projection_items(
+        self,
+        plan: BindingPlan,
+        *,
+        source_namespace_by_kind: Mapping[str, str],
+    ) -> list[dict[str, Any]]:
+        outputs = _aggregate_outputs(plan)
+        items: list[dict[str, Any]] = []
+        for item in plan.projection:
+            if "source" in item:
+                projection = {"source": _normalize_source_namespace(str(item["source"]), source_namespace_by_kind)}
+                if item.get("alias") is not None:
+                    projection["alias"] = item["alias"]
+                _copy_projection_terms(item, projection)
+                items.append(projection)
+                continue
+
+            property_ref = _projection_property_ref(item)
+            if property_ref is None:
+                raise ValueError(f"aggregate projection must reference group/measure output: {item!r}")
+
+            selected = _select_aggregate_output(property_ref, item, outputs)
+            namespace = source_namespace_by_kind.get(selected["kind"], selected["kind"])
+            projection = {
+                "alias": str(item.get("alias") or selected["alias"]),
+                "source": f"{namespace}.{selected['alias']}",
+            }
+            _copy_projection_terms(item, projection)
+            items.append(projection)
+        return items
+
+    def _append_sort_limit(
+        self,
+        dsl: dict[str, Any],
+        plan: BindingPlan,
+        *,
+        source_namespace_overrides: Mapping[str, str] | None = None,
+    ) -> None:
         if plan.sort:
-            dsl["operations"].append({"op": "sort", "by": [self._sort_item(item) for item in plan.sort]})
+            dsl["operations"].append(
+                {
+                    "op": "sort",
+                    "by": [
+                        self._sort_item(item, source_namespace_overrides=source_namespace_overrides)
+                        for item in plan.sort
+                    ],
+                }
+            )
         if plan.limit is not None:
             dsl["operations"].append({"op": "limit", "value": plan.limit})
 
@@ -744,3 +813,74 @@ def _mapping_property(item: Mapping[str, Any]) -> Mapping[str, Any]:
     if not owner or not name:
         raise ValueError(f"aggregate item requires property owner/name: {item!r}")
     return {"owner": owner, "name": name}
+
+
+def _projection_property_ref(item: Mapping[str, Any]) -> Mapping[str, str] | None:
+    property_ref = item.get("property")
+    if isinstance(property_ref, Mapping):
+        owner = property_ref.get("owner")
+        name = property_ref.get("name") or property_ref.get("property_name")
+        if owner and name:
+            return {"owner": str(owner), "name": str(name)}
+        raise ValueError(f"aggregate projection property requires owner/name: {item!r}")
+    if item.get("semantic_type") == "property":
+        owner = item.get("owner")
+        name = item.get("name")
+        if owner and name:
+            return {"owner": str(owner), "name": str(name)}
+        raise ValueError(f"aggregate projection property requires owner/name: {item!r}")
+    return None
+
+
+def _aggregate_outputs(plan: BindingPlan) -> list[dict[str, str]]:
+    outputs: list[dict[str, str]] = []
+    for kind, values in (("group", plan.group_by), ("measure", plan.measures)):
+        for item in values:
+            property_ref = _mapping_property(item)
+            outputs.append(
+                {
+                    "kind": kind,
+                    "alias": str(item["alias"]),
+                    "owner": str(property_ref["owner"]),
+                    "name": str(property_ref["name"]),
+                }
+            )
+    return outputs
+
+
+def _select_aggregate_output(
+    property_ref: Mapping[str, str],
+    projection: Mapping[str, Any],
+    outputs: list[Mapping[str, str]],
+) -> Mapping[str, str]:
+    owner = str(property_ref["owner"])
+    name = str(property_ref["name"])
+    matches = [
+        item
+        for item in outputs
+        if item.get("owner") == owner and item.get("name") == name
+    ]
+    alias = projection.get("alias")
+    if alias is not None:
+        alias_matches = [item for item in matches if item.get("alias") == str(alias)]
+        if len(alias_matches) == 1:
+            return alias_matches[0]
+        if len(alias_matches) > 1:
+            raise ValueError(f"ambiguous aggregate projection output for alias {alias!r}")
+        if len(matches) == 1:
+            return matches[0]
+    elif len(matches) == 1:
+        return matches[0]
+
+    if not matches:
+        raise ValueError(
+            f"aggregate projection property {owner}.{name} does not reference group_by or measure output"
+        )
+    raise ValueError(f"ambiguous aggregate projection property {owner}.{name}")
+
+
+def _normalize_source_namespace(source: str, overrides: Mapping[str, str]) -> str:
+    if "." not in source:
+        return source
+    namespace, name = source.split(".", 1)
+    return f"{overrides.get(namespace, namespace)}.{name}"

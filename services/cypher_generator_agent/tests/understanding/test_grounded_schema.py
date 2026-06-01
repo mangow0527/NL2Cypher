@@ -112,7 +112,7 @@ def test_selecting_service_uses_tunnel_yields_binder_compatible_payload() -> Non
         ]
     )
 
-    result = GroundedUnderstandingSelector(client).select(
+    result = GroundedUnderstandingSelector(client, max_schema_retries=0).select(
         question_decomposition=_gold_decomposition(),
         candidates=candidates,
         literal_results=[literal_result],
@@ -190,7 +190,7 @@ def test_compact_candidate_only_output_hydrates_to_binder_payload() -> None:
         ]
     )
 
-    result = GroundedUnderstandingSelector(client).select(
+    result = GroundedUnderstandingSelector(client, max_schema_retries=0).select(
         question_decomposition=_gold_decomposition(),
         candidates=_gold_candidates(),
         literal_results=[literal_result],
@@ -329,6 +329,79 @@ def test_legacy_string_operation_hints_hydrate_to_binder_payload() -> None:
     ]
 
 
+def test_compact_metric_projection_hydrates_to_measure_source() -> None:
+    client = FakeGroundedLLMClient(
+        [
+            {
+                "schema_version": "grounded_understanding_v1",
+                "status": "grounded",
+                "query_shape": "top_n",
+                "selected_bindings": [
+                    {"role": "metric", "candidate_id": "metric:device_count"},
+                    {"role": "group_by", "candidate_id": "property:NetworkElement.location"},
+                ],
+                "projection": [
+                    {
+                        "semantic_type": "property",
+                        "owner": "NetworkElement",
+                        "name": "location",
+                        "alias": "location",
+                    },
+                    {
+                        "semantic_type": "metric",
+                        "name": "device_count",
+                        "alias": "网元数量",
+                    },
+                ],
+                "group_by": [
+                    {
+                        "alias": "location",
+                        "target": "network_element",
+                        "property": {"owner": "NetworkElement", "name": "location"},
+                    }
+                ],
+                "measures": [
+                    {
+                        "alias": "网元数量",
+                        "function": "count",
+                        "target": "network_element",
+                        "property": {"owner": "NetworkElement", "name": "id"},
+                    }
+                ],
+                "sort": [{"source": "measure.网元数量", "direction": "desc"}],
+                "limit": 10,
+            }
+        ]
+    )
+
+    result = GroundedUnderstandingSelector(client).select(
+        question_decomposition=_gold_decomposition(),
+        candidates=_aggregate_candidates(),
+        literal_results=[],
+    )
+
+    assert isinstance(result, GroundedUnderstanding)
+    assert result.projection == [
+        {"alias": "location", "source": "group.location"},
+        {"alias": "网元数量", "source": "measure.网元数量"},
+    ]
+
+
+def test_compact_null_operation_lists_are_treated_as_empty() -> None:
+    payload = _valid_minimal_payload()
+    payload["sort"] = None
+    client = FakeGroundedLLMClient([payload])
+
+    result = GroundedUnderstandingSelector(client, max_schema_retries=0).select(
+        question_decomposition=_gold_decomposition(),
+        candidates=_gold_candidates(),
+        literal_results=[],
+    )
+
+    assert isinstance(result, GroundedUnderstanding)
+    assert result.sort == []
+
+
 def test_schema_violation_retries_then_returns_valid_grounding() -> None:
     client = FakeGroundedLLMClient(
         [
@@ -372,28 +445,23 @@ def test_schema_violation_stops_after_initial_attempt_plus_two_retries() -> None
     assert [call["attempt"] for call in client.calls] == [1, 2, 3]
 
 
-def test_bare_vertex_projection_is_schema_invalid() -> None:
+def test_bare_vertex_projection_hydrates_to_vertex_full_when_candidate_exists() -> None:
     bare_vertex_payload = _valid_minimal_payload()
     bare_vertex_payload["projection"] = [{"semantic_type": "vertex", "name": "Service"}]
     client = FakeGroundedLLMClient(
         [
             bare_vertex_payload,
-            bare_vertex_payload,
-            bare_vertex_payload,
         ]
     )
 
-    result = GroundedUnderstandingSelector(client).select(
+    result = GroundedUnderstandingSelector(client, max_schema_retries=0).select(
         question_decomposition=_gold_decomposition(),
         candidates=_gold_candidates(),
         literal_results=[],
     )
 
-    assert isinstance(result, GroundedUnderstandingFailure)
-    assert result.status == "generation_failed"
-    assert result.reason == "grounded_understanding_schema_invalid"
-    assert result.error_type == "ValidationError"
-    assert "ambiguous bare vertex projection" in result.errors[-1].message
+    assert isinstance(result, GroundedUnderstanding)
+    assert result.projection == [{"semantic_type": "vertex_full", "name": "Service"}]
 
 
 def test_non_projection_semantic_type_is_schema_invalid() -> None:
@@ -418,6 +486,43 @@ def test_non_projection_semantic_type_is_schema_invalid() -> None:
     assert isinstance(result, GroundedUnderstandingFailure)
     assert result.reason == "grounded_understanding_schema_invalid"
     assert "projection semantic_type must be property or vertex_full" in result.errors[-1].message
+
+
+def test_metric_projection_without_matching_measure_source_stays_schema_invalid() -> None:
+    invalid_projection_payload = _valid_minimal_payload()
+    invalid_projection_payload["query_shape"] = "top_n"
+    invalid_projection_payload["selected_bindings"] = [{"candidate_id": "metric:device_count"}]
+    invalid_projection_payload["projection"] = [
+        {"semantic_type": "metric", "name": "device_count", "alias": "设备数量"}
+    ]
+    invalid_projection_payload["measures"] = []
+    client = FakeGroundedLLMClient([invalid_projection_payload])
+
+    result = GroundedUnderstandingSelector(client, max_schema_retries=0).select(
+        question_decomposition=_gold_decomposition(),
+        candidates=_aggregate_candidates(),
+        literal_results=[],
+    )
+
+    assert isinstance(result, GroundedUnderstandingFailure)
+    assert result.reason == "grounded_understanding_schema_invalid"
+    assert "projection semantic_type must be property or vertex_full" in result.errors[-1].message
+
+
+def test_bare_vertex_projection_outside_candidates_stays_rejected() -> None:
+    invalid_projection_payload = _valid_minimal_payload()
+    invalid_projection_payload["projection"] = [{"semantic_type": "vertex", "name": "Protocol"}]
+    client = FakeGroundedLLMClient([invalid_projection_payload])
+
+    result = GroundedUnderstandingSelector(client, max_schema_retries=0).select(
+        question_decomposition=_gold_decomposition(),
+        candidates=_gold_candidates(),
+        literal_results=[],
+    )
+
+    assert isinstance(result, GroundedUnderstandingFailure)
+    assert result.reason == "semantic_match_rejected"
+    assert "candidate_id vertex:Protocol is not present in candidate set" in result.errors[-1].message
 
 
 def test_vertex_full_projection_is_explicitly_allowed() -> None:
@@ -589,9 +694,11 @@ def _aggregate_candidates() -> CandidateRetrievalResult:
         candidates=[
             _candidate("vertex", "Service"),
             _candidate("vertex", "NetworkElement"),
+            _candidate("metric", "device_count"),
             _candidate("edge", "SERVICE_USES_TUNNEL"),
             _candidate("edge", "PATH_THROUGH"),
             _candidate("property", "Service.id", owner="Service", semantic_name="id"),
+            _candidate("property", "NetworkElement.id", owner="NetworkElement", semantic_name="id"),
             _candidate(
                 "property",
                 "NetworkElement.location",

@@ -38,6 +38,42 @@ def test_zero_hop_aggregate_with_filter_is_ambiguous_not_priority_guessed() -> N
     }
 
 
+def test_zero_hop_property_count_object_terms_do_not_make_aggregate_shape_ambiguous() -> None:
+    result = classify_query_shape(
+        StructuralRequirements(requires_aggregate=True),
+        {
+            "intent_type": "count",
+            "output_shape": "scalar",
+            "substantive_terms": [
+                {"text": "服务质量", "slot": "filter", "attached_to": "服务"},
+                {"text": "属性", "slot": "filter", "attached_to": "服务质量"},
+                {"text": "数量", "slot": "projection"},
+            ],
+        },
+    )
+
+    assert result.status == ShapeStatus.RESOLVED
+    assert result.shape == QueryShape.F3_VERTEX_AGGREGATE_0HOP
+
+
+def test_zero_hop_property_value_count_uses_count_intent_when_quantity_word_was_merged() -> None:
+    result = classify_query_shape(
+        StructuralRequirements(requires_aggregate=True),
+        {
+            "intent_type": "count",
+            "output_shape": "scalar",
+            "substantive_terms": [
+                {"text": "ID", "slot": "filter", "attached_to": "服务"},
+                {"text": "属性", "slot": "filter", "attached_to": "服务"},
+                {"text": "值", "slot": "projection"},
+            ],
+        },
+    )
+
+    assert result.status == ShapeStatus.RESOLVED
+    assert result.shape == QueryShape.F3_VERTEX_AGGREGATE_0HOP
+
+
 def test_classifies_multihop_projection_filter_and_group_topn_shapes() -> None:
     assert (
         classify_query_shape(StructuralRequirements(min_path_hops=1, projection_terms=["id"])).shape

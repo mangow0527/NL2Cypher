@@ -169,6 +169,34 @@ def test_compact_candidate_id_outside_candidate_set_is_rejected() -> None:
     assert "candidate set" in result.message
 
 
+def test_compact_binding_with_extra_semantic_fields_is_schema_invalid() -> None:
+    client = FakeGroundedLLMClient(
+        {
+            "schema_version": "grounded_understanding_v1",
+            "status": "grounded",
+            "query_shape": "lookup",
+            "selected_bindings": [
+                {
+                    "candidate_id": "vertex:Service",
+                    "semantic_type": "metric",
+                    "semantic_id": "device_count",
+                }
+            ],
+        }
+    )
+
+    result = GroundedUnderstandingSelector(client, max_schema_retries=0).select(
+        question_decomposition=_decomposition(),
+        candidates=_candidates(_candidate("vertex", "Service")),
+        literal_results=[],
+    )
+
+    assert isinstance(result, GroundedUnderstandingFailure)
+    assert result.status == "generation_failed"
+    assert result.reason == "grounded_understanding_schema_invalid"
+    assert "compact selected_bindings" in result.errors[-1].message
+
+
 def test_close_candidates_are_preserved_as_ambiguity_without_forced_selection() -> None:
     client = FakeGroundedLLMClient(
         {
