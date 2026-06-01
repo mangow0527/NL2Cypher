@@ -186,8 +186,15 @@ class ZeroHopAssembler:
         if not isinstance(aggregate, Mapping) or aggregate.get("function", "count") != "count":
             return _fallback("unsupported_f3_aggregate")
 
-        id_property = self.registry.get_vertex(vertex_name).id_property
-        property_ref = self._unique_property(candidates, id_property, allow_registry_id=True, vertex_name=vertex_name)
+        aggregate_property = _property_name(aggregate)
+        if aggregate_property is None:
+            aggregate_property = self.registry.get_vertex(vertex_name).id_property
+        property_ref = self._unique_property(
+            candidates,
+            aggregate_property,
+            allow_registry_id=True,
+            vertex_name=vertex_name,
+        )
         if isinstance(property_ref, ZeroHopAssemblyResult):
             return property_ref
         owner, name = property_ref
@@ -225,6 +232,10 @@ class ZeroHopAssembler:
             )
 
         alias = str(aggregate.get("alias") or f"{_snake_case(vertex_name)}_count")
+        projection_terms = _projection_terms(aggregate)
+        projection_item = {"alias": alias, "source": f"measure.{alias}"}
+        if projection_terms:
+            projection_item["projection_terms"] = projection_terms
         dsl = {
             "schema_version": "restricted_query_dsl_v1",
             "query_id": "zero-hop-f3",
@@ -246,7 +257,7 @@ class ZeroHopAssembler:
                 }
             ],
             "filters": filters,
-            "projection": {"items": [{"alias": alias, "source": f"measure.{alias}"}]},
+            "projection": {"items": [projection_item]},
         }
         return _success(dsl)
 

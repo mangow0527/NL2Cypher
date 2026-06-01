@@ -471,6 +471,52 @@ def test_f3_unique_vertex_count_builds_parseable_aggregate(registry: GraphSemant
     assert ast.projection.items[0].source.name == "service_count"
 
 
+def test_f3_property_value_count_uses_unique_measure_property(
+    registry: GraphSemanticRegistry,
+) -> None:
+    result = ZeroHopAssembler(registry).assemble(
+        "F3",
+        candidates=[
+            _candidate("vertex", "Service"),
+            _candidate("property", "Service.id", owner="Service", semantic_name="id"),
+            _candidate(
+                "property",
+                "Service.quality_of_service",
+                owner="Service",
+                semantic_name="quality_of_service",
+            ),
+        ],
+        structural_requirements={
+            "aggregate": {
+                "function": "count",
+                "owner": "Service",
+                "property": "quality_of_service",
+                "alias": "service_quality_of_service_count",
+                "projection_terms": ["服务质量", "属性值", "总数量"],
+            }
+        },
+    )
+
+    assert result.success is True
+    assert result.dsl is not None
+    aggregate = result.dsl["operations"][0]
+    assert aggregate["measures"] == [
+            {
+                "alias": "service_quality_of_service_count",
+                "function": "count",
+                "target": "target",
+                "property": {"owner": "Service", "name": "quality_of_service"},
+            }
+    ]
+    assert result.dsl["projection"]["items"] == [
+        {
+            "alias": "service_quality_of_service_count",
+            "source": "measure.service_quality_of_service_count",
+            "projection_terms": ["服务质量", "属性值", "总数量"],
+        }
+    ]
+
+
 def test_f3_with_group_order_or_limit_falls_back(registry: GraphSemanticRegistry) -> None:
     for structural_requirements in (
         {"aggregate": {"function": "count"}, "group_by": [{"property": "quality_of_service"}]},

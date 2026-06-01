@@ -1256,11 +1256,10 @@ def test_unresolved_literal_stops_before_dsl_or_cypher_generation() -> None:
     ]
 
 
-def test_qa_c3_limit_number_does_not_trigger_literal_clarification(
+def test_qa_c3_limit_number_skips_literal_resolution_and_deterministic_f6_generates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     question = "统计服务使用的隧道源节点所在位置的网元数量，按数量降序排列，返回前3名。"
-    reached_grounding = False
 
     def fake_decompose(raw_question: str) -> dict[str, Any]:
         return {
@@ -1293,20 +1292,14 @@ def test_qa_c3_limit_number_does_not_trigger_literal_clarification(
             ),
         }
 
-    def stop_after_literal_resolution(*args: Any, **kwargs: Any) -> GroundedUnderstandingFailure:
-        nonlocal reached_grounding
-        reached_grounding = True
-        assert kwargs["literal_results"] == []
-        return GroundedUnderstandingFailure(
-            reason="test_stopped_after_literal_resolution",
-            message="literal resolution completed without asking about the limit number",
-        )
+    def fail_if_grounding_runs(*args: Any, **kwargs: Any) -> GroundedUnderstandingFailure:
+        raise AssertionError("deterministic F6 should generate before grounded understanding")
 
     monkeypatch.setattr(pipeline_module, "_mock_decompose", fake_decompose)
     monkeypatch.setattr(
         pipeline_module,
         "_run_grounded_understanding_stage",
-        stop_after_literal_resolution,
+        fail_if_grounding_runs,
     )
     monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_ENABLED", "false")
     get_settings.cache_clear()
@@ -1320,8 +1313,17 @@ def test_qa_c3_limit_number_does_not_trigger_literal_clarification(
     finally:
         get_settings.cache_clear()
 
-    assert reached_grounding is True
-    assert output.status == "service_failed"
+    assert output.status == "generated"
+    assert output.dsl is not None
+    assert output.dsl["bindings"]["edge_1"] == {"edge_name": "TUNNEL_SRC"}
+    aggregate = output.dsl["operations"][2]
+    assert aggregate["group_by"][0]["property"] == {"owner": "NetworkElement", "name": "location"}
+    assert aggregate["measures"][0]["property"] == {"owner": "NetworkElement", "name": "id"}
+    assert output.dsl["operations"][3] == {
+        "op": "sort",
+        "by": [{"source": "measure.network_element_count", "direction": "desc"}],
+    }
+    assert output.dsl["operations"][4] == {"op": "limit", "value": 3}
     literal_stage = _stage(output.trace, "literal_resolver")
     literal_input = literal_stage["input_ref"]["value"]
     assert literal_input["literal_requests"] == []
@@ -1329,6 +1331,8 @@ def test_qa_c3_limit_number_does_not_trigger_literal_clarification(
         {"raw": "3", "slot": "limit", "reason": "slot=limit"}
     ]
     assert literal_stage["metrics"]["skipped_literal_candidate_count"] == 1
+    deterministic_stage = _stage(output.trace, "deterministic_assembler")
+    assert deterministic_stage["metrics"]["deterministic_hit"] is True
 
 
 def test_structural_coverage_gate_stops_qa_c3_single_hop_before_compiler(
@@ -1384,6 +1388,18 @@ def test_structural_coverage_gate_stops_qa_c3_single_hop_before_compiler(
 
     monkeypatch.setattr(pipeline_module, "_mock_decompose", fake_decompose)
     monkeypatch.setattr(pipeline_module, "_run_grounded_understanding_stage", bad_grounding)
+    monkeypatch.setattr(
+        pipeline_module,
+        "_deterministic_assembler_payload",
+        lambda **kwargs: {
+            "schema_version": "deterministic_assembler_result_v1",
+            "shape_status": "resolved",
+            "shape": "F6 path_group_topn",
+            "shape_candidates": ["F6 path_group_topn"],
+            "success": False,
+            "fallback_reason": "test_forces_grounded_path",
+        },
+    )
     monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_ENABLED", "false")
     get_settings.cache_clear()
 

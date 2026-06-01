@@ -190,7 +190,7 @@ function renderDifficultyDuration(bucket) {
   const count = bucket.cga_duration_count || 0;
   return `
     <div class="difficulty-duration-card">
-      <span>平均 CGA 耗时</span>
+      <span>平均生成耗时</span>
       <strong>${escapeHtml(formatDurationMs(bucket.avg_cga_duration_ms))}</strong>
       <small>${count ? `${escapeHtml(count)} 条已记录` : '暂无已记录样本'}</small>
     </div>
@@ -616,7 +616,7 @@ function renderUserQueryRecord(record, target) {
       </article>
       <article class="overview-card">
         <div>
-          <h3>CGA 耗时</h3>
+          <h3>生成耗时</h3>
           <p>${escapeHtml(formatDurationMs(record.cga_elapsed_ms))}</p>
         </div>
       </article>

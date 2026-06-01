@@ -58,6 +58,26 @@ def test_top_n_with_group_order_limit_requires_aggregate_even_when_output_shape_
     assert requirements.requires_aggregate is True
 
 
+def test_high_to_low_order_phrase_derives_desc_direction() -> None:
+    requirements = derive_structural_requirements(
+        {
+            "schema_version": "question_decomposition_v1",
+            "original_question": "按名称分组统计出现次数，并按次数从高到低返回前10个。",
+            "intent_type": "top_n",
+            "output_shape": "grouped_rows",
+            "substantive_terms": [
+                {"text": "名称", "slot": "group_by"},
+                {"text": "出现次数", "slot": "projection"},
+                {"text": "次数", "slot": "order_by"},
+                {"text": "从高到低", "slot": "order_by"},
+                {"text": "前10", "slot": "limit"},
+            ],
+        }
+    )
+
+    assert requirements.order_direction == "desc"
+
+
 def test_scalar_projection_value_does_not_imply_aggregate() -> None:
     requirements = derive_structural_requirements(
         {
@@ -154,6 +174,79 @@ def test_missing_path_positions_mark_low_confidence_and_gate_still_checks_hop_co
     assert result.is_valid is False
     assert result.missing[0]["code"] == "path_hops_insufficient"
     assert result.missing[0]["details"]["order_checked"] is False
+
+
+def test_relation_only_path_words_do_not_increase_min_hops() -> None:
+    requirements = derive_structural_requirements(
+        {
+            "original_question": "查询服务与所用隧道之间的关联。",
+            "intent_type": "list",
+            "output_shape": "rows",
+            "substantive_terms": [
+                {"text": "服务", "slot": "path"},
+                {"text": "所用", "slot": "path"},
+                {"text": "隧道", "slot": "path"},
+                {"text": "关联", "slot": "path"},
+                {"text": "ID", "slot": "projection", "attached_to": "隧道"},
+            ],
+        }
+    )
+
+    assert requirements.min_path_hops == 1
+
+
+def test_single_hop_with_generic_relation_words_passes_hop_gate() -> None:
+    requirements = derive_structural_requirements(
+        {
+            "original_question": "查询服务与所用隧道之间的关联。",
+            "intent_type": "list",
+            "output_shape": "rows",
+            "substantive_terms": [
+                {"text": "服务", "slot": "path"},
+                {"text": "所用", "slot": "path"},
+                {"text": "隧道", "slot": "path"},
+                {"text": "关联", "slot": "path"},
+                {"text": "ID", "slot": "projection", "attached_to": "隧道"},
+            ],
+        }
+    )
+
+    result = validate_dsl_structural_coverage(
+        requirements,
+        {
+            "schema_version": "restricted_query_dsl_v1",
+            "query_id": "single-hop-relation-words",
+            "query_shape": "single_hop_traversal",
+            "source_question": "查询服务与所用隧道之间的关联。",
+            "bindings": {
+                "svc": {"vertex_name": "Service"},
+                "edge": {"edge_name": "SERVICE_USES_TUNNEL"},
+                "tun": {"vertex_name": "Tunnel"},
+            },
+            "operations": [
+                {
+                    "op": "traverse_edge",
+                    "from": "svc",
+                    "edge": "edge",
+                    "to": "tun",
+                    "direction": "forward",
+                }
+            ],
+            "projection": {
+                "items": [
+                    {
+                        "alias": "tunnel_id",
+                        "target": "tun",
+                        "property": {"owner": "Tunnel", "name": "id"},
+                        "projection_terms": ["ID"],
+                    }
+                ]
+            },
+        },
+    )
+
+    assert result.is_valid is True
+    assert result.missing == []
 
 
 def test_gate_reports_missing_aggregate_sort_limit_and_path_hops_without_checking_aliases() -> None:

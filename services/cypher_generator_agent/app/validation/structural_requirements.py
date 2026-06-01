@@ -343,9 +343,9 @@ def _requires_aggregate(decomposition: Mapping[str, Any], terms: list[Mapping[st
 
 def _order_direction(order_terms: list[Mapping[str, Any]]) -> Literal["asc", "desc"] | None:
     text = " ".join(str(term.get("text") or "") for term in order_terms)
-    if any(token in text for token in ("降序", "最多", "最高", "最大", "前", "Top", "top")):
+    if any(token in text for token in ("降序", "最多", "最高", "最大", "前", "Top", "top", "高到低", "从高到低")):
         return "desc"
-    if any(token in text for token in ("升序", "最少", "最低", "最小")):
+    if any(token in text for token in ("升序", "最少", "最低", "最小", "低到高", "从低到高")):
         return "asc"
     return None
 
@@ -361,9 +361,52 @@ def _limit_value(limit_terms: list[Mapping[str, Any]]) -> int | None:
 
 
 def _minimum_path_hops(path_terms: list[StructuralTerm]) -> int:
-    if len(path_terms) < 3:
+    anchor_terms = _path_anchor_terms(path_terms)
+    if len(anchor_terms) < 2:
         return 0
-    return max(1, len(path_terms) // 2)
+    return len(anchor_terms) - 1
+
+
+def _path_anchor_terms(path_terms: list[StructuralTerm]) -> list[StructuralTerm]:
+    anchors = [
+        term
+        for term in path_terms
+        if not _is_relation_only_path_text(term.text)
+    ]
+    normalized = [_norm_text(term.text) for term in anchors]
+    compact: list[StructuralTerm] = []
+    for index, term in enumerate(anchors):
+        text = normalized[index]
+        if any(
+            other
+            and other != text
+            and other in text
+            for other_index, other in enumerate(normalized)
+            if other_index != index
+        ):
+            continue
+        compact.append(term)
+    return compact
+
+
+def _is_relation_only_path_text(text: str) -> bool:
+    normalized = text.strip()
+    return normalized in {
+        "使用",
+        "所用",
+        "所使用",
+        "经",
+        "所经",
+        "经过",
+        "穿过",
+        "关联",
+        "之间",
+        "目的",
+        "源",
+        "到达",
+        "达到",
+        "连接",
+    }
 
 
 def _flatten_operations(raw_operations: Any) -> list[Mapping[str, Any]]:

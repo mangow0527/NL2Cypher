@@ -35,8 +35,9 @@
 | MIR-011 | Literal Filter Binding and Static Index-Miss Pass-through | 已远端闭环；L2 literal 澄清归零 | L2 `Service_001` / `svc-mpls-vpn-1004` / `MPLS-VPN` / `延迟=23` 澄清 | P0 |
 | MIR-012 | Named Path Pattern Projection Role Binding | 待实施；680 全量新增 P0 缺口 | `qa_fe30ff3300d3` | P0 |
 | MIR-013 | Deterministic Projection Coverage Contract | 已完成并远端部署；簇一 projection 覆盖收口，剩余问题转后续 MIR | 680 cluster-one projection incomplete / multi-owner / endpoint projection | P0 |
+| MIR-014 | Deterministic Structural Coverage Contract | 待实施；将完整性契约从 projection 扩展到 aggregate / group_by / order_by / limit / path hop | 680 residual coverage failure: aggregate / group / order / limit / hop | P0 |
 
-后续新增问题按 `MIR-014`、`MIR-015` 继续追加。
+后续新增问题按 `MIR-015`、`MIR-016` 继续追加。
 
 未闭环 MIR 实施处置（2026-05-30）：
 
@@ -2198,7 +2199,94 @@ docs/experiments/2026-05-28-runtime-center-cga-job-analysis.md
 
 剩余 `coverage_failure` 分布：`None` 38，`unresolved_projection_terms` 28，`missing_group_by_requirement` 8，`missing_aggregate_requirement` 2，`unresolved_direction_terms` 1，`group_by_owner_mismatch` 1，`multiple_shape_signals` 1，`missing_vertex_candidate` 1，`missing_path_candidate` 1。高频 unresolved projection terms 包括“服务节点”“网元.时延”“服务”“网元”“隧道.目的”“网元.目的”等，下一步应拆到聚合 / group-by / path direction / semantic vocabulary 后续 MIR，不在本 MIR 继续扩边界。
 
-## 17. 后续 MIR 模板
+## 17. MIR-014 Deterministic Structural Coverage Contract
+
+状态：待实施（2026-06-01 新增）。该 MIR 承接 MIR-013 后剩余 coverage 结构缺口，把完整性契约从 projection 扩展到 aggregate、group_by、order_by、limit 与 path hop。目标是让 deterministic assembler 只在这些结构槽位完整落入 DSL 时放行；缺失时明确失败或进入既有 fallback，不生成“可运行但少结构”的 Cypher。
+
+### 17.1 背景
+
+触发问题：MIR-013 远端 680 重跑后，projection 簇已收口一部分，但剩余 `coverage_failure` 仍包含 `missing_group_by_requirement`、`missing_aggregate_requirement`、`group_by_owner_mismatch`、`missing_path_candidate` 等结构性缺口。当前 deterministic assembler 对这些槽位仍偏向“能拼多少拼多少”，未像 projection 一样建立必达契约。
+
+核心契约：用户题干中已经被 decomposition / structural requirements 识别的 aggregate、group_by、order_by、limit、path hop，必须完整进入 DSL；否则不得静默降级为普通列表、无排序列表、无 limit 列表或短路径。
+
+### 17.2 修改目标
+
+- aggregate / group_by / order_by / limit 先建立统一结构完整性 gate：required slot 能唯一绑定并落入 DSL 才放行。
+- path hop 再建立 hop 数与中间节点完整性 gate：题干要求经过某类节点或多跳关系时，不得生成少一跳的路径。
+- coverage failure reason 必须能区分 aggregate、group_by、order_by、limit、path hop 缺失，便于 680 分簇统计。
+- 验收以 680 净收益为准：testing passed 净增加即为成功；testing fail 数不得上升。
+
+非目标：
+
+- 不改 GU 绑定 / 幻化逻辑。
+- 不修 fallback schema invalid。
+- 不提升 semantic layer / registry 资产质量。
+- 不处理 path direction；`unresolved_direction_terms` 另行分诊。
+- 不新增样本特例、平行词表或 raw Cypher fallback。
+
+### 17.3 子 IR 总览
+
+| 子 IR | 名称 | 优先级 | 估算 | 角色 | 依赖 |
+| --- | --- | --- | --- | --- | --- |
+| MIR-014.0 | Aggregate / Group / Order / Limit Coverage Gate | P0 | M | backend | MIR-010 / MIR-013 |
+| MIR-014.1 | Path Hop Structural Coverage Gate | P0 | M | backend | .0 |
+| MIR-014.2 | 680 Metrics and No-Regress Contract | P0 | S | QA/infra | .0 到 .1 |
+
+### MIR-014.0 Aggregate / Group / Order / Limit Coverage Gate
+
+目标：先收口聚合、分组、排序、limit 结构词，避免 grouped top-N / count / top-k 查询退化成普通列表。
+
+建议文件：
+
+```text
+services/cypher_generator_agent/app/core/pipeline.py
+services/cypher_generator_agent/tests/assembly/
+services/cypher_generator_agent/tests/integration/
+docs/experiments/2026-05-28-runtime-center-cga-job-analysis.md
+```
+
+开发内容：
+
+- 从 structural requirements 派生 required aggregate / group_by / order_by / limit slots。
+- deterministic assembly 前校验这些 slots 是否完整绑定到 DSL measure、group key、sort key 和 limit。
+- owner 不唯一、metric / dimension 不匹配或结构冲突时返回明确 coverage failure，不猜默认 owner。
+
+验收：
+
+- grouped count / top-N / limit 查询不再生成缺 aggregate、缺 group_by、缺 order_by 或缺 limit 的 DSL。
+- 既有 projection 完整性不回退。
+
+### MIR-014.1 Path Hop Structural Coverage Gate
+
+目标：确保题干显式要求的 path hop 和中间节点不被 deterministic path 缩短。
+
+开发内容：
+
+- 从 path terms / structural requirements 派生 required hop 或 required intermediate owner。
+- path candidate 不能覆盖 required hop 时，不放行短路径。
+- path owner 不唯一时退既有 fallback / generation_failed，不猜方向、不补 semantic layer。
+
+验收：
+
+- “经过网元/端口/隧道”等多跳要求不再生成少一跳路径。
+- 本 MIR 不改变 path direction 判定，方向缺口继续保持独立 failure reason。
+
+### MIR-014.2 680 Metrics and No-Regress Contract
+
+目标：用 680 全量证明结构完整性收益，且不以增加 fail 换 generated。
+
+开发内容：
+
+- 远端重跑 680，并按 aggregate / group_by / order_by / limit / path hop 分簇记录 coverage failure 变化。
+- 对比 MIR-013 后基线，记录 generated、generation_failed、coverage_failure、testing passed、testing fail。
+- 成功口径：testing passed 净增加；testing fail 不得上升。
+
+验收：
+
+- passed 净增加即认定本 MIR 有效。
+- 若 generated 增加但 fail 同步上升，不得标记闭环，必须回滚或收紧 gate。
+
+## 18. 后续 MIR 模板
 
 新增修改项时按以下模板追加：
 
@@ -2237,7 +2325,7 @@ docs/experiments/2026-05-28-runtime-center-cga-job-analysis.md
 验收：
 ```
 
-## 18. 审核结论与后续 MIR 检查
+## 19. 审核结论与后续 MIR 检查
 
 MIR-001 审核后的当前默认决策：
 

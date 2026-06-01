@@ -322,7 +322,7 @@ function renderUserQueryDetail(record) {
       </article>
       <article class="overview-card">
         <div>
-          <h3>CGA 耗时</h3>
+          <h3>生成耗时</h3>
           <p>${escapeHtml(formatDurationMs(record.cga_elapsed_ms))}</p>
         </div>
       </article>

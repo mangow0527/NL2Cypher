@@ -791,7 +791,7 @@ def test_runtime_results_detail_script_puts_cypher_comparison_in_overview():
 def test_runtime_results_generated_cypher_overview_card_has_no_status_pill():
     script = (Path(__file__).resolve().parents[1] / "console" / "runtime_console" / "ui" / "detail.js").read_text(encoding="utf-8")
 
-    assert "cypherOverviewCard('生成 Cypher', generationCypherText({ ...generator, generated_cypher: generatedCypher }))" in script
+    assert "cypherOverviewCard('生成 Cypher', generationCypherText({ ...generator, generated_cypher: generatedCypher }), null" in script
     assert "cypherOverviewCard('生成 Cypher', generationCypherText({ ...generator, generated_cypher: generatedCypher }), summary.generation_status)" not in script
 
 
@@ -799,11 +799,26 @@ def test_runtime_results_ui_renders_cga_duration_cards():
     root = Path(__file__).resolve().parents[1]
     app_script = (root / "console" / "runtime_console" / "ui" / "app.js").read_text(encoding="utf-8")
     detail_script = (root / "console" / "runtime_console" / "ui" / "detail.js").read_text(encoding="utf-8")
+    user_query_detail_script = (root / "console" / "runtime_console" / "ui" / "user_query_detail.js").read_text(
+        encoding="utf-8"
+    )
+    styles = (root / "console" / "runtime_console" / "ui" / "styles.css").read_text(encoding="utf-8")
 
-    assert "平均 CGA 耗时" in app_script
+    assert "平均生成耗时" in app_script
     assert "avg_cga_duration_ms" in app_script
-    assert "CGA 耗时" in detail_script
+    assert "生成耗时" in detail_script
+    assert "生成耗时" in user_query_detail_script
     assert "cga_duration_ms" in detail_script
+    assert detail_script.index("cypherOverviewCard('生成 Cypher'") < detail_script.index("metricCard('生成耗时'")
+    assert "CGA 耗时" not in app_script
+    assert "CGA 耗时" not in detail_script
+    assert "CGA 耗时" not in user_query_detail_script
+    assert "overview-card-compact" in detail_script
+    assert "overview-card-wide" in detail_script
+    assert "overview-card-full" in detail_script
+    assert ".summary-panel .overview-grid" in styles
+    assert ".overview-card-compact" in styles
+    assert ".overview-card-full" in styles
 
 
 def test_runtime_results_detail_ui_omits_retired_repair_and_knowledge_sections():

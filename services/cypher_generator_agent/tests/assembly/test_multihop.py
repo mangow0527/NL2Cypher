@@ -359,6 +359,138 @@ def test_f6_unique_path_group_topn_builds_top_n_dsl(
     assert result.dsl["operations"][3] == {"op": "limit", "value": 3}
 
 
+def test_f6_derives_group_dimension_from_unique_projection_property(
+    registry: GraphSemanticRegistry,
+) -> None:
+    retrieval_result = CandidateRetrievalResult(
+        candidates=[
+            _semantic_candidate("vertex", "Service"),
+            _semantic_candidate("vertex", "Tunnel"),
+            _semantic_candidate("vertex", "NetworkElement"),
+            _semantic_candidate("edge", "SERVICE_USES_TUNNEL", semantic_name="SERVICE_USES_TUNNEL"),
+            _semantic_candidate("edge", "TUNNEL_DST", semantic_name="TUNNEL_DST"),
+            _semantic_candidate("property", "NetworkElement.vendor", owner="NetworkElement", semantic_name="vendor"),
+            _semantic_candidate("property", "NetworkElement.id", owner="NetworkElement", semantic_name="id"),
+            _semantic_candidate("property", "Service.id", owner="Service", semantic_name="id"),
+            _semantic_candidate("property", "Tunnel.id", owner="Tunnel", semantic_name="id"),
+        ]
+    )
+    requirements = _multihop_assembler_requirements(
+        shape=QueryShape.F6_PATH_GROUP_TOPN,
+        decomposition={
+            "original_question": "统计服务所用隧道的目的端网元厂商分布，按数量升序排列，返回前5个厂商。",
+            "intent_type": "top_n",
+            "output_shape": "grouped_rows",
+            "substantive_terms": [
+                {"text": "服务", "slot": "path"},
+                {"text": "所用", "slot": "path"},
+                {"text": "隧道", "slot": "path"},
+                {"text": "目的端", "slot": "projection", "attached_to": "网元"},
+                {"text": "网元", "slot": "group_by"},
+                {"text": "厂商", "slot": "projection", "attached_to": "网元"},
+                {"text": "分布", "slot": "projection"},
+                {"text": "数量", "slot": "order_by"},
+                {"text": "升序", "slot": "order_by"},
+                {"text": "前5", "slot": "limit"},
+            ],
+        },
+        retrieval_result=retrieval_result,
+        literal_results=[],
+        registry=registry,
+    )
+
+    assert requirements["group_by"] == [
+        {
+            "owner": "NetworkElement",
+            "property": "vendor",
+            "alias": "network_element_vendor",
+            "projection_terms": ["厂商"],
+        }
+    ]
+    assert requirements["aggregate"] == {
+        "function": "count",
+        "owner": "NetworkElement",
+        "property": "id",
+        "alias": "network_element_count",
+        "projection_terms": ["数量"],
+    }
+
+    result = MultihopAssembler(registry).assemble(
+        "F6 path_group_topn",
+        candidates=list(retrieval_result.candidates),
+        structural_requirements=requirements,
+    )
+
+    assert result.success is True
+    assert result.dsl is not None
+    assert result.dsl["bindings"]["edge_1"] == {"edge_name": "TUNNEL_DST"}
+    aggregate = result.dsl["operations"][2]
+    assert aggregate["group_by"][0] == {
+        "alias": "network_element_vendor",
+        "target": "v2",
+        "property": {"owner": "NetworkElement", "name": "vendor"},
+    }
+    assert aggregate["measures"][0] == {
+        "alias": "network_element_count",
+        "function": "count",
+        "target": "v2",
+        "property": {"owner": "NetworkElement", "name": "id"},
+    }
+    assert result.dsl["projection"]["items"] == [
+        {"alias": "network_element_vendor", "source": "group.network_element_vendor", "projection_terms": ["厂商"]},
+        {"alias": "network_element_count", "source": "measure.network_element_count", "projection_terms": ["数量"]},
+    ]
+
+
+def test_f6_explicit_quantity_owner_overrides_group_dimension_owner(
+    registry: GraphSemanticRegistry,
+) -> None:
+    retrieval_result = CandidateRetrievalResult(
+        candidates=[
+            _semantic_candidate("vertex", "Service"),
+            _semantic_candidate("vertex", "Tunnel"),
+            _semantic_candidate("vertex", "NetworkElement"),
+            _semantic_candidate("edge", "SERVICE_USES_TUNNEL", semantic_name="SERVICE_USES_TUNNEL"),
+            _semantic_candidate("edge", "TUNNEL_SRC", semantic_name="TUNNEL_SRC"),
+            _semantic_candidate("property", "NetworkElement.location", owner="NetworkElement", semantic_name="location"),
+            _semantic_candidate("property", "NetworkElement.id", owner="NetworkElement", semantic_name="id"),
+            _semantic_candidate("property", "Tunnel.id", owner="Tunnel", semantic_name="id"),
+            _semantic_candidate("property", "Service.id", owner="Service", semantic_name="id"),
+        ]
+    )
+    requirements = _multihop_assembler_requirements(
+        shape=QueryShape.F6_PATH_GROUP_TOPN,
+        decomposition={
+            "original_question": "按隧道源节点位置统计隧道数量，按数量降序返回前3名。",
+            "intent_type": "top_n",
+            "output_shape": "grouped_rows",
+            "substantive_terms": [
+                {"text": "服务", "slot": "path"},
+                {"text": "使用", "slot": "path"},
+                {"text": "隧道", "slot": "path"},
+                {"text": "源节点", "slot": "path"},
+                {"text": "位置", "slot": "group_by", "attached_to": "网元"},
+                {"text": "隧道数量", "slot": "projection"},
+                {"text": "数量", "slot": "order_by"},
+                {"text": "降序", "slot": "order_by"},
+                {"text": "前3", "slot": "limit"},
+            ],
+        },
+        retrieval_result=retrieval_result,
+        literal_results=[],
+        registry=registry,
+    )
+
+    assert requirements["group_by"][0]["owner"] == "NetworkElement"
+    assert requirements["aggregate"] == {
+        "function": "count",
+        "owner": "Tunnel",
+        "property": "id",
+        "alias": "tunnel_count",
+        "projection_terms": ["隧道数量", "数量"],
+    }
+
+
 def test_f6_multiple_limit_values_falls_back_before_dsl_boundary(
     registry: GraphSemanticRegistry,
 ) -> None:

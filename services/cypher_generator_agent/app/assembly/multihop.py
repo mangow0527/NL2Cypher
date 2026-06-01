@@ -168,12 +168,14 @@ class MultihopAssembler:
                     "alias": group_alias,
                     "target": group_target,
                     "property": {"owner": group_owner, "name": group_name},
+                    "projection_terms": _projection_terms(group_by[0]),
                 },
                 measure={
                     "alias": measure_alias,
                     "function": measure_function,
                     "target": measure_target,
                     "property": {"owner": measure_owner, "name": measure_name},
+                    "projection_terms": _projection_terms(measure),
                 },
                 sort={"source": f"measure.{measure_alias}", "direction": sort_direction},
                 limit=limit_value,
@@ -272,7 +274,7 @@ class MultihopAssembler:
         candidate_vertices = _candidate_vertex_names(candidates)
         pending = [
             owner
-            for owner in _projection_owner_names(requirements)
+            for owner in _required_path_owner_names(requirements)
             if owner not in extended and owner in candidate_vertices
         ]
         while pending and extended:
@@ -528,10 +530,25 @@ def _path_group_topn_dsl(
 
     group_alias = str(group["alias"])
     measure_alias = str(measure["alias"])
+    group_projection = {"alias": group_alias, "source": f"group.{group_alias}"}
+    group_terms = _projection_terms(group)
+    if group_terms:
+        group_projection["projection_terms"] = group_terms
     measure_projection = {"alias": measure_alias, "source": f"measure.{measure_alias}"}
     measure_terms = _projection_terms(measure)
     if measure_terms:
         measure_projection["projection_terms"] = measure_terms
+    aggregate_group = {
+        "alias": group_alias,
+        "target": group["target"],
+        "property": group["property"],
+    }
+    aggregate_measure = {
+        "alias": measure_alias,
+        "function": measure["function"],
+        "target": measure["target"],
+        "property": measure["property"],
+    }
     return {
         "schema_version": "restricted_query_dsl_v1",
         "query_id": "multihop-f6",
@@ -551,8 +568,8 @@ def _path_group_topn_dsl(
             ],
             {
                 "op": "aggregate",
-                "group_by": [group],
-                "measures": [measure],
+                "group_by": [aggregate_group],
+                "measures": [aggregate_measure],
             },
             {"op": "sort", "by": [sort]},
             {"op": "limit", "value": limit},
@@ -560,7 +577,7 @@ def _path_group_topn_dsl(
         "filters": [],
         "projection": {
             "items": [
-                {"alias": group_alias, "source": f"group.{group_alias}"},
+                group_projection,
                 measure_projection,
             ]
         },
@@ -614,8 +631,26 @@ def _projection_requirements(requirements: Mapping[str, Any]) -> list[Any]:
 
 
 def _projection_owner_names(requirements: Mapping[str, Any]) -> list[str]:
+    return _owner_names_from_items(_projection_requirements(requirements))
+
+
+def _required_path_owner_names(requirements: Mapping[str, Any]) -> list[str]:
     owners: list[str] = []
-    for item in _projection_requirements(requirements):
+    for item in [
+        *_projection_requirements(requirements),
+        *_as_list(requirements.get("group_by") or requirements.get("group_by_terms")),
+        *_as_list(requirements.get("measures")),
+        requirements.get("aggregate") or requirements.get("measure"),
+    ]:
+        owner = _owner_name(item)
+        if owner is not None and owner not in owners:
+            owners.append(owner)
+    return owners
+
+
+def _owner_names_from_items(items: Sequence[Any]) -> list[str]:
+    owners: list[str] = []
+    for item in items:
         owner = _owner_name(item)
         if owner is not None and owner not in owners:
             owners.append(owner)

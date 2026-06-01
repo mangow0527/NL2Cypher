@@ -1777,13 +1777,22 @@ def _multihop_assembler_requirements(
             registry=registry,
             selected_vertices=selected_vertices,
         )
+        if not group_by:
+            group_by = _group_by_items_from_projection_terms(
+                decomposition=decomposition,
+                candidates=candidates,
+                registry=registry,
+                selected_vertices=selected_vertices,
+            )
         if group_by:
             requirements["group_by"] = group_by
 
         measure = _count_measure_from_projection_terms(
             decomposition=decomposition,
+            candidates=candidates,
             registry=registry,
             selected_vertices=selected_vertices,
+            group_by=group_by,
         )
         if measure is not None:
             requirements["aggregate"] = measure
@@ -1828,52 +1837,184 @@ def _slot_property_items_from_substantive_terms(
                 "owner": owner,
                 "property": property_name,
                 "alias": f"{_snake_case(owner)}_{property_name}",
+                "projection_terms": [str(slot_term["text"])],
             }
         )
     return items
 
 
-def _count_measure_from_projection_terms(
+def _group_by_items_from_projection_terms(
     *,
     decomposition: Mapping[str, Any],
+    candidates: list[SemanticCandidate],
     registry: Any,
     selected_vertices: list[str],
-) -> dict[str, Any] | None:
-    matches: list[dict[str, Any]] = []
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
     for slot_term in _substantive_terms_with_slot(decomposition, slot="projection"):
-        text = str(slot_term.get("text") or "")
-        if not any(token in text for token in ("数量", "个数", "总数", "count", "Count")):
+        text = str(slot_term.get("text") or "").strip()
+        if not text or _is_distribution_noise_term(text) or _is_quantity_projection_text(text):
             continue
-        attached_to = str(slot_term.get("attached_to") or "").strip()
-        owners = _attached_vertex_names_from_registry(
-            attached_to,
+        property_refs = _resolve_projection_property_refs(
+            slot_term,
+            candidates=candidates,
             registry=registry,
             selected_vertices=selected_vertices,
         )
-        if len(owners) != 1:
+        if property_refs is None or len(property_refs) != 1:
             continue
-        owner = next(iter(owners))
-        try:
-            id_property = registry.get_vertex(owner).id_property
-            registry.get_property(owner, id_property)
-        except RegistryLookupError:
-            continue
-        matches.append(
-            {
-                "function": "count",
-                "owner": owner,
-                "property": id_property,
-                "alias": f"{_snake_case(owner)}_count",
-                "projection_terms": [text],
-            }
-        )
-    unique = {
-        (item["function"], item["owner"], item["property"], item["alias"])
-        for item in matches
-    }
-    if len(unique) != 1:
+        owner, property_name = property_refs[0]
+        item = {
+            "owner": owner,
+            "property": property_name,
+            "alias": f"{_snake_case(owner)}_{property_name}",
+            "projection_terms": [text],
+        }
+        if item not in items:
+            items.append(item)
+    return items if len(items) == 1 else []
+
+
+def _count_measure_from_projection_terms(
+    *,
+    decomposition: Mapping[str, Any],
+    candidates: list[SemanticCandidate],
+    registry: Any,
+    selected_vertices: list[str],
+    group_by: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    quantity_terms = [
+        str(slot_term.get("text") or "").strip()
+        for slot_term in [
+            *_substantive_terms_with_slot(decomposition, slot="projection"),
+            *_substantive_terms_with_slot(decomposition, slot="order_by"),
+        ]
+        if _is_quantity_projection_text(str(slot_term.get("text") or ""))
+    ]
+    owner = _count_measure_owner(
+        decomposition=decomposition,
+        candidates=candidates,
+        registry=registry,
+        selected_vertices=selected_vertices,
+        group_by=group_by,
+    )
+    if owner is None or not quantity_terms:
         return None
-    return matches[0]
+    try:
+        id_property = registry.get_vertex(owner).id_property
+        registry.get_property(owner, id_property)
+    except RegistryLookupError:
+        return None
+    return {
+        "function": "count",
+        "owner": owner,
+        "property": id_property,
+        "alias": f"{_snake_case(owner)}_count",
+        "projection_terms": _unique_texts(quantity_terms),
+    }
+
+
+def _count_measure_owner(
+    *,
+    decomposition: Mapping[str, Any],
+    candidates: list[SemanticCandidate],
+    registry: Any,
+    selected_vertices: list[str],
+    group_by: list[dict[str, Any]] | None,
+) -> str | None:
+    quantity_owners: set[str] = set()
+    for slot_term in [
+        *_substantive_terms_with_slot(decomposition, slot="projection"),
+        *_substantive_terms_with_slot(decomposition, slot="order_by"),
+    ]:
+        text = str(slot_term.get("text") or "").strip()
+        if not _is_quantity_projection_text(text):
+            continue
+        quantity_owners.update(
+            _owner_names_from_text_or_attachment(
+                slot_term,
+                registry=registry,
+                selected_vertices=selected_vertices,
+            )
+        )
+    if len(quantity_owners) == 1:
+        return next(iter(quantity_owners))
+    if len(quantity_owners) > 1:
+        return None
+
+    object_owners: set[str] = set()
+    for slot_term in _substantive_terms_with_slot(decomposition, slot="projection"):
+        text = str(slot_term.get("text") or "").strip()
+        if (
+            not text
+            or _is_quantity_projection_text(text)
+            or _is_distribution_noise_term(text)
+            or _is_aggregate_modifier_projection_text(text)
+        ):
+            continue
+        object_owner = _resolve_projection_object_owner(
+            slot_term,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+        if object_owner is not None:
+            object_owners.add(object_owner)
+    if len(object_owners) == 1:
+        return next(iter(object_owners))
+    if len(object_owners) > 1:
+        return None
+
+    group_owners = {
+        str(item.get("owner"))
+        for item in group_by or []
+        if isinstance(item, Mapping) and str(item.get("owner") or "").strip()
+    }
+    if len(group_owners) == 1:
+        return next(iter(group_owners))
+    return None
+
+
+def _owner_names_from_text_or_attachment(
+    slot_term: Mapping[str, Any],
+    *,
+    registry: Any,
+    selected_vertices: list[str],
+) -> set[str]:
+    owners: set[str] = set()
+    for text in (
+        str(slot_term.get("attached_to") or "").strip(),
+        str(slot_term.get("text") or "").strip(),
+    ):
+        owners.update(
+            _attached_vertex_names_from_registry(
+                text,
+                registry=registry,
+                selected_vertices=selected_vertices,
+            )
+        )
+    return owners
+
+
+def _is_quantity_projection_text(term: str) -> bool:
+    return any(marker in term for marker in ("数量", "个数", "总数", "多少", "次数", "频率", "count", "Count"))
+
+
+def _is_distribution_noise_term(term: str) -> bool:
+    return term.strip() in {"分布", "排行", "排名", "统计", "出现", "返回"}
+
+
+def _is_aggregate_modifier_projection_text(term: str) -> bool:
+    return term.strip() in {"属性值", "属性", "条目", "记录", "节点", "实例"}
+
+
+def _unique_texts(values: list[str]) -> list[str]:
+    texts: list[str] = []
+    for value in values:
+        text = str(value).strip()
+        if text and text not in texts:
+            texts.append(text)
+    return texts
 
 
 def _path_direction_context(requirements: Mapping[str, Any]) -> str:
@@ -2027,9 +2168,81 @@ def _zero_hop_assembler_requirements(
             for result in literal_results
             if result.resolved and result.expected_property
         ]
-        payload["aggregate"] = {"function": "count", "alias": f"{_snake_case(selected_vertices[0])}_count"} if len(selected_vertices) == 1 else {"function": "count"}
+        aggregate = _zero_hop_count_measure_from_projection_terms(
+            decomposition=decomposition,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+        if aggregate is None:
+            aggregate = (
+                {
+                    "function": "count",
+                    "alias": f"{_snake_case(selected_vertices[0])}_count",
+                }
+                if len(selected_vertices) == 1
+                else {"function": "count"}
+            )
+        payload["aggregate"] = aggregate
 
     return payload
+
+
+def _zero_hop_count_measure_from_projection_terms(
+    *,
+    decomposition: Mapping[str, Any],
+    candidates: list[SemanticCandidate],
+    registry: Any,
+    selected_vertices: list[str],
+) -> dict[str, Any] | None:
+    if len(selected_vertices) != 1:
+        return None
+    quantity_terms = _zero_hop_quantity_projection_terms(decomposition)
+    if not quantity_terms:
+        return None
+    if not any(
+        _is_aggregate_modifier_projection_text(str(slot_term.get("text") or ""))
+        for slot_term in _substantive_terms_with_slot(decomposition, slot="projection")
+    ):
+        return None
+    property_terms: list[str] = []
+    property_refs: list[tuple[str, str]] = []
+    for slot_term in _substantive_terms_with_slot(decomposition, slot="projection"):
+        text = str(slot_term.get("text") or "").strip()
+        if not text or _is_quantity_projection_text(text) or _is_aggregate_modifier_projection_text(text):
+            continue
+        refs = _resolve_projection_property_refs(
+            slot_term,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+        if refs is None or len(refs) != 1:
+            continue
+        ref = refs[0]
+        if ref not in property_refs:
+            property_refs.append(ref)
+            property_terms.append(text)
+    if len(property_refs) != 1:
+        return None
+    owner, property_name = property_refs[0]
+    return {
+        "function": "count",
+        "owner": owner,
+        "property": property_name,
+        "alias": f"{_snake_case(owner)}_{property_name}_count",
+        "projection_terms": _unique_texts([*property_terms, *quantity_terms]),
+    }
+
+
+def _zero_hop_quantity_projection_terms(decomposition: Mapping[str, Any]) -> list[str]:
+    terms = [
+        str(slot_term.get("text") or "").strip()
+        for slot_term in _substantive_terms_with_slot(decomposition, slot="projection")
+        if _is_quantity_projection_text(str(slot_term.get("text") or ""))
+        or _is_aggregate_modifier_projection_text(str(slot_term.get("text") or ""))
+    ]
+    return _unique_texts(terms)
 
 
 def _zero_hop_literal_payloads(literal_results: list[LiteralResolverResult]) -> list[dict[str, Any]]:
