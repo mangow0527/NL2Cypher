@@ -552,6 +552,334 @@ def test_projection_term_attached_to_multiple_path_owners_expands_each_owner(
     ]
 
 
+def test_relation_mapping_projection_keeps_source_name_when_target_name_is_selected(
+    registry: GraphSemanticRegistry,
+) -> None:
+    projection = _projection_items_from_substantive_terms(
+        decomposition={
+            "original_question": "查询所有服务及其使用的隧道名称和隧道类型。",
+            "substantive_terms": [
+                {"text": "服务", "slot": "path"},
+                {"text": "使用", "slot": "path"},
+                {"text": "隧道", "slot": "path"},
+                {"text": "名称", "slot": "projection", "attached_to": "隧道"},
+                {"text": "类型", "slot": "projection", "attached_to": "隧道"},
+            ],
+        },
+        candidates=[
+            _semantic_candidate("vertex", "Service"),
+            _semantic_candidate("vertex", "Tunnel"),
+            _semantic_candidate("property", "Service.name", owner="Service", semantic_name="name"),
+            _semantic_candidate("property", "Tunnel.name", owner="Tunnel", semantic_name="name"),
+            _semantic_candidate("property", "Tunnel.elem_type", owner="Tunnel", semantic_name="elem_type"),
+        ],
+        registry=registry,
+        selected_vertices=["Service", "Tunnel"],
+    )
+
+    assert [(item["owner"], item["name"]) for item in projection] == [
+        ("Service", "name"),
+        ("Tunnel", "name"),
+        ("Tunnel", "elem_type"),
+    ]
+
+
+def test_relation_mapping_projection_uses_registry_identity_when_source_name_candidate_missing(
+    registry: GraphSemanticRegistry,
+) -> None:
+    requirements = _multihop_assembler_requirements(
+        shape=QueryShape.F4_PATH_PROJECTION_MULTIHOP,
+        decomposition={
+            "original_question": "查询所有业务及其使用的隧道的IETF标准。",
+            "substantive_terms": [
+                {"text": "业务", "slot": "path"},
+                {"text": "使用", "slot": "path"},
+                {"text": "隧道", "slot": "path"},
+                {"text": "IETF", "slot": "projection", "attached_to": "隧道"},
+                {"text": "标准", "slot": "projection", "attached_to": "隧道"},
+            ],
+        },
+        retrieval_result=CandidateRetrievalResult(
+            candidates=[
+                _semantic_candidate("vertex", "Service"),
+                _semantic_candidate("vertex", "Tunnel"),
+                _semantic_candidate("edge", "SERVICE_USES_TUNNEL"),
+                _semantic_candidate(
+                    "property",
+                    "Tunnel.ietf_standard",
+                    owner="Tunnel",
+                    semantic_name="ietf_standard",
+                ),
+            ],
+        ),
+        literal_results=[],
+        registry=registry,
+    )
+
+    result = MultihopAssembler(registry).assemble(
+        "F4 path_projection_multihop",
+        candidates=[
+            _candidate("vertex", "Service"),
+            _candidate("vertex", "Tunnel"),
+            _candidate("edge", "SERVICE_USES_TUNNEL"),
+            _candidate("property", "Tunnel.ietf_standard", owner="Tunnel", semantic_name="ietf_standard"),
+        ],
+        structural_requirements=requirements,
+    )
+
+    assert result.success is True
+    assert result.dsl is not None
+    assert [(item["property"]["owner"], item["property"]["name"]) for item in result.dsl["projection"]["items"]] == [
+        ("Service", "name"),
+        ("Tunnel", "ietf_standard"),
+    ]
+
+
+def test_relation_mapping_projection_keeps_source_name_with_multiple_target_fields(
+    registry: GraphSemanticRegistry,
+) -> None:
+    requirements = _multihop_assembler_requirements(
+        shape=QueryShape.F4_PATH_PROJECTION_MULTIHOP,
+        decomposition={
+            "original_question": "查询所有服务及其使用的隧道的IETF标准和带宽。",
+            "substantive_terms": [
+                {"text": "服务", "slot": "path"},
+                {"text": "使用", "slot": "path"},
+                {"text": "隧道", "slot": "path"},
+                {"text": "IETF标准", "slot": "projection", "attached_to": "隧道"},
+                {"text": "带宽", "slot": "projection", "attached_to": "隧道"},
+            ],
+        },
+        retrieval_result=CandidateRetrievalResult(
+            candidates=[
+                _semantic_candidate("vertex", "Service"),
+                _semantic_candidate("vertex", "Tunnel"),
+                _semantic_candidate("edge", "SERVICE_USES_TUNNEL"),
+                _semantic_candidate(
+                    "property",
+                    "Tunnel.ietf_standard",
+                    owner="Tunnel",
+                    semantic_name="ietf_standard",
+                ),
+                _semantic_candidate("property", "Tunnel.bandwidth", owner="Tunnel", semantic_name="bandwidth"),
+            ],
+        ),
+        literal_results=[],
+        registry=registry,
+    )
+
+    assert "projection_uncovered_terms" not in requirements
+    assert [(item["owner"], item["property"]) for item in requirements["projection"]] == [
+        ("Service", "name"),
+        ("Tunnel", "ietf_standard"),
+        ("Tunnel", "bandwidth"),
+    ]
+
+
+def test_relation_mapping_projection_keeps_intermediate_identity_when_target_fields_selected(
+    registry: GraphSemanticRegistry,
+) -> None:
+    projection = _projection_items_from_substantive_terms(
+        decomposition={
+            "original_question": "查询各服务所使用的隧道及其经过的网元供应商信息。",
+            "substantive_terms": [
+                {"text": "服务", "slot": "path"},
+                {"text": "使用", "slot": "path"},
+                {"text": "隧道", "slot": "path"},
+                {"text": "经过", "slot": "path"},
+                {"text": "网元", "slot": "path"},
+                {"text": "供应商", "slot": "projection", "attached_to": "网元"},
+            ],
+        },
+        candidates=[
+            _semantic_candidate("vertex", "Service"),
+            _semantic_candidate("vertex", "Tunnel"),
+            _semantic_candidate("vertex", "NetworkElement"),
+            _semantic_candidate("property", "NetworkElement.vendor", owner="NetworkElement", semantic_name="vendor"),
+        ],
+        registry=registry,
+        selected_vertices=["Service", "Tunnel", "NetworkElement"],
+    )
+
+    assert [(item["owner"], item["name"]) for item in projection] == [
+        ("Tunnel", "name"),
+        ("NetworkElement", "vendor"),
+    ]
+
+
+def test_relation_mapping_object_projection_uses_name_and_is_covered(
+    registry: GraphSemanticRegistry,
+) -> None:
+    requirements = _multihop_assembler_requirements(
+        shape=QueryShape.F4_PATH_PROJECTION_MULTIHOP,
+        decomposition={
+            "original_question": "查询业务使用的隧道及其目的网元厂商。",
+            "substantive_terms": [
+                {"text": "业务", "slot": "path"},
+                {"text": "使用", "slot": "path"},
+                {"text": "隧道", "slot": "projection"},
+                {"text": "目的", "slot": "path"},
+                {"text": "网元", "slot": "path"},
+                {"text": "厂商", "slot": "projection", "attached_to": "网元"},
+            ],
+        },
+        retrieval_result=CandidateRetrievalResult(
+            candidates=[
+                _semantic_candidate("vertex", "Service"),
+                _semantic_candidate("vertex", "Tunnel"),
+                _semantic_candidate("vertex", "NetworkElement"),
+                _semantic_candidate("edge", "SERVICE_USES_TUNNEL"),
+                _semantic_candidate("edge", "TUNNEL_DST"),
+                _semantic_candidate("property", "NetworkElement.vendor", owner="NetworkElement", semantic_name="vendor"),
+            ],
+        ),
+        literal_results=[],
+        registry=registry,
+    )
+
+    assert "projection_uncovered_terms" not in requirements
+    assert [(item["owner"], item["property"]) for item in requirements["projection"]] == [
+        ("Tunnel", "name"),
+        ("NetworkElement", "vendor"),
+    ]
+
+
+def test_projection_coverage_requires_each_property_for_same_owner(
+    registry: GraphSemanticRegistry,
+) -> None:
+    requirements = _multihop_assembler_requirements(
+        shape=QueryShape.F4_PATH_PROJECTION_MULTIHOP,
+        decomposition={
+            "original_question": "查询服务使用的隧道名称和带宽。",
+            "substantive_terms": [
+                {"text": "服务", "slot": "path"},
+                {"text": "使用", "slot": "path"},
+                {"text": "隧道", "slot": "path"},
+                {"text": "名称", "slot": "projection", "attached_to": "隧道"},
+                {"text": "带宽", "slot": "projection", "attached_to": "隧道"},
+            ],
+        },
+        retrieval_result=CandidateRetrievalResult(
+            candidates=[
+                _semantic_candidate("vertex", "Service"),
+                _semantic_candidate("vertex", "Tunnel"),
+                _semantic_candidate("edge", "SERVICE_USES_TUNNEL"),
+                _semantic_candidate("property", "Tunnel.name", owner="Tunnel", semantic_name="name"),
+                _semantic_candidate("property", "Tunnel.bandwidth", owner="Tunnel", semantic_name="bandwidth"),
+            ],
+        ),
+        literal_results=[],
+        registry=registry,
+    )
+
+    assert "projection_uncovered_terms" not in requirements
+    assert [(item["owner"], item["property"]) for item in requirements["projection"]] == [
+        ("Tunnel", "name"),
+        ("Tunnel", "bandwidth"),
+    ]
+
+
+def test_object_projection_fallback_does_not_mask_explicit_property_term(
+    registry: GraphSemanticRegistry,
+) -> None:
+    requirements = _multihop_assembler_requirements(
+        shape=QueryShape.F4_PATH_PROJECTION_MULTIHOP,
+        decomposition={
+            "original_question": "查询服务所使用的隧道及其目的网元，返回厂商和隧道带宽。",
+            "substantive_terms": [
+                {"text": "服务", "slot": "path"},
+                {"text": "使用", "slot": "path"},
+                {"text": "隧道", "slot": "projection"},
+                {"text": "目的网元", "slot": "path"},
+                {"text": "厂商", "slot": "projection", "attached_to": "网元"},
+                {"text": "带宽", "slot": "projection", "attached_to": "隧道"},
+            ],
+        },
+        retrieval_result=CandidateRetrievalResult(
+            candidates=[
+                _semantic_candidate("vertex", "Service"),
+                _semantic_candidate("vertex", "Tunnel"),
+                _semantic_candidate("vertex", "NetworkElement"),
+                _semantic_candidate("edge", "SERVICE_USES_TUNNEL"),
+                _semantic_candidate("edge", "TUNNEL_DST"),
+                _semantic_candidate("property", "NetworkElement.vendor", owner="NetworkElement", semantic_name="vendor"),
+            ],
+        ),
+        literal_results=[],
+        registry=registry,
+    )
+
+    assert "projection_uncovered_terms" not in requirements
+    assert [(item["owner"], item["property"]) for item in requirements["projection"]] == [
+        ("NetworkElement", "vendor"),
+        ("Tunnel", "bandwidth"),
+    ]
+
+
+def test_ambiguous_projection_property_stays_uncovered(
+    registry: GraphSemanticRegistry,
+) -> None:
+    requirements = _multihop_assembler_requirements(
+        shape=QueryShape.F4_PATH_PROJECTION_MULTIHOP,
+        decomposition={
+            "original_question": "查询服务使用的隧道的名称。",
+            "substantive_terms": [
+                {"text": "服务", "slot": "path"},
+                {"text": "使用", "slot": "path"},
+                {"text": "隧道", "slot": "path"},
+                {"text": "名称", "slot": "projection"},
+            ],
+        },
+        retrieval_result=CandidateRetrievalResult(
+            candidates=[
+                _semantic_candidate("vertex", "Service"),
+                _semantic_candidate("vertex", "Tunnel"),
+                _semantic_candidate("edge", "SERVICE_USES_TUNNEL"),
+                _semantic_candidate("property", "Service.name", owner="Service", semantic_name="name"),
+                _semantic_candidate("property", "Tunnel.name", owner="Tunnel", semantic_name="name"),
+            ],
+        ),
+        literal_results=[],
+        registry=registry,
+    )
+
+    assert requirements["projection_uncovered_terms"] == ["名称"]
+    assert requirements["projection"] == []
+
+
+def test_relation_mapping_projection_does_not_add_intermediate_name_for_nested_target(
+    registry: GraphSemanticRegistry,
+) -> None:
+    projection = _projection_items_from_substantive_terms(
+        decomposition={
+            "original_question": "查询服务使用的隧道及其目的网元，返回隧道带宽和网元名称。",
+            "substantive_terms": [
+                {"text": "服务", "slot": "path"},
+                {"text": "使用", "slot": "path"},
+                {"text": "隧道", "slot": "path"},
+                {"text": "目的网元", "slot": "path"},
+                {"text": "带宽", "slot": "projection", "attached_to": "隧道"},
+                {"text": "名称", "slot": "projection", "attached_to": "网元"},
+            ],
+        },
+        candidates=[
+            _semantic_candidate("vertex", "Service"),
+            _semantic_candidate("vertex", "Tunnel"),
+            _semantic_candidate("vertex", "NetworkElement"),
+            _semantic_candidate("property", "Tunnel.bandwidth", owner="Tunnel", semantic_name="bandwidth"),
+            _semantic_candidate("property", "Tunnel.name", owner="Tunnel", semantic_name="name"),
+            _semantic_candidate("property", "NetworkElement.name", owner="NetworkElement", semantic_name="name"),
+        ],
+        registry=registry,
+        selected_vertices=["Service", "Tunnel", "NetworkElement"],
+    )
+
+    assert [(item["owner"], item["name"]) for item in projection] == [
+        ("Tunnel", "bandwidth"),
+        ("NetworkElement", "name"),
+    ]
+
+
 def test_endpoint_projection_owner_can_be_embedded_inside_attachment_phrase(
     registry: GraphSemanticRegistry,
 ) -> None:
@@ -682,7 +1010,7 @@ def test_projection_attachment_anchor_is_not_projected_as_property(
     ]
 
 
-def test_projection_object_term_projects_matched_vertex_id(
+def test_projection_object_term_projects_matched_vertex_full_in_path_context(
     registry: GraphSemanticRegistry,
 ) -> None:
     projection = _projection_items_from_substantive_terms(
@@ -707,8 +1035,13 @@ def test_projection_object_term_projects_matched_vertex_id(
         selected_vertices=["Service", "Tunnel", "NetworkElement"],
     )
 
-    assert [(item["owner"], item["name"], item["projection_terms"]) for item in projection] == [
-        ("NetworkElement", "id", ["网元"]),
+    assert projection == [
+        {
+            "semantic_type": "vertex_full",
+            "name": "NetworkElement",
+            "alias": "network_element",
+            "projection_terms": ["网元"],
+        }
     ]
 
 
@@ -743,6 +1076,271 @@ def test_f4_requirements_report_uncovered_projection_slot_by_attachment(
     )
 
     assert requirements["projection_uncovered_terms"] == ["服务及其使用的隧道.服务质量等级"]
+
+
+def test_attached_detail_projection_keeps_vertex_full_requirement(
+    registry: GraphSemanticRegistry,
+) -> None:
+    requirements = _multihop_assembler_requirements(
+        shape=QueryShape.F4_PATH_PROJECTION_MULTIHOP,
+        decomposition={
+            "original_question": "查询服务使用的隧道的名称、带宽及隧道详细信息。",
+            "substantive_terms": [
+                {"text": "服务", "slot": "path"},
+                {"text": "使用", "slot": "path"},
+                {"text": "隧道", "slot": "path"},
+                {"text": "名称", "slot": "projection", "attached_to": "隧道"},
+                {"text": "带宽", "slot": "projection", "attached_to": "隧道"},
+                {"text": "详细信息", "slot": "projection", "attached_to": "隧道"},
+            ],
+        },
+        retrieval_result=CandidateRetrievalResult(
+            candidates=[
+                _semantic_candidate("vertex", "Service"),
+                _semantic_candidate("vertex", "Tunnel"),
+                _semantic_candidate("edge", "SERVICE_USES_TUNNEL"),
+                _semantic_candidate("property", "Tunnel.name", owner="Tunnel", semantic_name="name"),
+                _semantic_candidate("property", "Tunnel.bandwidth", owner="Tunnel", semantic_name="bandwidth"),
+            ],
+        ),
+        literal_results=[],
+        registry=registry,
+    )
+
+    assert "projection_uncovered_terms" not in requirements
+    assert requirements["projection"] == [
+        {"owner": "Tunnel", "property": "name", "alias": "tunnel_name", "projection_terms": ["名称"]},
+        {"owner": "Tunnel", "property": "bandwidth", "alias": "tunnel_bandwidth", "projection_terms": ["带宽"]},
+        {"semantic_type": "vertex_full", "name": "Tunnel", "alias": "tunnel", "projection_terms": ["详细信息"]},
+    ]
+
+    result = MultihopAssembler(registry).assemble(
+        "F4 path_projection_multihop",
+        candidates=[
+            _candidate("vertex", "Service"),
+            _candidate("vertex", "Tunnel"),
+            _candidate("edge", "SERVICE_USES_TUNNEL"),
+            _candidate("property", "Tunnel.name", owner="Tunnel", semantic_name="name"),
+            _candidate("property", "Tunnel.bandwidth", owner="Tunnel", semantic_name="bandwidth"),
+        ],
+        structural_requirements=requirements,
+    )
+
+    assert result.success is True
+    assert result.dsl is not None
+    assert result.dsl["projection"]["items"][-1] == {
+        "alias": "tunnel",
+        "target": "v1",
+        "vertex_full": True,
+        "projection_terms": ["详细信息"],
+    }
+
+
+def test_chained_node_detail_projection_resolves_to_attached_vertex_full(
+    registry: GraphSemanticRegistry,
+) -> None:
+    requirements = _multihop_assembler_requirements(
+        shape=QueryShape.F4_PATH_PROJECTION_MULTIHOP,
+        decomposition={
+            "original_question": "查询所有Service使用的Tunnel，返回Tunnel名称、带宽及节点详情。",
+            "substantive_terms": [
+                {"text": "Service", "slot": "path"},
+                {"text": "使用", "slot": "path"},
+                {"text": "Tunnel", "slot": "path"},
+                {"text": "名称", "slot": "projection", "attached_to": "Tunnel"},
+                {"text": "带宽", "slot": "projection", "attached_to": "Tunnel"},
+                {"text": "节点", "slot": "projection", "attached_to": "Tunnel"},
+                {"text": "详情", "slot": "projection", "attached_to": "节点"},
+            ],
+        },
+        retrieval_result=CandidateRetrievalResult(
+            candidates=[
+                _semantic_candidate("vertex", "Service"),
+                _semantic_candidate("vertex", "Tunnel"),
+                _semantic_candidate("edge", "SERVICE_USES_TUNNEL"),
+                _semantic_candidate("property", "Tunnel.name", owner="Tunnel", semantic_name="name"),
+                _semantic_candidate("property", "Tunnel.bandwidth", owner="Tunnel", semantic_name="bandwidth"),
+            ],
+        ),
+        literal_results=[],
+        registry=registry,
+    )
+
+    assert "projection_uncovered_terms" not in requirements
+    assert requirements["projection"] == [
+        {"owner": "Tunnel", "property": "name", "alias": "tunnel_name", "projection_terms": ["名称"]},
+        {"owner": "Tunnel", "property": "bandwidth", "alias": "tunnel_bandwidth", "projection_terms": ["带宽"]},
+        {"semantic_type": "vertex_full", "name": "Tunnel", "alias": "tunnel", "projection_terms": ["节点", "详情"]},
+    ]
+
+
+def test_attached_plain_info_projection_resolves_to_vertex_full(
+    registry: GraphSemanticRegistry,
+) -> None:
+    requirements = _multihop_assembler_requirements(
+        shape=QueryShape.F4_PATH_PROJECTION_MULTIHOP,
+        decomposition={
+            "original_question": "查询所有服务使用的隧道节点信息。",
+            "substantive_terms": [
+                {"text": "服务", "slot": "path"},
+                {"text": "使用", "slot": "path"},
+                {"text": "隧道", "slot": "path"},
+                {"text": "节点", "slot": "projection", "attached_to": "隧道"},
+                {"text": "信息", "slot": "projection", "attached_to": "隧道"},
+            ],
+        },
+        retrieval_result=CandidateRetrievalResult(
+            candidates=[
+                _semantic_candidate("vertex", "Service"),
+                _semantic_candidate("vertex", "Tunnel"),
+                _semantic_candidate("edge", "SERVICE_USES_TUNNEL"),
+            ],
+        ),
+        literal_results=[],
+        registry=registry,
+    )
+
+    assert "projection_uncovered_terms" not in requirements
+    assert requirements["projection"] == [
+        {"semantic_type": "vertex_full", "name": "Tunnel", "alias": "tunnel", "projection_terms": ["节点", "信息"]},
+    ]
+
+
+def test_compound_tunnel_node_projection_resolves_to_tunnel_vertex_full(
+    registry: GraphSemanticRegistry,
+) -> None:
+    requirements = _multihop_assembler_requirements(
+        shape=QueryShape.F4_PATH_PROJECTION_MULTIHOP,
+        decomposition={
+            "original_question": "查询所有业务使用的隧道节点。",
+            "substantive_terms": [
+                {"text": "业务", "slot": "path"},
+                {"text": "使用", "slot": "path"},
+                {"text": "隧道节点", "slot": "projection"},
+            ],
+        },
+        retrieval_result=CandidateRetrievalResult(
+            candidates=[
+                _semantic_candidate("vertex", "Service"),
+                _semantic_candidate("vertex", "Tunnel"),
+                _semantic_candidate("edge", "SERVICE_USES_TUNNEL"),
+            ],
+        ),
+        literal_results=[],
+        registry=registry,
+    )
+
+    assert "projection_uncovered_terms" not in requirements
+    assert requirements["projection"] == [
+        {"semantic_type": "vertex_full", "name": "Tunnel", "alias": "tunnel", "projection_terms": ["隧道节点"]},
+    ]
+
+
+def test_compound_info_projection_on_deep_path_stays_unresolved(
+    registry: GraphSemanticRegistry,
+) -> None:
+    requirements = _multihop_assembler_requirements(
+        shape=QueryShape.F4_PATH_PROJECTION_MULTIHOP,
+        decomposition={
+            "original_question": "查询业务使用的隧道、源端网元及端口信息。",
+            "substantive_terms": [
+                {"text": "业务", "slot": "path"},
+                {"text": "使用", "slot": "path"},
+                {"text": "隧道", "slot": "path"},
+                {"text": "源端网元", "slot": "path"},
+                {"text": "端口信息", "slot": "projection"},
+            ],
+        },
+        retrieval_result=CandidateRetrievalResult(
+            candidates=[
+                _semantic_candidate("vertex", "Service"),
+                _semantic_candidate("vertex", "Tunnel"),
+                _semantic_candidate("vertex", "NetworkElement"),
+                _semantic_candidate("vertex", "Port"),
+                _semantic_candidate("edge", "SERVICE_USES_TUNNEL"),
+                _semantic_candidate("edge", "TUNNEL_SRC"),
+                _semantic_candidate("edge", "HAS_PORT"),
+            ],
+        ),
+        literal_results=[],
+        registry=registry,
+    )
+
+    assert requirements.get("projection") == []
+
+
+def test_endpoint_side_terms_expand_shared_property_to_source_and_target(
+    registry: GraphSemanticRegistry,
+) -> None:
+    requirements = _multihop_assembler_requirements(
+        shape=QueryShape.F4_PATH_PROJECTION_MULTIHOP,
+        decomposition={
+            "original_question": "查询服务使用隧道关系中服务端和隧道端的元素类型。",
+            "substantive_terms": [
+                {"text": "服务", "slot": "path"},
+                {"text": "使用", "slot": "path"},
+                {"text": "隧道", "slot": "path"},
+                {"text": "服务端", "slot": "projection", "attached_to": "服务"},
+                {"text": "隧道端", "slot": "projection", "attached_to": "隧道"},
+                {"text": "元素类型", "slot": "projection"},
+            ],
+        },
+        retrieval_result=CandidateRetrievalResult(
+            candidates=[
+                _semantic_candidate("vertex", "Service"),
+                _semantic_candidate("vertex", "Tunnel"),
+                _semantic_candidate("edge", "SERVICE_USES_TUNNEL"),
+                _semantic_candidate("property", "Service.elem_type", owner="Service", semantic_name="elem_type"),
+                _semantic_candidate("property", "Tunnel.elem_type", owner="Tunnel", semantic_name="elem_type"),
+            ],
+        ),
+        literal_results=[],
+        registry=registry,
+    )
+
+    assert "projection_uncovered_terms" not in requirements
+    assert requirements["projection"] == [
+        {"owner": "Service", "property": "elem_type", "alias": "source_type", "projection_terms": ["元素类型"]},
+        {"owner": "Tunnel", "property": "elem_type", "alias": "target_type", "projection_terms": ["元素类型"]},
+    ]
+
+
+def test_source_target_property_terms_override_misleading_attachment_owner(
+    registry: GraphSemanticRegistry,
+) -> None:
+    requirements = _multihop_assembler_requirements(
+        shape=QueryShape.F4_PATH_PROJECTION_MULTIHOP,
+        decomposition={
+            "original_question": "查询服务使用的隧道，返回源类型、目标类型和隧道带宽。",
+            "substantive_terms": [
+                {"text": "服务", "slot": "path"},
+                {"text": "使用", "slot": "path"},
+                {"text": "隧道", "slot": "path"},
+                {"text": "源类型", "slot": "projection", "attached_to": "隧道"},
+                {"text": "目标类型", "slot": "projection", "attached_to": "隧道"},
+                {"text": "带宽", "slot": "projection", "attached_to": "隧道"},
+            ],
+        },
+        retrieval_result=CandidateRetrievalResult(
+            candidates=[
+                _semantic_candidate("vertex", "Service"),
+                _semantic_candidate("vertex", "Tunnel"),
+                _semantic_candidate("edge", "SERVICE_USES_TUNNEL"),
+                _semantic_candidate("property", "Service.elem_type", owner="Service", semantic_name="elem_type"),
+                _semantic_candidate("property", "Tunnel.elem_type", owner="Tunnel", semantic_name="elem_type"),
+                _semantic_candidate("property", "Tunnel.bandwidth", owner="Tunnel", semantic_name="bandwidth"),
+            ],
+        ),
+        literal_results=[],
+        registry=registry,
+    )
+
+    assert "projection_uncovered_terms" not in requirements
+    assert requirements["projection"] == [
+        {"owner": "Service", "property": "elem_type", "alias": "source", "projection_terms": ["源类型"]},
+        {"owner": "Tunnel", "property": "elem_type", "alias": "target", "projection_terms": ["目标类型"]},
+        {"owner": "Tunnel", "property": "bandwidth", "alias": "tunnel_bandwidth", "projection_terms": ["带宽"]},
+    ]
 
 
 def _candidate(

@@ -68,11 +68,13 @@ def _zero_hop_candidates(requirements: StructuralRequirements, decomposition: Ma
     if requirements.requires_aggregate and not _has_group_topn_signal(requirements):
         candidates.append(QueryShape.F3_VERTEX_AGGREGATE_0HOP)
     filter_signal = _has_filter_or_literal_hint(decomposition)
+    if requirements.requires_aggregate and _is_count_intent(decomposition):
+        filter_signal = False
     if requirements.requires_aggregate and _has_property_count_object_signal(decomposition):
         filter_signal = _has_explicit_literal_hint(decomposition)
     if filter_signal:
         candidates.append(QueryShape.F2_VERTEX_FILTER_0HOP)
-    if not candidates and requirements.projection_terms:
+    if not candidates and (requirements.projection_terms or _has_object_info_projection_hint(decomposition)):
         candidates.append(QueryShape.F1_VERTEX_PROJECTION_0HOP)
     return candidates
 
@@ -122,6 +124,26 @@ def _has_property_count_object_signal(decomposition: Mapping[str, Any]) -> bool:
     )
 
 
+def _has_object_info_projection_hint(decomposition: Mapping[str, Any]) -> bool:
+    question = _compact_text(decomposition.get("original_question") or decomposition.get("question") or "")
+    raw_terms = decomposition.get("substantive_terms")
+    if not question or not isinstance(raw_terms, list | tuple):
+        return False
+    projection_terms = [
+        _compact_text(term.get("text") or "")
+        for term in raw_terms
+        if isinstance(term, Mapping) and term.get("slot") == "projection"
+    ]
+    projection_terms = [term for term in projection_terms if term]
+    if not projection_terms:
+        return False
+    return any(
+        f"{term}{suffix}" in question
+        for term in projection_terms
+        for suffix in _OBJECT_INFO_PROJECTION_SUFFIXES
+    )
+
+
 def _is_property_count_modifier_text(text: str) -> bool:
     return text.strip() in _PROPERTY_COUNT_MODIFIER_TERMS
 
@@ -138,6 +160,10 @@ def _is_count_intent(decomposition: Mapping[str, Any]) -> bool:
 
 def _truthy_sequence(value: Any) -> bool:
     return isinstance(value, list | tuple | set) and bool(value)
+
+
+def _compact_text(value: Any) -> str:
+    return str(value or "").casefold().replace(" ", "").replace("_", "").replace("-", "")
 
 
 def _is_explicit_two_stage(decomposition: Mapping[str, Any]) -> bool:
@@ -158,3 +184,5 @@ _PROPERTY_COUNT_MODIFIER_TERMS = {
     "值",
     "条目",
 }
+
+_OBJECT_INFO_PROJECTION_SUFFIXES = ("信息", "详情", "详细信息", "完整信息", "全部信息", "所有信息")

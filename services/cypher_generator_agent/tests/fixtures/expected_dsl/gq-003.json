@@ -2,7 +2,7 @@
   "schema_version": "restricted_query_dsl_v1",
   "query_id": "gq-003",
   "query_shape": "named_path_pattern",
-  "source_question": "隧道 tun-mpls-001 经过哪些设备",
+  "source_question": "隧道 tun-mpls-001 经过哪些设备信息",
   "bindings": {
     "primary_vertex": {
       "vertex_name": "Tunnel"

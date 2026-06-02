@@ -559,6 +559,9 @@ def _compile_filters(
         if filter_item.target is None:
             raise CypherCompilerError("filter target is required for compiler MVP")
         variable = role_variables[filter_item.target.alias]
+        if filter_item.operator == "is_not_null":
+            compiled.append(f"{variable}.{filter_item.property.name} IS NOT NULL")
+            continue
         operator = OPERATOR_CYPHER.get(filter_item.operator)
         if operator is None:
             raise CypherCompilerError(f"unsupported filter operator: {filter_item.operator}")

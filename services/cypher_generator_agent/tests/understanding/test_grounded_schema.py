@@ -246,6 +246,28 @@ def test_compact_candidate_only_output_hydrates_to_binder_payload() -> None:
     assert plan.filters[0].value == "GOLD"
 
 
+def test_compact_projection_vertex_binding_hydrates_to_vertex_full_projection() -> None:
+    payload = _valid_minimal_payload()
+    payload["selected_bindings"] = [
+        {"role": "source", "candidate_id": "vertex:Service"},
+        {"role": "relation", "candidate_id": "edge:SERVICE_USES_TUNNEL", "direction": "forward"},
+        {"role": "projection", "candidate_id": "vertex:Tunnel"},
+    ]
+    payload["projection"] = []
+    client = FakeGroundedLLMClient([payload])
+
+    result = GroundedUnderstandingSelector(client, max_schema_retries=0).select(
+        question_decomposition=_gold_decomposition(),
+        candidates=_gold_candidates(),
+        literal_results=[],
+    )
+
+    assert isinstance(result, GroundedUnderstanding)
+    assert result.to_binder_payload()["projection"] == [
+        {"semantic_type": "vertex_full", "name": "Tunnel", "alias": "tunnel"}
+    ]
+
+
 def test_legacy_string_operation_hints_hydrate_to_binder_payload() -> None:
     client = FakeGroundedLLMClient(
         [

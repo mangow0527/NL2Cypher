@@ -5,7 +5,7 @@ description: >
   which IR must fill them in.
 golden_questions:
   - id: gq-001
-    question: Gold 服务使用了哪些隧道
+    question: Gold 服务使用了哪些隧道ID
     expected_status: generated
     primary_ir: IR-05
     expected_reason_code: generated
@@ -19,7 +19,7 @@ golden_questions:
     ci_smoke: true
 
   - id: gq-002
-    question: 服务 svc-gold-001 使用了哪些隧道
+    question: 服务 svc-gold-001 使用了哪些隧道ID
     expected_status: generated
     primary_ir: IR-05
     expected_reason_code: generated
@@ -33,7 +33,7 @@ golden_questions:
     ci_smoke: true
 
   - id: gq-003
-    question: 隧道 tun-mpls-001 经过哪些设备
+    question: 隧道 tun-mpls-001 经过哪些设备信息
     expected_status: generated
     primary_ir: IR-05
     expected_reason_code: generated
@@ -69,7 +69,7 @@ golden_questions:
     ci_smoke: false
 
   - id: gq-006
-    question: 设备 ne-0001 有哪些端口
+    question: 设备 ne-0001 有哪些端口ID
     expected_status: generated
     primary_ir: IR-05
     expected_reason_code: generated
@@ -83,7 +83,7 @@ golden_questions:
     ci_smoke: true
 
   - id: gq-007
-    question: 当前 down 的端口有哪些
+    question: 当前 down 的端口ID有哪些
     expected_status: generated
     primary_ir: IR-05
     expected_reason_code: generated
@@ -208,7 +208,7 @@ golden_questions:
     ci_smoke: false
 
   - id: gq-017
-    question: 设备 ne-9999 有哪些端口
+    question: 设备 ne-9999 有哪些端口ID
     expected_status: generated
     primary_ir: IR-03a
     expected_reason_code: generated

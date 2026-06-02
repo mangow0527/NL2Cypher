@@ -49,10 +49,40 @@ EXPECTED_STAGES = [
     "output",
 ]
 
+EXPECTED_DETERMINISTIC_STAGES = [
+    "graph_model_loader",
+    "input_clarification_gate",
+    "question_decomposer",
+    "candidate_retrieval",
+    "candidate_reranker",
+    "literal_resolver",
+    "deterministic_assembler",
+    "dsl_parser",
+    "dsl_structural_coverage_gate",
+    "cypher_compiler",
+    "cypher_self_validation",
+    "output",
+]
+
+
+def _force_grounded_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        pipeline_module,
+        "_deterministic_assembler_payload",
+        lambda **kwargs: {
+            "schema_version": "deterministic_assembler_result_v1",
+            "shape_status": "resolved",
+            "shape": "test_forces_grounded_path",
+            "shape_candidates": ["test_forces_grounded_path"],
+            "success": False,
+            "fallback_reason": "test_forces_grounded_path",
+        },
+    )
+
 
 def test_gold_service_question_generates_single_hop_cypher() -> None:
     output = run_pipeline(
-        question="Gold 服务使用了哪些隧道",
+        question="Gold 服务使用了哪些隧道ID",
         qa_id="gq-001",
         generation_run_id="run-gq-001",
     )
@@ -67,7 +97,7 @@ def test_gold_service_question_generates_single_hop_cypher() -> None:
     assert _compiler_parameters(output.trace)["quality_of_service"] == "Gold"
     assert "svc.quality_of_service = $quality_of_service" in _compiler_template(output.trace)
     assert _compiler_executable(output.trace) == output.cypher
-    assert _stage_names(output.trace) == EXPECTED_STAGES
+    assert _stage_names(output.trace) == EXPECTED_DETERMINISTIC_STAGES
     assert "db_connection" not in _all_keys(output.trace)
     assert "execution_result" not in _all_keys(output.trace)
 
@@ -160,6 +190,233 @@ def test_input_clarification_gate_short_circuits_deictic_question(
 
 def test_input_clarification_gate_allows_demonstrative_with_explicit_referent() -> None:
     assert pipeline_module._input_clarification_gate("统计这些隧道关联的服务数量") == {"status": "pass"}
+    assert pipeline_module._input_clarification_gate("查询所有服务与它们使用的隧道，返回服务ID和隧道ID。") == {
+        "status": "pass"
+    }
+
+
+def test_naked_object_projection_requires_output_clarification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_decompose(question: str) -> dict[str, Any]:
+        return {
+            "schema_version": "question_decomposition_v1",
+            "result_type": "decomposition",
+            "intent_type": "list",
+            "original_question": question,
+            "literal_candidates": [],
+            "literal_requests": [],
+            "substantive_terms": [_decomp_term("服务", "projection")],
+            "modality_terms": [],
+            "time_terms": [],
+            "unparsed_terms": [],
+            "output_shape": "rows",
+        }
+
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_DISABLE_ENV_FILE", "true")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_ENABLED", "false")
+    get_settings.cache_clear()
+    monkeypatch.setattr(pipeline_module, "_mock_decompose", fake_decompose)
+
+    try:
+        output = run_pipeline(
+            question="查询所有服务。",
+            qa_id="naked-service-output-clarification",
+            generation_run_id="run-naked-service-output-clarification",
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert output.status == "clarification_required"
+    assert output.cypher is None
+    assert output.dsl is None
+    assert output.clarification is not None
+    assert "返回" in output.clarification.question
+    assert "字段" in output.clarification.question
+
+
+def test_explicit_id_projection_still_returns_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_decompose(question: str) -> dict[str, Any]:
+        return {
+            "schema_version": "question_decomposition_v1",
+            "result_type": "decomposition",
+            "intent_type": "list",
+            "original_question": question,
+            "literal_candidates": [],
+            "literal_requests": [],
+            "substantive_terms": [
+                _decomp_term("服务", "projection"),
+                _decomp_term("ID", "projection", attached_to="服务"),
+            ],
+            "modality_terms": [],
+            "time_terms": [],
+            "unparsed_terms": [],
+            "output_shape": "rows",
+        }
+
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_DISABLE_ENV_FILE", "true")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_ENABLED", "false")
+    get_settings.cache_clear()
+    monkeypatch.setattr(pipeline_module, "_mock_decompose", fake_decompose)
+
+    try:
+        output = run_pipeline(
+            question="查询所有服务ID。",
+            qa_id="explicit-service-id",
+            generation_run_id="run-explicit-service-id",
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert output.status == "generated"
+    assert output.cypher == "MATCH (svc:Service)\nRETURN svc.id AS service_id"
+
+
+def test_path_context_naked_projection_returns_vertex_without_clarification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_decompose(question: str) -> dict[str, Any]:
+        return {
+            "schema_version": "question_decomposition_v1",
+            "result_type": "decomposition",
+            "intent_type": "list",
+            "original_question": question,
+            "literal_candidates": [],
+            "literal_requests": [],
+            "substantive_terms": [
+                _decomp_term("服务", "path"),
+                _decomp_term("使用", "path"),
+                _decomp_term("隧道", "path"),
+                _decomp_term("经过", "path"),
+                _decomp_term("网元", "projection"),
+            ],
+            "modality_terms": [],
+            "time_terms": [],
+            "unparsed_terms": [],
+            "output_shape": "rows",
+        }
+
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_DISABLE_ENV_FILE", "true")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_ENABLED", "false")
+    get_settings.cache_clear()
+    monkeypatch.setattr(pipeline_module, "_mock_decompose", fake_decompose)
+
+    try:
+        output = run_pipeline(
+            question="查询所有服务使用的隧道所经过的网元。",
+            qa_id="path-context-network-element-output",
+            generation_run_id="run-path-context-network-element-output",
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert output.status == "generated"
+    assert output.clarification is None
+    assert output.dsl is not None
+    assert output.dsl["projection"]["items"] == [
+        {"target": "end", "alias": "network_element", "vertex_full": True}
+    ]
+    assert "RETURN ne AS network_element" in output.cypher
+
+
+def test_path_context_object_generic_suffix_returns_vertex_without_id_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_decompose(question: str) -> dict[str, Any]:
+        return {
+            "schema_version": "question_decomposition_v1",
+            "result_type": "decomposition",
+            "intent_type": "list",
+            "original_question": question,
+            "literal_candidates": [],
+            "literal_requests": [],
+            "substantive_terms": [
+                _decomp_term("业务", "path"),
+                _decomp_term("使用", "path"),
+                _decomp_term("隧道", "projection"),
+            ],
+            "modality_terms": [],
+            "time_terms": [],
+            "unparsed_terms": [],
+            "output_shape": "rows",
+        }
+
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_DISABLE_ENV_FILE", "true")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_ENABLED", "false")
+    get_settings.cache_clear()
+    monkeypatch.setattr(pipeline_module, "_mock_decompose", fake_decompose)
+
+    try:
+        output = run_pipeline(
+            question="查询所有被业务使用的隧道节点。",
+            qa_id="path-context-tunnel-node-output",
+            generation_run_id="run-path-context-tunnel-node-output",
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert output.status == "generated"
+    assert output.clarification is None
+    assert output.dsl is not None
+    assert output.dsl["projection"]["items"] == [{"target": "end", "alias": "tunnel", "vertex_full": True}]
+    assert "RETURN tun AS tunnel" in output.cypher
+
+
+def test_grounded_path_without_projection_is_enriched_from_projection_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_decompose(question: str) -> dict[str, Any]:
+        return {
+            "schema_version": "question_decomposition_v1",
+            "result_type": "decomposition",
+            "intent_type": "list",
+            "original_question": question,
+            "literal_candidates": [],
+            "literal_requests": [],
+            "substantive_terms": [
+                _decomp_term("业务", "path"),
+                _decomp_term("使用", "path"),
+                _decomp_term("隧道", "projection"),
+            ],
+            "modality_terms": [],
+            "time_terms": [],
+            "unparsed_terms": [],
+            "output_shape": "rows",
+        }
+
+    def fake_understand(decomposition: dict[str, Any], literal_results: list[Any]) -> dict[str, Any]:
+        return {
+            "query_shape": "single_hop",
+            "selected_vertices": [{"name": "Service"}, {"name": "Tunnel"}],
+            "selected_edges": [{"name": "SERVICE_USES_TUNNEL", "direction": "forward"}],
+            "selected_literals": [],
+            "filters": [],
+            "projection": [],
+        }
+
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_DISABLE_ENV_FILE", "true")
+    monkeypatch.setenv("CYPHER_GENERATOR_AGENT_LLM_ENABLED", "false")
+    get_settings.cache_clear()
+    monkeypatch.setattr(pipeline_module, "_mock_decompose", fake_decompose)
+    monkeypatch.setattr(pipeline_module, "_mock_understand", fake_understand)
+    _force_grounded_path(monkeypatch)
+
+    try:
+        output = run_pipeline(
+            question="查询所有被业务使用的隧道节点。",
+            qa_id="grounded-path-projection-enrichment",
+            generation_run_id="run-grounded-path-projection-enrichment",
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert output.status == "generated"
+    assert output.clarification is None
+    assert output.dsl is not None
+    assert output.dsl["projection"]["items"] == [{"target": "end", "alias": "tunnel", "vertex_full": True}]
+    assert "RETURN tun AS tunnel" in output.cypher
 
 
 def test_literal_request_uses_filter_property_term_near_literal() -> None:
@@ -407,7 +664,7 @@ def test_pipeline_semantic_artifacts_can_be_overridden_from_settings(
 
     try:
         output = run_pipeline(
-            question="Gold 服务使用了哪些隧道",
+            question="Gold 服务使用了哪些隧道ID",
             qa_id="settings-override",
             generation_run_id="run-settings-override",
         )
@@ -432,7 +689,7 @@ def test_pipeline_can_use_real_llm_mode_with_openai_compatible_client(
                     "schema_version": "question_decomposition_v1",
                     "result_type": "decomposition",
                     "intent_type": "list",
-                    "original_question": "Gold 服务使用了哪些隧道",
+                    "original_question": "Gold 服务使用了哪些隧道ID",
                     "literal_candidates": [
                         {"text": "Gold", "kind_hint": "enum_or_name", "attached_to": "服务"}
                     ],
@@ -441,6 +698,7 @@ def test_pipeline_can_use_real_llm_mode_with_openai_compatible_client(
                         _decomp_term("服务", "path"),
                         _decomp_term("使用", "path"),
                         _decomp_term("隧道", "projection"),
+                        _decomp_term("ID", "projection", attached_to="隧道"),
                     ],
                     "modality_terms": [],
                     "time_terms": [],
@@ -549,7 +807,7 @@ def test_pipeline_can_use_real_llm_mode_with_openai_compatible_client(
 
     try:
         output = run_pipeline(
-            question="Gold 服务使用了哪些隧道",
+            question="Gold 服务使用了哪些隧道ID",
             qa_id="real-llm-mode",
             generation_run_id="run-real-llm-mode",
         )
@@ -657,7 +915,7 @@ def test_llm_enum_literal_with_qualifier_prefers_enum_property_over_id(
                 "schema_version": "question_decomposition_v1",
                 "result_type": "decomposition",
                 "intent_type": "list",
-                "original_question": "Gold级别的服务都使用了哪些隧道",
+                    "original_question": "Gold级别的服务都使用了哪些隧道ID",
                 "literal_candidates": [
                     {"text": "Gold级别", "kind_hint": "enum_or_name", "attached_to": "服务"}
                 ],
@@ -666,6 +924,7 @@ def test_llm_enum_literal_with_qualifier_prefers_enum_property_over_id(
                     _decomp_term("服务", "path"),
                     _decomp_term("使用", "path"),
                     _decomp_term("隧道", "projection"),
+                    _decomp_term("ID", "projection", attached_to="隧道"),
                 ],
                 "modality_terms": [],
                 "time_terms": [],
@@ -742,7 +1001,7 @@ def test_llm_enum_literal_with_qualifier_prefers_enum_property_over_id(
 
     try:
         output = run_pipeline(
-            question="Gold级别的服务都使用了哪些隧道",
+            question="Gold级别的服务都使用了哪些隧道ID",
             qa_id="llm-gold-qualifier",
             generation_run_id="run-llm-gold-qualifier",
         )
@@ -916,7 +1175,7 @@ def test_value_synonym_candidate_becomes_literal_request_when_llm_omits_literal_
     assert _compiler_parameters(output.trace)["elem_type"] == "firewall"
 
 
-def test_llm_vertex_lookup_without_filter_or_projection_uses_selected_literal_and_default_projection(
+def test_llm_vertex_lookup_without_filter_or_projection_requires_output_clarification(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeStructuredClient:
@@ -1017,10 +1276,12 @@ def test_llm_vertex_lookup_without_filter_or_projection_uses_selected_literal_an
     finally:
         get_settings.cache_clear()
 
-    assert output.status == "generated"
-    assert output.cypher == "MATCH (port:Port)\nWHERE port.status = 'down'\nRETURN port.id AS port_id"
-    assert _compiler_template(output.trace) == "MATCH (port:Port)\nWHERE port.status = $status\nRETURN port.id AS port_id"
-    assert _compiler_parameters(output.trace)["status"] == "down"
+    assert output.status == "clarification_required"
+    assert output.cypher is None
+    assert output.dsl is None
+    assert output.clarification is not None
+    assert "返回" in output.clarification.question
+    assert "字段" in output.clarification.question
 
 
 def test_llm_single_shot_fallback_does_not_reground_after_repairable_validator_error(
@@ -1036,7 +1297,7 @@ def test_llm_single_shot_fallback_does_not_reground_after_repairable_validator_e
                     "schema_version": "question_decomposition_v1",
                     "result_type": "decomposition",
                     "intent_type": "list",
-                    "original_question": "Gold 服务使用了哪些隧道",
+                    "original_question": "Gold 服务使用了哪些隧道ID",
                     "literal_candidates": [
                         {"text": "Gold", "kind_hint": "enum_or_name", "attached_to": "服务"}
                     ],
@@ -1045,6 +1306,7 @@ def test_llm_single_shot_fallback_does_not_reground_after_repairable_validator_e
                         _decomp_term("服务", "path"),
                         _decomp_term("使用", "path"),
                         _decomp_term("隧道", "projection"),
+                        _decomp_term("ID", "projection", attached_to="隧道"),
                     ],
                     "modality_terms": [],
                     "time_terms": [],
@@ -1107,7 +1369,7 @@ def test_llm_single_shot_fallback_does_not_reground_after_repairable_validator_e
 
     try:
         output = run_pipeline(
-            question="Gold 服务使用了哪些隧道",
+            question="Gold 服务使用了哪些隧道ID",
             qa_id="llm-repair-loop",
             generation_run_id="run-llm-repair-loop",
         )
@@ -1125,7 +1387,7 @@ def test_llm_single_shot_fallback_does_not_reground_after_repairable_validator_e
 
 def test_tunnel_path_question_generates_named_path_pattern_cypher() -> None:
     output = run_pipeline(
-        question="隧道 tun-mpls-001 经过哪些设备",
+        question="隧道 tun-mpls-001 经过哪些设备信息",
         qa_id="gq-003",
         generation_run_id="run-gq-003",
     )
@@ -1216,9 +1478,10 @@ def test_unsupported_query_shape_from_validator_returns_unsupported_output(
         }
 
     monkeypatch.setattr(pipeline_module, "_mock_understand", unsupported_understanding)
+    _force_grounded_path(monkeypatch)
 
     output = run_pipeline(
-        question="Gold 服务使用了哪些隧道",
+        question="Gold 服务使用了哪些隧道ID",
         qa_id="unsupported-shape",
         generation_run_id="run-unsupported-shape",
     )
@@ -1807,7 +2070,7 @@ def test_filter_numeric_literal_candidate_still_becomes_literal_request() -> Non
 
 def test_self_validation_failure_records_self_validation_stage_without_final_cypher() -> None:
     output = run_pipeline(
-        question="隧道 tun-mpls-001 经过哪些设备",
+        question="隧道 tun-mpls-001 经过哪些设备信息",
         qa_id="self-validation-failure",
         generation_run_id="run-self-validation-failure",
         _path_pattern_template_overrides_for_tests={
@@ -1833,7 +2096,7 @@ def test_self_validation_failure_records_self_validation_stage_without_final_cyp
 
 def test_path_pattern_shape_mismatch_is_reported_by_self_validation_stage() -> None:
     output = run_pipeline(
-        question="隧道 tun-mpls-001 经过哪些设备",
+        question="隧道 tun-mpls-001 经过哪些设备信息",
         qa_id="shape-mismatch",
         generation_run_id="run-shape-mismatch",
         _path_pattern_template_overrides_for_tests={
@@ -1870,9 +2133,10 @@ def test_dsl_parser_failure_is_recorded_in_dsl_parser_stage(
         }
 
     monkeypatch.setattr(pipeline_module.RestrictedDslBuilder, "build", invalid_dsl)
+    _force_grounded_path(monkeypatch)
 
     output = run_pipeline(
-        question="Gold 服务使用了哪些隧道",
+        question="Gold 服务使用了哪些隧道ID",
         qa_id="invalid-dsl",
         generation_run_id="run-invalid-dsl",
     )
@@ -1888,7 +2152,7 @@ def test_dsl_parser_failure_is_recorded_in_dsl_parser_stage(
 
 def test_model_loader_failure_returns_service_failure_envelope(tmp_path) -> None:
     output = run_pipeline(
-        question="Gold 服务使用了哪些隧道",
+        question="Gold 服务使用了哪些隧道ID",
         qa_id="model-loader-failure",
         generation_run_id="run-model-loader-failure",
         _model_path=tmp_path / "missing-model.yaml",
@@ -1946,7 +2210,7 @@ def test_decomposer_failure_outcome_short_circuits_pipeline(
     monkeypatch.setattr(pipeline_module, "_mock_decompose", failed_decompose)
 
     output = run_pipeline(
-        question="Gold 服务使用了哪些隧道",
+        question="Gold 服务使用了哪些隧道ID",
         qa_id="decomposer-failure",
         generation_run_id="run-decomposer-failure",
     )
@@ -2007,9 +2271,10 @@ def test_grounded_understanding_schema_output_is_converted_before_binding(
         }
 
     monkeypatch.setattr(pipeline_module, "_mock_understand", grounded_schema_understanding)
+    _force_grounded_path(monkeypatch)
 
     output = run_pipeline(
-        question="Gold 服务使用了哪些隧道",
+        question="Gold 服务使用了哪些隧道ID",
         qa_id="grounded-schema",
         generation_run_id="run-grounded-schema",
     )
@@ -2038,9 +2303,10 @@ def test_grounded_understanding_failure_outcome_stops_before_binding(
         )
 
     monkeypatch.setattr(pipeline_module, "_mock_understand", failed_grounding)
+    _force_grounded_path(monkeypatch)
 
     output = run_pipeline(
-        question="Gold 服务使用了哪些隧道",
+        question="Gold 服务使用了哪些隧道ID",
         qa_id="grounded-failure",
         generation_run_id="run-grounded-failure",
     )
@@ -2593,7 +2859,7 @@ async def test_semantic_parse_api_uses_pipeline_for_happy_path() -> None:
     result = await parse_semantics(
         SemanticParseRequest(
             id="gq-001",
-            question="Gold 服务使用了哪些隧道",
+            question="Gold 服务使用了哪些隧道ID",
             generation_run_id="run-api-gq-001",
         )
     )
@@ -2601,7 +2867,7 @@ async def test_semantic_parse_api_uses_pipeline_for_happy_path() -> None:
     assert result["status"] == "generated"
     assert "SERVICE_USES_TUNNEL" in result["cypher"]
     assert result["trace"]["final_status"] == "generated"
-    assert _stage_names(result["trace"]) == EXPECTED_STAGES
+    assert _stage_names(result["trace"]) == EXPECTED_DETERMINISTIC_STAGES
 
 
 def _stage_names(trace: dict[str, object]) -> list[str]:

@@ -417,13 +417,37 @@ class MultihopAssembler:
 
         projection: list[dict[str, Any]] = []
         for item in projection_requirements:
+            if isinstance(item, Mapping) and item.get("semantic_type") == "vertex_full":
+                owner = str(item.get("name") or "")
+                if not owner:
+                    return _fallback("missing_projection_vertex")
+                target = role_by_owner.get(owner)
+                if target is None:
+                    return _fallback("projection_owner_mismatch")
+                projection.append(
+                    {
+                        "target": target,
+                        "vertex_full": True,
+                        "alias": str(_alias(item) or _snake_case(owner)),
+                        "projection_terms": _projection_terms(item),
+                    }
+                )
+                continue
             property_name = _property_name(item)
             if property_name is None:
                 return _fallback("missing_projection_property")
-            property_ref = self._unique_property(candidates, property_name, owner_hint=_owner_name(item))
-            if isinstance(property_ref, MultihopAssemblyResult):
-                return property_ref
-            owner, name = property_ref
+            owner_hint = _owner_name(item)
+            if owner_hint is not None:
+                try:
+                    self.registry.get_property(owner_hint, property_name)
+                except RegistryLookupError:
+                    return _fallback("unknown_projection_property")
+                owner, name = owner_hint, property_name
+            else:
+                property_ref = self._unique_property(candidates, property_name)
+                if isinstance(property_ref, MultihopAssemblyResult):
+                    return property_ref
+                owner, name = property_ref
             target = role_by_owner.get(owner)
             if target is None:
                 return _fallback("projection_owner_mismatch")

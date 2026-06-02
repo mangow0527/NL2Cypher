@@ -43,7 +43,7 @@ async def test_ingest_question_submits_pipeline_generation_trace_contract() -> N
     service = CypherGeneratorAgentService(testing_client=testing_client)
 
     result = await service.generate_and_submit_question(
-        QAQuestionRequest(id="qa-osi-1", question="Gold 服务使用了哪些隧道"),
+        QAQuestionRequest(id="qa-osi-1", question="Gold 服务使用了哪些隧道ID"),
         generation_run_id="run-osi-1",
     )
 
@@ -54,7 +54,7 @@ async def test_ingest_question_submits_pipeline_generation_trace_contract() -> N
     assert testing_client.failure is None
     assert testing_client.submission is not None
     assert testing_client.submission.id == "qa-osi-1"
-    assert testing_client.submission.question == "Gold 服务使用了哪些隧道"
+    assert testing_client.submission.question == "Gold 服务使用了哪些隧道ID"
     assert testing_client.submission.generation_run_id == result.generation_run_id
     assert "SERVICE_USES_TUNNEL" in testing_client.submission.generated_cypher
 
@@ -62,7 +62,7 @@ async def test_ingest_question_submits_pipeline_generation_trace_contract() -> N
     assert snapshot["trace_schema_version"] == "cga_graph_trace_v1"
     assert snapshot["trace_id"] == result.generation_run_id
     assert snapshot["question_id"] == "qa-osi-1"
-    assert snapshot["source_question"] == "Gold 服务使用了哪些隧道"
+    assert snapshot["source_question"] == "Gold 服务使用了哪些隧道ID"
     assert snapshot["final_status"] == "generated"
     assert snapshot["final_outputs"]["cypher"] == testing_client.submission.generated_cypher
     assert snapshot["final_outputs"]["dsl"]["query_shape"] == "single_hop_traversal"

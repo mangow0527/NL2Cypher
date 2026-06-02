@@ -123,6 +123,21 @@ assumptions: []
 | `limit` | 否 | 限制条数 |
 | `assumptions` | 否 | 高置信 fuzzy 绑定或 warning-only 解释 |
 
+当前 projection item 有三种合法形态：
+
+| 形态 | 必填字段 | 用途 |
+| --- | --- | --- |
+| property projection | `target` + `property` | 返回某个绑定 vertex/edge 的具体属性。 |
+| source projection | `source` | 返回 metric、group、subquery、path pattern 等上游输出列。 |
+| vertex full projection | `target` + `vertex_full: true` | 返回完整 vertex，例如“服务信息”应编译为 `RETURN svc AS service`。 |
+
+约束：
+
+- 一个 projection item 只能使用上述三种形态之一。
+- 裸对象 projection 不再默认降级为 `id`。只有题干显式要求 `ID/编号` 等字段时才使用 property projection 到 `id`。
+- `path/relation` 结构锚点不是输出对象，不应为了输出口径生成 projection item。
+- compiler 会对 projection alias 做通用保留字规避；DSL 不应依赖业务 schema 名称绕开 `end` 等保留字。
+
 ## 5. 单跳遍历
 
 ```yaml

@@ -186,20 +186,40 @@ class ZeroHopAssembler:
         if not isinstance(aggregate, Mapping) or aggregate.get("function", "count") != "count":
             return _fallback("unsupported_f3_aggregate")
 
-        aggregate_property = _property_name(aggregate)
-        if aggregate_property is None:
-            aggregate_property = self.registry.get_vertex(vertex_name).id_property
-        property_ref = self._unique_property(
-            candidates,
-            aggregate_property,
-            allow_registry_id=True,
-            vertex_name=vertex_name,
-        )
-        if isinstance(property_ref, ZeroHopAssemblyResult):
-            return property_ref
-        owner, name = property_ref
-        if owner != vertex_name:
-            return _fallback("aggregate_owner_mismatch")
+        measure_specs = _as_list(aggregate.get("measures")) or [aggregate]
+        measures: list[dict[str, Any]] = []
+        projection_items: list[dict[str, Any]] = []
+        for measure_spec in measure_specs:
+            if not isinstance(measure_spec, Mapping) or measure_spec.get("function", "count") != "count":
+                return _fallback("unsupported_f3_aggregate")
+            aggregate_property = _property_name(measure_spec)
+            if aggregate_property is None:
+                aggregate_property = self.registry.get_vertex(vertex_name).id_property
+            property_ref = self._unique_property(
+                candidates,
+                aggregate_property,
+                allow_registry_id=True,
+                vertex_name=vertex_name,
+            )
+            if isinstance(property_ref, ZeroHopAssemblyResult):
+                return property_ref
+            owner, name = property_ref
+            if owner != vertex_name:
+                return _fallback("aggregate_owner_mismatch")
+            alias = str(measure_spec.get("alias") or f"{_snake_case(vertex_name)}_count")
+            measures.append(
+                {
+                    "alias": alias,
+                    "function": "count",
+                    "target": "target",
+                    "property": {"owner": owner, "name": name},
+                }
+            )
+            projection_terms = _projection_terms(measure_spec)
+            projection_item = {"alias": alias, "source": f"measure.{alias}"}
+            if projection_terms:
+                projection_item["projection_terms"] = projection_terms
+            projection_items.append(projection_item)
 
         filters = []
         for item in _as_list(structural_requirements.get("filters")):
@@ -212,12 +232,26 @@ class ZeroHopAssembler:
             filter_owner, filter_name = filter_property
             if filter_owner != vertex_name:
                 return _fallback("filter_owner_mismatch")
-            literal = _unique_literal(literals, filter_owner, filter_name)
-            if literal is None:
-                return _fallback("missing_filter_literal")
             operator = _operator(item)
             if operator is None:
                 return _fallback("unsupported_filter_operator")
+            if operator == "is_not_null":
+                filters.append(
+                    {
+                        "target": "target",
+                        "property": {"owner": filter_owner, "name": filter_name},
+                        "operator": operator,
+                        "value": {
+                            "raw": None,
+                            "normalized": None,
+                            "resolver_match_type": "deterministic_non_null",
+                        },
+                    }
+                )
+                continue
+            literal = _unique_literal(literals, filter_owner, filter_name)
+            if literal is None:
+                return _fallback("missing_filter_literal")
             filters.append(
                 {
                     "target": "target",
@@ -231,11 +265,6 @@ class ZeroHopAssembler:
                 }
             )
 
-        alias = str(aggregate.get("alias") or f"{_snake_case(vertex_name)}_count")
-        projection_terms = _projection_terms(aggregate)
-        projection_item = {"alias": alias, "source": f"measure.{alias}"}
-        if projection_terms:
-            projection_item["projection_terms"] = projection_terms
         dsl = {
             "schema_version": "restricted_query_dsl_v1",
             "query_id": "zero-hop-f3",
@@ -246,18 +275,11 @@ class ZeroHopAssembler:
                 {
                     "op": "aggregate",
                     "group_by": [],
-                    "measures": [
-                        {
-                            "alias": alias,
-                            "function": "count",
-                            "target": "target",
-                            "property": {"owner": owner, "name": name},
-                        }
-                    ],
+                    "measures": measures,
                 }
             ],
             "filters": filters,
-            "projection": {"items": [projection_item]},
+            "projection": {"items": projection_items},
         }
         return _success(dsl)
 
@@ -487,6 +509,10 @@ _OPERATOR_ALIASES = {
     "不大于": "lte",
     "最多": "lte",
     "不高于": "lte",
+    "is_not_null": "is_not_null",
+    "非空": "is_not_null",
+    "不为空": "is_not_null",
+    "不为空值": "is_not_null",
 }
 
 

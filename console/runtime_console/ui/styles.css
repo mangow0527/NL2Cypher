@@ -860,33 +860,64 @@ tbody tr.is-selected {
 }
 
 .summary-panel .overview-grid {
+  grid-template-columns: repeat(12, minmax(0, 1fr));
   align-items: stretch;
 }
 
-.overview-card-wide,
-.overview-card-half,
-.cypher-overview-card {
-  grid-column: span 2;
-}
-
-.overview-card-full {
+.overview-card-question {
   grid-column: 1 / -1;
+  min-height: auto;
 }
 
-.overview-card-compact {
-  min-height: 96px;
+.overview-card-kpi {
+  grid-template-columns: 1fr;
+  align-content: start;
+  gap: 8px;
+  grid-column: span 2;
+  min-height: 112px;
   padding: 14px 16px;
 }
 
-.overview-card-compact h3 {
+.overview-card-kpi h3 {
   margin-bottom: 10px;
   font-size: 14px;
 }
 
-.overview-card-compact p {
-  font-size: 20px;
+.overview-card-kpi p {
+  font-size: 18px;
   font-weight: 800;
   line-height: 1.25;
+}
+
+.overview-card-kpi .status-pill {
+  justify-self: start;
+  padding: 7px 10px;
+  font-size: 13px;
+}
+
+.overview-card-status-only p {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.overview-card-status-only .status-pill {
+  margin-top: 2px;
+  padding: 10px 14px;
+  font-size: 15px;
+}
+
+.overview-card-secondary,
+.overview-card-code,
+.cypher-overview-card {
+  grid-column: span 6;
+}
+
+.overview-card-secondary {
+  min-height: 96px;
 }
 
 .overview-card small {
@@ -1061,6 +1092,17 @@ pre {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .overview-card-question,
+  .overview-card-secondary,
+  .overview-card-code,
+  .cypher-overview-card {
+    grid-column: span 2;
+  }
+
+  .overview-card-kpi {
+    grid-column: span 1;
+  }
+
   .query-progress-steps {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1076,14 +1118,12 @@ pre {
     grid-template-columns: 1fr;
   }
 
-  .overview-card-wide,
-  .overview-card-half,
+  .overview-card-question,
+  .overview-card-kpi,
+  .overview-card-secondary,
+  .overview-card-code,
   .cypher-overview-card {
     grid-column: span 1;
-  }
-
-  .overview-card-full {
-    grid-column: 1 / -1;
   }
 
   .masthead,

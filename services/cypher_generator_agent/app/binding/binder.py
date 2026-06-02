@@ -363,6 +363,8 @@ class SemanticBinder:
             _normalize_reference_item(item, field_name="projection")
             for item in _coerce_dict_list(grounded.get("projection", []), "projection")
         ]
+        if not projection:
+            projection = _projection_from_selected_bindings(grounded)
         for item in projection:
             self._validate_semantic_reference(item, candidate_index, field_name="projection")
         return projection
@@ -795,6 +797,30 @@ def _selected_items(grounded: Mapping[str, Any], *keys: str) -> list[Any]:
         else:
             items.append(value)
     return items
+
+
+def _projection_from_selected_bindings(grounded: Mapping[str, Any]) -> list[dict[str, Any]]:
+    projection: list[dict[str, Any]] = []
+    for item in _coerce_dict_list(grounded.get("selected_bindings", []), "selected_bindings"):
+        role = str(item.get("role") or "").strip()
+        if not any(token in role for token in ("projection", "return", "field")):
+            continue
+        semantic_type = str(item.get("semantic_type") or "").strip()
+        if semantic_type == "vertex":
+            projection.append(
+                {
+                    "semantic_type": "vertex_full",
+                    "name": _extract_name(item, "vertex"),
+                    "alias": item.get("alias") or _snake_case(_extract_name(item, "vertex")),
+                }
+            )
+            continue
+        if semantic_type == "vertex_full":
+            projection.append(_normalize_reference_item(item, field_name="projection"))
+            continue
+        if semantic_type == "property":
+            projection.append(_normalize_reference_item(item, field_name="projection"))
+    return projection
 
 
 def _extract_name(item: Any, object_type: str) -> str:

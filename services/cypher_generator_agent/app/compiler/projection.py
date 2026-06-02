@@ -14,6 +14,59 @@ RETURN_ALIAS_RE = re.compile(r"\bAS\s+(?P<alias>[A-Za-z_][A-Za-z0-9_]*)\s*$", fl
 IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 PROPERTY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\.(?P<property>[A-Za-z_][A-Za-z0-9_]*)$")
 PARAMETER_RE = re.compile(r"(?<![A-Za-z0-9_])\$(?P<name>[A-Za-z_][A-Za-z0-9_]*)")
+CYPHER_RESERVED_ALIASES = {
+    "all",
+    "and",
+    "any",
+    "as",
+    "asc",
+    "ascending",
+    "by",
+    "call",
+    "case",
+    "commit",
+    "contains",
+    "count",
+    "create",
+    "delete",
+    "desc",
+    "descending",
+    "detach",
+    "distinct",
+    "else",
+    "end",
+    "exists",
+    "extract",
+    "false",
+    "filter",
+    "foreach",
+    "in",
+    "is",
+    "limit",
+    "match",
+    "merge",
+    "none",
+    "not",
+    "null",
+    "optional",
+    "or",
+    "order",
+    "remove",
+    "return",
+    "set",
+    "single",
+    "skip",
+    "start",
+    "then",
+    "true",
+    "union",
+    "unwind",
+    "when",
+    "where",
+    "with",
+    "xor",
+    "yield",
+}
 
 
 def projection_aliases(projection: Projection) -> list[str]:
@@ -27,6 +80,7 @@ def projection_aliases(projection: Projection) -> list[str]:
             owner_prefix = _owner_prefix(item)
             if owner_prefix:
                 alias = f"{owner_prefix}_{base_alias}"
+        alias = _safe_projection_alias(alias, item)
         alias = _dedupe_alias(alias, used)
         used.add(alias)
         aliases.append(alias)
@@ -93,6 +147,22 @@ def _dedupe_alias(alias: str, used: set[str]) -> str:
     while f"{alias}_{index}" in used:
         index += 1
     return f"{alias}_{index}"
+
+
+def _safe_projection_alias(alias: str, item: ProjectionItem) -> str:
+    alias = _sanitize_identifier(alias)
+    if not _is_reserved_alias(alias):
+        return alias
+    if item.vertex_full and item.target is not None:
+        vertex_alias = _snake_case_identifier(item.target.vertex_name)
+        if not _is_reserved_alias(vertex_alias):
+            return vertex_alias
+        return f"{vertex_alias}_value"
+    return f"{alias}_value"
+
+
+def _is_reserved_alias(alias: str) -> bool:
+    return alias.lower() in CYPHER_RESERVED_ALIASES
 
 
 def _sanitize_identifier(value: str) -> str:

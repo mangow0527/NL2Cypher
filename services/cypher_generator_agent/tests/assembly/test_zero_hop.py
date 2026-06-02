@@ -13,8 +13,9 @@ from services.cypher_generator_agent.app.core.pipeline import (
     _zero_hop_assembler_requirements,
     _zero_hop_candidates_for_assembler,
 )
+from services.cypher_generator_agent.app.compiler import compile_restricted_query_ast
 from services.cypher_generator_agent.app.dsl.parser import parse_restricted_query_dsl
-from services.cypher_generator_agent.app.assembly.taxonomy import QueryShape
+from services.cypher_generator_agent.app.assembly.taxonomy import QueryShape, ShapeStatus, classify_query_shape
 from services.cypher_generator_agent.app.literals.models import LiteralResolverResult
 from services.cypher_generator_agent.app.retrieval.models import CandidateRetrievalResult, SemanticCandidate
 from services.cypher_generator_agent.app.semantic_model import GraphSemanticRegistry, load_graph_semantic_model
@@ -76,6 +77,55 @@ def test_f1_accepts_taxonomy_shape_value_and_mir006_projection_terms(
     ast = parse_restricted_query_dsl(result.dsl, registry)
     assert ast.projection.items[0].property.owner == "Service"
     assert ast.projection.items[0].property.name == "id"
+
+
+def test_f1_object_info_projection_returns_full_vertex(
+    registry: GraphSemanticRegistry,
+) -> None:
+    decomposition = {
+        "original_question": "查询所有的服务信息。",
+        "intent_type": "list",
+        "output_shape": "rows",
+        "substantive_terms": [{"text": "服务", "slot": "projection"}],
+    }
+
+    shape = classify_query_shape(
+        {"requires_aggregate": False, "projection_terms": [], "path_terms": [], "min_path_hops": 0},
+        decomposition,
+    )
+
+    assert shape.status == ShapeStatus.RESOLVED
+    assert shape.shape == QueryShape.F1_VERTEX_PROJECTION_0HOP
+
+    retrieval = CandidateRetrievalResult(
+        candidates=[
+            _semantic_candidate("vertex", "Service"),
+            _semantic_candidate("property", "Service.id", owner="Service", semantic_name="id"),
+        ],
+    )
+    requirements = _zero_hop_assembler_requirements(
+        shape=QueryShape.F1_VERTEX_PROJECTION_0HOP,
+        decomposition=decomposition,
+        retrieval_result=retrieval,
+        literal_results=[],
+        registry=registry,
+    )
+
+    assert requirements["projection"] == [
+        {"semantic_type": "vertex_full", "name": "Service", "alias": "service", "projection_terms": ["服务"]},
+    ]
+
+    result = ZeroHopAssembler(registry).assemble(
+        "F1 vertex_projection_0hop",
+        candidates=_zero_hop_candidates_for_assembler(retrieval.candidates),
+        structural_requirements=requirements,
+    )
+
+    assert result.success is True
+    assert result.dsl is not None
+    ast = parse_restricted_query_dsl(result.dsl, registry)
+    cypher = compile_restricted_query_ast(ast, registry).cypher
+    assert cypher == "MATCH (svc:Service)\nRETURN svc AS service"
 
 
 def test_f1_ambiguous_vertex_or_projection_owner_falls_back(registry: GraphSemanticRegistry) -> None:
@@ -599,6 +649,80 @@ def test_zero_hop_requirements_counts_id_property_values_when_value_is_quantity_
     }
 
 
+def test_zero_hop_requirements_count_field_total_as_property_count(
+    registry: GraphSemanticRegistry,
+) -> None:
+    retrieval = CandidateRetrievalResult(
+        candidates=[
+            _semantic_candidate("vertex", "Service"),
+            _semantic_candidate("property", "Service.id", owner="Service", semantic_name="id"),
+            _semantic_candidate("property", "Service.quality_of_service", owner="Service", semantic_name="quality_of_service"),
+        ],
+    )
+
+    requirements = _zero_hop_assembler_requirements(
+        shape=QueryShape.F3_VERTEX_AGGREGATE_0HOP,
+        decomposition={
+            "original_question": "统计服务质量等级字段的总数量。",
+            "intent_type": "count",
+            "output_shape": "scalar",
+            "substantive_terms": [
+                {"text": "服务质量等级", "slot": "filter", "attached_to": "服务"},
+                {"text": "字段", "slot": "filter", "attached_to": "服务质量等级"},
+                {"text": "总数量", "slot": "projection"},
+            ],
+        },
+        retrieval_result=retrieval,
+        literal_results=[],
+        registry=registry,
+    )
+
+    assert requirements["aggregate"] == {
+        "function": "count",
+        "owner": "Service",
+        "property": "quality_of_service",
+        "alias": "service_quality_of_service_count",
+        "projection_terms": ["服务质量等级", "字段", "总数量"],
+    }
+
+
+def test_zero_hop_requirements_count_name_total_as_property_count_without_modifier(
+    registry: GraphSemanticRegistry,
+) -> None:
+    retrieval = CandidateRetrievalResult(
+        candidates=[
+            _semantic_candidate("vertex", "NetworkElement"),
+            _semantic_candidate("property", "NetworkElement.id", owner="NetworkElement", semantic_name="id"),
+            _semantic_candidate("property", "NetworkElement.name", owner="NetworkElement", semantic_name="name"),
+        ],
+    )
+
+    requirements = _zero_hop_assembler_requirements(
+        shape=QueryShape.F3_VERTEX_AGGREGATE_0HOP,
+        decomposition={
+            "original_question": "统计所有网元名称的总数量。",
+            "intent_type": "count",
+            "output_shape": "scalar",
+            "substantive_terms": [
+                {"text": "网元", "slot": "projection"},
+                {"text": "名称", "slot": "projection"},
+                {"text": "总数量", "slot": "projection"},
+            ],
+        },
+        retrieval_result=retrieval,
+        literal_results=[],
+        registry=registry,
+    )
+
+    assert requirements["aggregate"] == {
+        "function": "count",
+            "owner": "NetworkElement",
+            "property": "name",
+            "alias": "network_element_name_count",
+        "projection_terms": ["名称", "总数量"],
+    }
+
+
 def test_zero_hop_requirements_does_not_count_property_without_closed_modifier(
     registry: GraphSemanticRegistry,
 ) -> None:
@@ -637,6 +761,684 @@ def test_zero_hop_requirements_does_not_count_property_without_closed_modifier(
         "function": "count",
         "alias": "service_count",
     }
+
+
+def test_f3_multi_measure_keeps_entity_count_and_property_count(
+    registry: GraphSemanticRegistry,
+) -> None:
+    result = ZeroHopAssembler(registry).assemble(
+        "F3",
+        candidates=[
+            _candidate("vertex", "Tunnel"),
+            _candidate("property", "Tunnel.id", owner="Tunnel", semantic_name="id"),
+            _candidate("property", "Tunnel.bandwidth", owner="Tunnel", semantic_name="bandwidth"),
+        ],
+        structural_requirements={
+            "aggregate": {
+                "measures": [
+                    {"function": "count", "alias": "tunnel_count"},
+                    {
+                        "function": "count",
+                        "owner": "Tunnel",
+                        "property": "bandwidth",
+                        "alias": "tunnel_bandwidth_count",
+                    },
+                ]
+            }
+        },
+    )
+
+    assert result.success is True
+    assert result.dsl is not None
+    aggregate = result.dsl["operations"][0]
+    assert aggregate["measures"] == [
+        {
+            "alias": "tunnel_count",
+            "function": "count",
+            "target": "target",
+            "property": {"owner": "Tunnel", "name": "id"},
+        },
+        {
+            "alias": "tunnel_bandwidth_count",
+            "function": "count",
+            "target": "target",
+            "property": {"owner": "Tunnel", "name": "bandwidth"},
+        },
+    ]
+    assert result.dsl["projection"]["items"] == [
+        {"alias": "tunnel_count", "source": "measure.tunnel_count"},
+        {"alias": "tunnel_bandwidth_count", "source": "measure.tunnel_bandwidth_count"},
+    ]
+
+
+def test_zero_hop_requirements_multi_measure_from_total_and_property_count_terms(
+    registry: GraphSemanticRegistry,
+) -> None:
+    retrieval = CandidateRetrievalResult(
+        candidates=[
+            _semantic_candidate("vertex", "Tunnel"),
+            _semantic_candidate("property", "Tunnel.id", owner="Tunnel", semantic_name="id"),
+            _semantic_candidate("property", "Tunnel.bandwidth", owner="Tunnel", semantic_name="bandwidth"),
+        ],
+    )
+
+    requirements = _zero_hop_assembler_requirements(
+        shape=QueryShape.F3_VERTEX_AGGREGATE_0HOP,
+        decomposition={
+            "original_question": "请统计隧道节点的总数以及拥有带宽字段的隧道数量。",
+            "intent_type": "count",
+            "output_shape": "scalar",
+            "substantive_terms": [
+                {"text": "隧道", "slot": "path"},
+                {"text": "节点", "slot": "path"},
+                {"text": "总数", "slot": "projection", "attached_to": "隧道"},
+                {"text": "带宽", "slot": "filter", "attached_to": "隧道"},
+                {"text": "字段", "slot": "filter", "attached_to": "带宽"},
+                {"text": "数量", "slot": "projection", "attached_to": "带宽"},
+            ],
+        },
+        retrieval_result=retrieval,
+        literal_results=[],
+        registry=registry,
+    )
+
+    assert requirements["aggregate"] == {
+        "measures": [
+            {
+                "function": "count",
+                "alias": "tunnel_count",
+                "projection_terms": ["总数"],
+            },
+            {
+                "function": "count",
+                "owner": "Tunnel",
+                "property": "bandwidth",
+                "alias": "tunnel_bandwidth_count",
+                "projection_terms": ["带宽", "字段", "数量"],
+            },
+        ]
+    }
+
+
+def test_zero_hop_requirements_multi_measure_when_quantity_terms_are_unattached(
+    registry: GraphSemanticRegistry,
+) -> None:
+    retrieval = CandidateRetrievalResult(
+        candidates=[
+            _semantic_candidate("vertex", "Tunnel"),
+            _semantic_candidate("property", "Tunnel.id", owner="Tunnel", semantic_name="id"),
+            _semantic_candidate("property", "Tunnel.bandwidth", owner="Tunnel", semantic_name="bandwidth"),
+        ],
+    )
+
+    requirements = _zero_hop_assembler_requirements(
+        shape=QueryShape.F3_VERTEX_AGGREGATE_0HOP,
+        decomposition={
+            "original_question": "请统计隧道节点的总数以及拥有带宽属性的隧道数量。",
+            "intent_type": "count",
+            "output_shape": "scalar",
+            "substantive_terms": [
+                {"text": "隧道", "slot": "projection"},
+                {"text": "节点", "slot": "projection"},
+                {"text": "总数", "slot": "projection"},
+                {"text": "带宽", "slot": "filter", "attached_to": "隧道"},
+                {"text": "属性", "slot": "filter", "attached_to": "隧道"},
+                {"text": "数量", "slot": "projection"},
+            ],
+        },
+        retrieval_result=retrieval,
+        literal_results=[],
+        registry=registry,
+    )
+
+    assert requirements["aggregate"] == {
+        "measures": [
+            {"function": "count", "alias": "tunnel_count", "projection_terms": ["总数"]},
+            {
+                "function": "count",
+                "owner": "Tunnel",
+                "property": "bandwidth",
+                "alias": "tunnel_bandwidth_count",
+                "projection_terms": ["带宽", "属性", "数量"],
+            },
+        ]
+    }
+
+
+def test_f3_non_null_filter_counts_requested_property_values(
+    registry: GraphSemanticRegistry,
+) -> None:
+    result = ZeroHopAssembler(registry).assemble(
+        "F3",
+        candidates=[
+            _candidate("vertex", "Tunnel"),
+            _candidate("property", "Tunnel.id", owner="Tunnel", semantic_name="id"),
+            _candidate("property", "Tunnel.bandwidth", owner="Tunnel", semantic_name="bandwidth"),
+        ],
+        structural_requirements={
+            "filters": [{"property": "bandwidth", "operator": "is_not_null"}],
+            "aggregate": {
+                "function": "count",
+                "owner": "Tunnel",
+                "property": "bandwidth",
+                "alias": "tunnel_bandwidth_count",
+            },
+        },
+    )
+
+    assert result.success is True
+    assert result.dsl is not None
+    assert result.dsl["filters"] == [
+        {
+            "target": "target",
+            "property": {"owner": "Tunnel", "name": "bandwidth"},
+            "operator": "is_not_null",
+            "value": {"raw": None, "normalized": None, "resolver_match_type": "deterministic_non_null"},
+        }
+    ]
+    ast = parse_restricted_query_dsl(result.dsl, registry)
+    cypher = compile_restricted_query_ast(ast, registry).cypher
+    assert "bandwidth IS NOT NULL" in cypher
+
+
+def test_zero_hop_requirements_non_null_filter_reaches_f3_assembly(
+    registry: GraphSemanticRegistry,
+) -> None:
+    retrieval = CandidateRetrievalResult(
+        candidates=[
+            _semantic_candidate("vertex", "Tunnel"),
+            _semantic_candidate("property", "Tunnel.id", owner="Tunnel", semantic_name="id"),
+            _semantic_candidate("property", "Tunnel.bandwidth", owner="Tunnel", semantic_name="bandwidth"),
+        ],
+    )
+
+    requirements = _zero_hop_assembler_requirements(
+        shape=QueryShape.F3_VERTEX_AGGREGATE_0HOP,
+        decomposition={
+            "original_question": "统计隧道带宽字段不为空的数量。",
+            "intent_type": "count",
+            "output_shape": "scalar",
+            "substantive_terms": [
+                {"text": "隧道", "slot": "path"},
+                {"text": "带宽", "slot": "filter", "attached_to": "隧道"},
+                {"text": "字段", "slot": "filter", "attached_to": "带宽"},
+                {"text": "不为空", "slot": "filter", "attached_to": "带宽"},
+                {"text": "数量", "slot": "projection", "attached_to": "带宽"},
+            ],
+        },
+        retrieval_result=retrieval,
+        literal_results=[],
+        registry=registry,
+    )
+
+    assert requirements["filters"] == [{"property": "bandwidth", "operator": "is_not_null"}]
+    assert requirements["aggregate"] == {
+        "function": "count",
+        "owner": "Tunnel",
+        "property": "bandwidth",
+        "alias": "tunnel_bandwidth_count",
+        "projection_terms": ["带宽", "字段", "数量"],
+    }
+
+
+def test_zero_hop_requirements_non_null_filter_uses_previous_property_when_unattached(
+    registry: GraphSemanticRegistry,
+) -> None:
+    retrieval = CandidateRetrievalResult(
+        candidates=[
+            _semantic_candidate("vertex", "Tunnel"),
+            _semantic_candidate("property", "Tunnel.id", owner="Tunnel", semantic_name="id"),
+            _semantic_candidate("property", "Tunnel.bandwidth", owner="Tunnel", semantic_name="bandwidth"),
+        ],
+    )
+
+    requirements = _zero_hop_assembler_requirements(
+        shape=QueryShape.F3_VERTEX_AGGREGATE_0HOP,
+        decomposition={
+            "original_question": "统计有多少个隧道的带宽属性不为空。",
+            "intent_type": "count",
+            "output_shape": "scalar",
+            "substantive_terms": [
+                {"text": "隧道", "slot": "projection"},
+                {"text": "带宽", "slot": "filter", "attached_to": "隧道"},
+                {"text": "属性", "slot": "filter", "attached_to": "隧道"},
+                {"text": "不为空", "slot": "filter"},
+            ],
+        },
+        retrieval_result=retrieval,
+        literal_results=[],
+        registry=registry,
+    )
+
+    assert requirements["filters"] == [{"property": "bandwidth", "operator": "is_not_null"}]
+    assert requirements["aggregate"] == {
+        "function": "count",
+        "owner": "Tunnel",
+        "property": "bandwidth",
+        "alias": "tunnel_bandwidth_count",
+        "projection_terms": ["带宽", "属性", "数量"],
+    }
+
+
+def test_zero_hop_requirements_count_owned_name_as_property_count(
+    registry: GraphSemanticRegistry,
+) -> None:
+    retrieval = CandidateRetrievalResult(
+        candidates=[
+            _semantic_candidate("vertex", "NetworkElement"),
+            _semantic_candidate("property", "NetworkElement.id", owner="NetworkElement", semantic_name="id"),
+            _semantic_candidate("property", "NetworkElement.name", owner="NetworkElement", semantic_name="name"),
+        ],
+    )
+
+    requirements = _zero_hop_assembler_requirements(
+        shape=QueryShape.F3_VERTEX_AGGREGATE_0HOP,
+        decomposition={
+            "original_question": "统计拥有名称的网元数量。",
+            "intent_type": "count",
+            "output_shape": "scalar",
+            "substantive_terms": [
+                {"text": "网元", "slot": "path"},
+                {"text": "名称", "slot": "filter", "attached_to": "网元"},
+                {"text": "数量", "slot": "projection", "attached_to": "网元"},
+            ],
+        },
+        retrieval_result=retrieval,
+        literal_results=[],
+        registry=registry,
+    )
+
+    assert requirements["aggregate"] == {
+        "function": "count",
+        "owner": "NetworkElement",
+        "property": "name",
+        "alias": "network_element_name_count",
+        "projection_terms": ["名称", "数量"],
+    }
+
+
+def test_zero_hop_requirements_count_quality_attribute_records_as_property_count(
+    registry: GraphSemanticRegistry,
+) -> None:
+    retrieval = CandidateRetrievalResult(
+        candidates=[
+            _semantic_candidate("vertex", "Service"),
+            _semantic_candidate("property", "Service.id", owner="Service", semantic_name="id"),
+            _semantic_candidate(
+                "property",
+                "Service.quality_of_service",
+                owner="Service",
+                semantic_name="quality_of_service",
+            ),
+        ],
+    )
+
+    requirements = _zero_hop_assembler_requirements(
+        shape=QueryShape.F3_VERTEX_AGGREGATE_0HOP,
+        decomposition={
+            "original_question": "统计服务质量属性记录的总数量。",
+            "intent_type": "count",
+            "output_shape": "scalar",
+            "substantive_terms": [
+                {"text": "服务", "slot": "path"},
+                {"text": "服务质量", "slot": "filter", "attached_to": "服务"},
+                {"text": "属性记录", "slot": "filter", "attached_to": "服务质量"},
+                {"text": "总数量", "slot": "projection"},
+            ],
+        },
+        retrieval_result=retrieval,
+        literal_results=[],
+        registry=registry,
+    )
+
+    assert requirements["aggregate"] == {
+        "function": "count",
+        "owner": "Service",
+        "property": "quality_of_service",
+        "alias": "service_quality_of_service_count",
+        "projection_terms": ["服务质量", "属性记录", "总数量"],
+    }
+
+
+def test_zero_hop_requirements_count_slot_with_only_property_projection_counts_property(
+    registry: GraphSemanticRegistry,
+) -> None:
+    retrieval = CandidateRetrievalResult(
+        candidates=[
+            _semantic_candidate("vertex", "Service"),
+            _semantic_candidate("property", "Service.id", owner="Service", semantic_name="id"),
+            _semantic_candidate(
+                "property",
+                "Service.quality_of_service",
+                owner="Service",
+                semantic_name="quality_of_service",
+            ),
+        ],
+    )
+
+    requirements = _zero_hop_assembler_requirements(
+        shape=QueryShape.F3_VERTEX_AGGREGATE_0HOP,
+        decomposition={
+            "original_question": "统计服务质量等级字段的总数量。",
+            "intent_type": "count",
+            "output_shape": "scalar",
+            "substantive_terms": [
+                {"text": "统计", "slot": "projection"},
+                {"text": "服务", "slot": "path"},
+                {"text": "质量等级", "slot": "projection"},
+            ],
+        },
+        retrieval_result=retrieval,
+        literal_results=[],
+        registry=registry,
+    )
+
+    assert requirements["aggregate"] == {
+        "function": "count",
+        "owner": "Service",
+        "property": "quality_of_service",
+        "alias": "service_quality_of_service_count",
+        "projection_terms": ["质量等级", "数量"],
+    }
+
+
+def test_zero_hop_requirements_split_total_with_attribute_record_counts_property(
+    registry: GraphSemanticRegistry,
+) -> None:
+    retrieval = CandidateRetrievalResult(
+        candidates=[
+            _semantic_candidate("vertex", "NetworkElement"),
+            _semantic_candidate("property", "NetworkElement.id", owner="NetworkElement", semantic_name="id"),
+            _semantic_candidate("property", "NetworkElement.name", owner="NetworkElement", semantic_name="name"),
+        ],
+    )
+
+    requirements = _zero_hop_assembler_requirements(
+        shape=QueryShape.F3_VERTEX_AGGREGATE_0HOP,
+        decomposition={
+            "original_question": "统计所有网元中名称属性记录的总数量。",
+            "intent_type": "count",
+            "output_shape": "scalar",
+            "substantive_terms": [
+                {"text": "统计", "slot": "projection"},
+                {"text": "网元", "slot": "path"},
+                {"text": "名称", "slot": "filter", "attached_to": "网元"},
+                {"text": "属性", "slot": "filter", "attached_to": "网元"},
+                {"text": "记录", "slot": "filter", "attached_to": "网元"},
+                {"text": "总", "slot": "projection"},
+            ],
+        },
+        retrieval_result=retrieval,
+        literal_results=[],
+        registry=registry,
+    )
+
+    assert requirements["aggregate"] == {
+        "function": "count",
+        "owner": "NetworkElement",
+        "property": "name",
+        "alias": "network_element_name_count",
+        "projection_terms": ["名称", "属性", "记录", "总"],
+    }
+
+
+def test_zero_hop_requirements_having_property_filters_and_counts_requested_id(
+    registry: GraphSemanticRegistry,
+) -> None:
+    retrieval = CandidateRetrievalResult(
+        candidates=[
+            _semantic_candidate("vertex", "NetworkElement"),
+            _semantic_candidate("property", "NetworkElement.id", owner="NetworkElement", semantic_name="id"),
+            _semantic_candidate("property", "NetworkElement.elem_type", owner="NetworkElement", semantic_name="elem_type"),
+        ],
+    )
+
+    requirements = _zero_hop_assembler_requirements(
+        shape=QueryShape.F3_VERTEX_AGGREGATE_0HOP,
+        decomposition={
+            "original_question": "统计具有元素类型属性的网元的ID总数量。",
+            "intent_type": "count",
+            "output_shape": "scalar",
+            "substantive_terms": [
+                {"text": "网元", "slot": "path"},
+                {"text": "元素类型", "slot": "filter", "attached_to": "网元"},
+                {"text": "属性", "slot": "filter", "attached_to": "元素类型"},
+                {"text": "ID", "slot": "projection", "attached_to": "网元"},
+                {"text": "总数量", "slot": "projection", "attached_to": "ID"},
+            ],
+        },
+        retrieval_result=retrieval,
+        literal_results=[],
+        registry=registry,
+    )
+
+    assert requirements["filters"] == [{"property": "elem_type", "operator": "is_not_null"}]
+    assert requirements["aggregate"] == {
+        "function": "count",
+        "owner": "NetworkElement",
+        "property": "id",
+        "alias": "network_element_id_count",
+        "projection_terms": ["ID", "总数量"],
+    }
+
+
+def test_zero_hop_requirements_owned_parameter_counts_property(
+    registry: GraphSemanticRegistry,
+) -> None:
+    retrieval = CandidateRetrievalResult(
+        candidates=[
+            _semantic_candidate("vertex", "Service"),
+            _semantic_candidate("property", "Service.id", owner="Service", semantic_name="id"),
+            _semantic_candidate(
+                "property",
+                "Service.quality_of_service",
+                owner="Service",
+                semantic_name="quality_of_service",
+            ),
+        ],
+    )
+
+    requirements = _zero_hop_assembler_requirements(
+        shape=QueryShape.F3_VERTEX_AGGREGATE_0HOP,
+        decomposition={
+            "original_question": "统计拥有服务质量参数的服务数量。",
+            "intent_type": "count",
+            "output_shape": "scalar",
+            "substantive_terms": [
+                {"text": "服务", "slot": "path"},
+                {"text": "服务质量", "slot": "filter", "attached_to": "服务"},
+                {"text": "参数", "slot": "filter", "attached_to": "服务质量"},
+                {"text": "数量", "slot": "projection", "attached_to": "服务"},
+            ],
+        },
+        retrieval_result=retrieval,
+        literal_results=[],
+        registry=registry,
+    )
+
+    assert requirements["aggregate"] == {
+        "function": "count",
+        "owner": "Service",
+        "property": "quality_of_service",
+        "alias": "service_quality_of_service_count",
+        "projection_terms": ["服务质量", "参数", "数量"],
+    }
+
+
+def test_zero_hop_requirements_non_null_filter_counts_separate_requested_property(
+    registry: GraphSemanticRegistry,
+) -> None:
+    retrieval = CandidateRetrievalResult(
+        candidates=[
+            _semantic_candidate("vertex", "NetworkElement"),
+            _semantic_candidate("property", "NetworkElement.id", owner="NetworkElement", semantic_name="id"),
+            _semantic_candidate("property", "NetworkElement.name", owner="NetworkElement", semantic_name="name"),
+            _semantic_candidate("property", "NetworkElement.elem_type", owner="NetworkElement", semantic_name="elem_type"),
+        ],
+    )
+
+    requirements = _zero_hop_assembler_requirements(
+        shape=QueryShape.F3_VERTEX_AGGREGATE_0HOP,
+        decomposition={
+            "original_question": "统计所有元素类型不为空的网元的名称数量。",
+            "intent_type": "count",
+            "output_shape": "scalar",
+            "substantive_terms": [
+                {"text": "网元", "slot": "path"},
+                {"text": "元素类型", "slot": "filter", "attached_to": "网元"},
+                {"text": "不为空", "slot": "filter", "attached_to": "元素类型"},
+                {"text": "名称", "slot": "projection", "attached_to": "网元"},
+                {"text": "数量", "slot": "projection", "attached_to": "名称"},
+            ],
+        },
+        retrieval_result=retrieval,
+        literal_results=[],
+        registry=registry,
+    )
+
+    assert requirements["filters"] == [{"property": "elem_type", "operator": "is_not_null"}]
+    assert requirements["aggregate"] == {
+        "function": "count",
+        "owner": "NetworkElement",
+        "property": "name",
+        "alias": "network_element_name_count",
+        "projection_terms": ["名称", "数量"],
+    }
+
+
+def test_zero_hop_property_count_terms_are_not_reused_as_literal_filters(
+    registry: GraphSemanticRegistry,
+) -> None:
+    retrieval = CandidateRetrievalResult(
+        candidates=[
+            _semantic_candidate("vertex", "NetworkElement"),
+            _semantic_candidate("property", "NetworkElement.id", owner="NetworkElement", semantic_name="id"),
+            _semantic_candidate("property", "NetworkElement.elem_type", owner="NetworkElement", semantic_name="elem_type"),
+        ],
+    )
+    literal = LiteralResolverResult(
+        raw_literal="类型",
+        resolved=True,
+        resolved_value="router",
+        normalized_value="router",
+        match_type="value_synonym",
+        confidence=0.98,
+        expected_vertex="NetworkElement",
+        expected_property="elem_type",
+    )
+
+    requirements = _zero_hop_assembler_requirements(
+        shape=QueryShape.F3_VERTEX_AGGREGATE_0HOP,
+        decomposition={
+            "original_question": "统计所有网元节点的类型属性记录共有多少条？",
+            "intent_type": "count",
+            "output_shape": "scalar",
+            "substantive_terms": [
+                {"text": "网元节点", "slot": "path"},
+                {"text": "类型", "slot": "filter", "attached_to": "网元节点"},
+                {"text": "属性记录", "slot": "filter", "attached_to": "网元节点"},
+                {"text": "多少条", "slot": "projection"},
+            ],
+        },
+        retrieval_result=retrieval,
+        literal_results=[literal],
+        registry=registry,
+    )
+
+    assert requirements["filters"] == []
+    assert requirements["aggregate"] == {
+        "function": "count",
+        "owner": "NetworkElement",
+        "property": "elem_type",
+        "alias": "network_element_elem_type_count",
+        "projection_terms": ["类型", "属性记录", "多少条"],
+    }
+
+
+def test_f3_numeric_comparison_operator_from_closed_mapping_reaches_dsl(
+    registry: GraphSemanticRegistry,
+) -> None:
+    retrieval = CandidateRetrievalResult(
+        candidates=[
+            _semantic_candidate("vertex", "Tunnel"),
+            _semantic_candidate("property", "Tunnel.id", owner="Tunnel", semantic_name="id"),
+            _semantic_candidate("property", "Tunnel.bandwidth", owner="Tunnel", semantic_name="bandwidth"),
+        ],
+    )
+    literal = LiteralResolverResult(
+        raw_literal="100",
+        resolved=True,
+        resolved_value=100.0,
+        normalized_value=100.0,
+        match_type="literal_passthrough",
+        confidence=1.0,
+        expected_vertex="Tunnel",
+        expected_property="bandwidth",
+    )
+
+    requirements = _zero_hop_assembler_requirements(
+        shape=QueryShape.F3_VERTEX_AGGREGATE_0HOP,
+        decomposition={
+            "original_question": "统计带宽大于100的隧道有多少个？",
+            "intent_type": "count",
+            "output_shape": "scalar",
+            "substantive_terms": [
+                {"text": "带宽", "slot": "filter", "attached_to": "隧道"},
+                {"text": "大于", "slot": "filter", "attached_to": "带宽"},
+                {"text": "100", "slot": "filter", "attached_to": "带宽"},
+                {"text": "隧道", "slot": "projection"},
+                {"text": "多少个", "slot": "projection", "attached_to": "隧道"},
+            ],
+        },
+        retrieval_result=retrieval,
+        literal_results=[literal],
+        registry=registry,
+    )
+
+    result = ZeroHopAssembler(registry).assemble(
+        "F3",
+        candidates=_zero_hop_candidates_for_assembler(retrieval.candidates),
+        structural_requirements=requirements,
+        literals=[
+            {
+                "property": "bandwidth",
+                "owner": "Tunnel",
+                "raw": "100",
+                "normalized": 100.0,
+                "resolver_match_type": "literal_passthrough",
+            }
+        ],
+    )
+
+    assert result.success is True
+    assert result.dsl is not None
+    assert result.dsl["filters"][0]["operator"] == "gt"
+    assert result.dsl["operations"][0]["measures"][0]["property"] == {"owner": "Tunnel", "name": "id"}
+
+
+def test_f3_count_with_literal_filter_resolves_to_aggregate_shape() -> None:
+    result = classify_query_shape(
+        {
+            "requires_aggregate": True,
+            "projection_terms": ["服务", "多少"],
+            "path_terms": [],
+        },
+        {
+            "intent_type": "count",
+            "output_shape": "scalar",
+            "literal_candidates": [{"text": "100", "kind_hint": "number"}],
+            "substantive_terms": [
+                {"text": "带宽", "slot": "filter", "attached_to": "服务"},
+                {"text": "大于", "slot": "filter"},
+                {"text": "100", "slot": "filter"},
+                {"text": "服务", "slot": "projection"},
+                {"text": "多少", "slot": "projection"},
+            ],
+        },
+    )
+
+    assert result.status == ShapeStatus.RESOLVED
+    assert result.shape == QueryShape.F3_VERTEX_AGGREGATE_0HOP
 
 
 def test_f3_with_group_order_or_limit_falls_back(registry: GraphSemanticRegistry) -> None:

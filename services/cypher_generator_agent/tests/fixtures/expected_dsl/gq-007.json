@@ -1,8 +1,8 @@
 {
   "schema_version": "restricted_query_dsl_v1",
-  "query_id": "gq-007",
+  "query_id": "zero-hop",
   "query_shape": "vertex_lookup",
-  "source_question": "当前 down 的端口有哪些",
+  "source_question": "",
   "bindings": {
     "target": {
       "vertex_name": "Port"
@@ -27,12 +27,15 @@
   "projection": {
     "items": [
       {
-        "alias": "port_id",
         "target": "target",
         "property": {
           "owner": "Port",
           "name": "id"
-        }
+        },
+        "alias": "port_id",
+        "projection_terms": [
+          "ID"
+        ]
       }
     ]
   }

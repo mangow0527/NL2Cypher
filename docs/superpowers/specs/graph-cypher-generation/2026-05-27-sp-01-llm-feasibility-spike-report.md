@@ -5,6 +5,8 @@
 > 适用分支：`cypher-generation-osi`
 > 范围：Question Decomposer 与 Grounded Understanding prompt 可行性
 
+> 2026-06-02 维护说明：本文是历史 spike 报告，不是当前 `question_decomposition_v1` 或 `grounded_understanding_v1` 的权威 schema。文中 `target_concepts`、`relation_phrases`、独立 `slot_terms` 等草案字段已被当前实现替换为 `substantive_terms[].slot` 等结构。当前权威状态见 [IR Closeout Status](./2026-05-28-ir-closeout-status.md) 与 [CGA OSI Follow-up Modification IR](./2026-05-28-cga-osi-follow-up-modification-ir.md)。
+
 ## 1. 结论摘要
 
 本报告没有实际调用外部 LLM provider，没有真实 token usage、latency 或模型原始输出证据。本文档是本地离线 spike report，用 fixture、设计文档和手工样例输出提前验证 prompt/schema/candidate-boundary 的可行性。真实 provider run 必须在有 provider key 后补跑，不能把本文中的样例输出当作模型实测结果。

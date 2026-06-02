@@ -153,6 +153,44 @@ def test_projection_vertex_shorthand_is_normalized_to_semantic_reference(
     assert plan.projection == [{"semantic_type": "vertex", "name": "Tunnel"}]
 
 
+def test_selected_projection_vertex_binding_hydrates_to_vertex_full(
+    binder: SemanticBinder,
+) -> None:
+    plan = binder.bind(
+        {
+            "query_shape": "variable_path_traversal",
+            "selected_bindings": [
+                {"role": "source", "semantic_type": "vertex", "semantic_id": "Service"},
+                {
+                    "role": "relation",
+                    "semantic_type": "edge",
+                    "semantic_id": "SERVICE_USES_TUNNEL",
+                    "direction": "forward",
+                },
+                {"role": "target", "semantic_type": "vertex", "semantic_id": "Tunnel"},
+                {
+                    "role": "relation",
+                    "semantic_type": "edge",
+                    "semantic_id": "PATH_THROUGH",
+                    "direction": "forward",
+                },
+                {"role": "projection", "semantic_type": "vertex", "semantic_id": "NetworkElement"},
+            ],
+        },
+        candidates=[
+            _candidate("vertex", "Service"),
+            _candidate("vertex", "Tunnel"),
+            _candidate("vertex", "NetworkElement"),
+            _candidate("edge", "SERVICE_USES_TUNNEL"),
+            _candidate("edge", "PATH_THROUGH"),
+        ],
+    )
+
+    assert plan.projection == [
+        {"semantic_type": "vertex_full", "name": "NetworkElement", "alias": "network_element"}
+    ]
+
+
 def test_lookup_with_two_vertices_infers_unambiguous_connecting_edge(
     binder: SemanticBinder,
 ) -> None:

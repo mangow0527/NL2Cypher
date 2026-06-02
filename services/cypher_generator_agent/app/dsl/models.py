@@ -29,7 +29,7 @@ class OperationType(str, Enum):
     FILTER_SUBQUERY = "filter_subquery"
 
 
-Operator = Literal["eq", "neq", "gt", "gte", "lt", "lte", "in", "contains"]
+Operator = Literal["eq", "neq", "gt", "gte", "lt", "lte", "in", "contains", "is_not_null"]
 
 
 class RestrictedDslBase(BaseModel):

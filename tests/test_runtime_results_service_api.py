@@ -809,16 +809,23 @@ def test_runtime_results_ui_renders_cga_duration_cards():
     assert "生成耗时" in detail_script
     assert "生成耗时" in user_query_detail_script
     assert "cga_duration_ms" in detail_script
-    assert detail_script.index("cypherOverviewCard('生成 Cypher'") < detail_script.index("metricCard('生成耗时'")
+    assert detail_script.index("metricCard('生成耗时'") < detail_script.index("cypherOverviewCard('标准 Cypher'")
     assert "CGA 耗时" not in app_script
     assert "CGA 耗时" not in detail_script
     assert "CGA 耗时" not in user_query_detail_script
-    assert "overview-card-compact" in detail_script
-    assert "overview-card-wide" in detail_script
-    assert "overview-card-full" in detail_script
+    assert "overview-card-question" in detail_script
+    assert "overview-card-kpi" in detail_script
+    assert "overview-card-status-only" in detail_script
+    assert "overview-card-secondary" in detail_script
+    assert "overview-card-code" in detail_script
+    assert "overview-card-full" not in detail_script
     assert ".summary-panel .overview-grid" in styles
-    assert ".overview-card-compact" in styles
-    assert ".overview-card-full" in styles
+    assert ".overview-card-question" in styles
+    assert ".overview-card-status-only" in styles
+    assert ".overview-card-kpi" in styles
+    assert ".overview-card-secondary" in styles
+    assert ".overview-card-code" in styles
+    assert ".overview-card-full" not in styles
 
 
 def test_runtime_results_detail_ui_omits_retired_repair_and_knowledge_sections():

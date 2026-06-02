@@ -912,17 +912,17 @@ function renderOverview(detail) {
   const generatedCypher = generator.generated_cypher || generator.parsed_cypher || testing.actual_cypher;
   taskMeta.textContent = `${summary.id || detail.id} · ${summary.question || '未提供问题文本'}`;
   overviewGrid.innerHTML = [
-    metricCard('自然语言问题', summary.question || '未提供', null, 'overview-card-wide'),
-    metricCard('最终结论', summary.final_verdict || detail.final_verdict, summary.final_verdict || detail.final_verdict, 'overview-card-compact'),
-    metricCard('生成状态', summary.generation_status || '未提供', summary.generation_status, 'overview-card-compact'),
-    metricCard('难度', summary.difficulty || '未标注', null, 'overview-card-compact'),
-    metricCard('当前尝试次数', summary.attempt_no || 0, null, 'overview-card-compact'),
-    metricCard('当前阶段', summary.current_stage || 'pending', null, 'overview-card-compact'),
-    metricCard('澄清反问', summary.clarification_summary || '未触发澄清', null, 'overview-card-wide'),
-    metricCard('更新时间', summary.updated_at || detail.updated_at || '未提供', null, 'overview-card-wide'),
-    cypherOverviewCard('标准 Cypher', goldenCypher || '未提供', null, 'overview-card-half'),
-    cypherOverviewCard('生成 Cypher', generationCypherText({ ...generator, generated_cypher: generatedCypher }), null, 'overview-card-half'),
-    metricCard('生成耗时', formatDurationMs(summary.cga_duration_ms ?? generator.cga_duration_ms), null, 'overview-card-compact overview-card-full'),
+    metricCard('自然语言问题', summary.question || '未提供', null, 'overview-card-question'),
+    metricCard('最终结论', summary.final_verdict || detail.final_verdict, summary.final_verdict || detail.final_verdict, 'overview-card-kpi overview-card-status-only'),
+    metricCard('生成状态', summary.generation_status || '未提供', summary.generation_status, 'overview-card-kpi overview-card-status-only'),
+    metricCard('生成耗时', formatDurationMs(summary.cga_duration_ms ?? generator.cga_duration_ms), null, 'overview-card-kpi'),
+    metricCard('难度', summary.difficulty || '未标注', null, 'overview-card-kpi'),
+    metricCard('当前尝试次数', summary.attempt_no || 0, null, 'overview-card-kpi'),
+    metricCard('当前阶段', summary.current_stage || 'pending', null, 'overview-card-kpi'),
+    metricCard('澄清反问', summary.clarification_summary || '未触发澄清', null, 'overview-card-secondary'),
+    metricCard('更新时间', summary.updated_at || detail.updated_at || '未提供', null, 'overview-card-secondary'),
+    cypherOverviewCard('标准 Cypher', goldenCypher || '未提供', null, 'overview-card-code'),
+    cypherOverviewCard('生成 Cypher', generationCypherText({ ...generator, generated_cypher: generatedCypher }), null, 'overview-card-code'),
   ].join('');
 }
 

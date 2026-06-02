@@ -62,9 +62,11 @@ _PROPERTY_COUNT_MODIFIER_TERMS = {
     "属性",
     "属性值",
     "属性记录",
+    "字段",
     "记录",
     "非空值",
     "字段值",
+    "参数",
     "值",
     "条目",
 }
@@ -229,6 +231,14 @@ def _run_pipeline_steps(
             ),
         )
 
+    output_clarification = _naked_object_projection_clarification_question(
+        decomposition,
+        candidates=list(retrieval_result.candidates),
+        registry=registry,
+    )
+    if output_clarification is not None:
+        return _clarification(trace, question=output_clarification)
+
     structural_requirements = StructuralRequirements.model_validate(decomposition["structural_requirements"])
     deterministic_assembly = _run_deterministic_assembler_stage(
         trace,
@@ -260,6 +270,12 @@ def _run_pipeline_steps(
     if grounded_output := _output_from_grounded_outcome(trace, grounded):
         return grounded_output
     grounded = _grounded_binder_payload(grounded)
+    grounded = _enrich_binder_projection_from_decomposition(
+        grounded,
+        decomposition=decomposition,
+        candidates=list(retrieval_result.candidates),
+        registry=registry,
+    )
     try:
         plan = _run_stage(
             trace,
@@ -432,9 +448,9 @@ def _input_clarification_gate(question: str) -> dict[str, Any]:
             "question": "请补充您想查询的对象和条件。",
         }
 
-    for term in ("它", "这个", "那个", "这些", "那些"):
+    for term in ("它们", "这些", "那些", "这个", "那个"):
         if term in normalized:
-            if term != "它" and _deictic_has_explicit_referent(normalized, term):
+            if _deictic_has_explicit_referent(normalized, term):
                 continue
             return {
                 "status": "clarification_required",
@@ -442,6 +458,17 @@ def _input_clarification_gate(question: str) -> dict[str, Any]:
                 "term": term,
                 "question": f"请说明“{term}”指的是哪个设备、服务、隧道或端口。",
             }
+    start = normalized.find("它")
+    while start != -1:
+        if normalized.startswith("它们", start):
+            start = normalized.find("它", start + len("它们"))
+            continue
+        return {
+            "status": "clarification_required",
+            "reason": "missing_referent",
+            "term": "它",
+            "question": "请说明“它”指的是哪个设备、服务、隧道或端口。",
+        }
 
     return {"status": "pass"}
 
@@ -452,6 +479,9 @@ def _deictic_has_explicit_referent(question: str, term: str) -> bool:
     while start != -1:
         following = question[start + len(term) : start + len(term) + 6]
         if any(following.startswith(referent) for referent in explicit_referents):
+            return True
+        preceding = question[max(0, start - 8) : start]
+        if any(referent in preceding for referent in explicit_referents):
             return True
         start = question.find(term, start + 1)
     return False
@@ -750,15 +780,28 @@ def _projection_items_from_substantive_terms(
     selected_vertices: list[str],
 ) -> list[dict[str, Any]]:
     attachment_anchors = _projection_attachment_anchor_terms(decomposition)
+    endpoint_owner_aliases = _endpoint_projection_owner_aliases(
+        decomposition,
+        candidates=candidates,
+        registry=registry,
+        selected_vertices=selected_vertices,
+    )
     projection_terms = [
         item
         for item in _substantive_terms_with_slot(decomposition, slot="projection")
         if _norm(str(item.get("text") or "")) not in attachment_anchors
+        if not _is_endpoint_projection_anchor(
+            item,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
         if not _resolve_projection_vertex_full(
             item,
             candidates=candidates,
             registry=registry,
             selected_vertices=selected_vertices,
+            decomposition=decomposition,
         )
         and (
             _resolve_projection_object_owner(
@@ -786,6 +829,7 @@ def _projection_items_from_substantive_terms(
             candidates=candidates,
             registry=registry,
             selected_vertices=selected_vertices,
+            decomposition=decomposition,
         )
         if vertex_name is None:
             continue
@@ -793,7 +837,7 @@ def _projection_items_from_substantive_terms(
             "semantic_type": "vertex_full",
             "name": vertex_name,
             "alias": _snake_case(vertex_name),
-            "projection_terms": [str(slot_term["text"])],
+            "projection_terms": _projection_vertex_full_terms(slot_term, decomposition),
         }
         existing = next(
             (
@@ -812,15 +856,57 @@ def _projection_items_from_substantive_terms(
                 existing_terms.append(term)
 
     for slot_term in projection_terms:
+        compound_vertex_full_owners = _compound_vertex_full_owner_names(
+            str(slot_term.get("text") or ""),
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
         object_owner = _resolve_projection_object_owner(
             slot_term,
             candidates=candidates,
             registry=registry,
             selected_vertices=selected_vertices,
         )
-        if object_owner is not None:
+        if object_owner is not None and not (len(selected_vertices) > 2 and compound_vertex_full_owners):
+            projection_term = str(slot_term["text"])
+            if _object_projection_requires_vertex_full(
+                slot_term,
+                decomposition,
+            ) or (
+                _projection_object_is_path_context(slot_term, decomposition)
+                and not _has_other_concrete_projection_term(
+                    slot_term,
+                    decomposition=decomposition,
+                    candidates=candidates,
+                    registry=registry,
+                    selected_vertices=selected_vertices,
+                )
+            ):
+                item = {
+                    "semantic_type": "vertex_full",
+                    "name": object_owner,
+                    "alias": _snake_case(object_owner),
+                    "projection_terms": [projection_term],
+                }
+                existing = next(
+                    (
+                        existing
+                        for existing in items
+                        if existing.get("semantic_type") == "vertex_full" and existing.get("name") == object_owner
+                    ),
+                    None,
+                )
+                if existing is None:
+                    items.append(item)
+                else:
+                    existing_terms = existing.setdefault("projection_terms", [])
+                    if projection_term not in existing_terms:
+                        existing_terms.append(projection_term)
+                continue
+
             item = _id_projection_item(object_owner, registry)
-            item["projection_terms"] = [str(slot_term["text"])]
+            item["projection_terms"] = [projection_term]
             if not any(
                 existing.get("owner") == item["owner"] and existing.get("name") == item["name"]
                 for existing in items
@@ -829,6 +915,43 @@ def _projection_items_from_substantive_terms(
                 continue
             for existing in items:
                 if existing.get("owner") == item["owner"] and existing.get("name") == item["name"]:
+                    existing_terms = existing.setdefault("projection_terms", [])
+                    if projection_term not in existing_terms:
+                        existing_terms.append(projection_term)
+                    break
+            continue
+
+        source_target_override = _source_target_projection_owner_alias(
+            slot_term,
+            selected_vertices=selected_vertices,
+        )
+        if source_target_override is not None:
+            owner, alias = source_target_override
+            property_ref = _resolve_projection_property_for_owners(
+                str(slot_term.get("text") or ""),
+                owners=[owner],
+                registry=registry,
+                require_unique_across_owners=False,
+            )
+            if property_ref is None:
+                continue
+            owner, property_name = property_ref
+            item = {
+                "semantic_type": "property",
+                "owner": owner,
+                "name": property_name,
+                "alias": alias,
+                "projection_terms": [str(slot_term["text"])],
+            }
+            if not any(
+                existing.get("owner") == owner and existing.get("name") == property_name
+                for existing in items
+            ):
+                items.append(item)
+                continue
+            for existing in items:
+                if existing.get("owner") == owner and existing.get("name") == property_name:
+                    existing["alias"] = alias
                     existing_terms = existing.setdefault("projection_terms", [])
                     term = str(slot_term["text"])
                     if term not in existing_terms:
@@ -841,6 +964,7 @@ def _projection_items_from_substantive_terms(
             candidates=candidates,
             registry=registry,
             selected_vertices=selected_vertices,
+            decomposition=decomposition,
         )
         if property_refs is None:
             continue
@@ -849,7 +973,13 @@ def _projection_items_from_substantive_terms(
                 "semantic_type": "property",
                 "owner": owner,
                 "name": property_name,
-                "alias": f"{_snake_case(owner)}_{property_name}",
+                "alias": _projection_property_alias(
+                    owner=owner,
+                    property_name=property_name,
+                    slot_term=slot_term,
+                    endpoint_owner_aliases=endpoint_owner_aliases,
+                    expanded_refs=property_refs,
+                ),
                 "projection_terms": [str(slot_term["text"])],
             }
             if not any(
@@ -865,7 +995,204 @@ def _projection_items_from_substantive_terms(
                     if term not in existing_terms:
                         existing_terms.append(term)
                     break
+    _sort_projection_items_by_term_order(items, decomposition)
+    _append_implicit_relation_source_name_projection(
+        items,
+        decomposition=decomposition,
+        candidates=candidates,
+        registry=registry,
+        selected_vertices=selected_vertices,
+    )
     return items
+
+
+def _sort_projection_items_by_term_order(items: list[dict[str, Any]], decomposition: Mapping[str, Any]) -> None:
+    order: dict[str, int] = {}
+    for index, term in enumerate(_substantive_terms_with_slot(decomposition, slot="projection")):
+        text = str(term.get("text") or "").strip()
+        if text and text not in order:
+            order[text] = index
+    if not order:
+        return
+
+    def item_order(item: Mapping[str, Any]) -> int:
+        terms = [
+            str(term).strip()
+            for term in item.get("projection_terms", [])
+            if str(term).strip()
+        ]
+        return min((order.get(term, 10_000) for term in terms), default=10_000)
+
+    items.sort(key=item_order)
+
+
+def _append_implicit_relation_source_name_projection(
+    items: list[dict[str, Any]],
+    *,
+    decomposition: Mapping[str, Any],
+    candidates: list[SemanticCandidate],
+    registry: Any,
+    selected_vertices: list[str],
+) -> None:
+    source_owners = _implicit_relation_source_name_owners(
+        decomposition=decomposition,
+        candidates=candidates,
+        registry=registry,
+        selected_vertices=selected_vertices,
+    )
+    if not source_owners:
+        return
+    has_downstream_projection = any(
+        item.get("semantic_type") == "property"
+        and item.get("owner") not in source_owners
+        for item in items
+    )
+    if not has_downstream_projection:
+        return
+
+    for owner in source_owners:
+        owner_items = [
+            item
+            for item in items
+            if item.get("semantic_type") == "property" and item.get("owner") == owner
+        ]
+        if _rewrite_relation_source_object_id_to_name(
+            owner_items,
+            owner=owner,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        ):
+            continue
+        if owner_items:
+            continue
+        _insert_relation_source_identity_projection(items, owner=owner, registry=registry)
+
+
+def _rewrite_relation_source_object_id_to_name(
+    owner_items: list[dict[str, Any]],
+    *,
+    owner: str,
+    candidates: list[SemanticCandidate],
+    registry: Any,
+    selected_vertices: list[str],
+) -> bool:
+    if len(owner_items) != 1:
+        return False
+    item = owner_items[0]
+    identity_property = _identity_projection_property_name(owner, registry)
+    if identity_property in {None, item.get("name")}:
+        return bool(identity_property == item.get("name"))
+    try:
+        vertex = registry.get_vertex(owner)
+    except RegistryLookupError:
+        return False
+    if item.get("name") != vertex.id_property:
+        return False
+    projection_terms = [
+        str(term).strip()
+        for term in item.get("projection_terms", [])
+        if str(term).strip()
+    ]
+    if not any(
+        _resolve_projection_object_owner(
+            {"text": term},
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+        == owner
+        for term in projection_terms
+    ):
+        return False
+    item["name"] = identity_property
+    item["alias"] = f"{_snake_case(owner)}_{identity_property}"
+    return True
+
+
+def _insert_relation_source_identity_projection(
+    items: list[dict[str, Any]],
+    *,
+    owner: str,
+    registry: Any,
+) -> None:
+    identity_property = _identity_projection_property_name(owner, registry)
+    if identity_property is None:
+        return
+    source_item = {
+        "semantic_type": "property",
+        "owner": owner,
+        "name": identity_property,
+        "alias": f"{_snake_case(owner)}_{identity_property}",
+        "projection_terms": ["名称"],
+    }
+    insert_at = next(
+        (
+            index
+            for index, item in enumerate(items)
+            if item.get("semantic_type") == "property" and item.get("owner") != owner
+        ),
+        len(items),
+    )
+    items.insert(insert_at, source_item)
+
+
+def _identity_projection_property_name(owner: str, registry: Any) -> str | None:
+    try:
+        registry.get_property(owner, "name")
+        return "name"
+    except RegistryLookupError:
+        pass
+    try:
+        vertex = registry.get_vertex(owner)
+        registry.get_property(owner, vertex.id_property)
+    except RegistryLookupError:
+        return None
+    return str(vertex.id_property)
+
+
+def _implicit_relation_source_name_owners(
+    *,
+    decomposition: Mapping[str, Any],
+    candidates: list[SemanticCandidate],
+    registry: Any,
+    selected_vertices: list[str],
+) -> list[str]:
+    if len(selected_vertices) < 2:
+        return []
+    question = str(decomposition.get("original_question") or decomposition.get("question") or "")
+    if "及其" not in question:
+        return []
+
+    owners: list[str] = []
+    start = 0
+    while True:
+        marker_index = question.find("及其", start)
+        if marker_index < 0:
+            break
+        start = marker_index + len("及其")
+        prefix = question[:marker_index]
+        suffix = question[start:]
+        prefix_owners = _projection_attached_owner_names(
+            prefix,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+        if len(prefix_owners) != 1:
+            continue
+        owner = prefix_owners[0]
+        suffix_owners = _projection_attached_owner_names(
+            suffix,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+        if not any(suffix_owner != owner for suffix_owner in suffix_owners):
+            continue
+        if owner not in owners:
+            owners.append(owner)
+    return owners
 
 
 def _projection_attachment_anchor_terms(decomposition: Mapping[str, Any]) -> set[str]:
@@ -886,6 +1213,91 @@ def _projection_attachment_anchor_terms(decomposition: Mapping[str, Any]) -> set
             if len(term) >= 2 and (attached_to == term or term in attached_to)
         )
     return anchors
+
+
+def _endpoint_projection_owner_aliases(
+    decomposition: Mapping[str, Any],
+    *,
+    candidates: list[SemanticCandidate],
+    registry: Any,
+    selected_vertices: list[str],
+) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    next_aliases = ["source", "target"]
+    for item in _substantive_terms_with_slot(decomposition, slot="projection"):
+        if not _is_endpoint_projection_anchor(
+            item,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        ):
+            continue
+        owners = _projection_attached_owner_names(
+            str(item.get("attached_to") or item.get("text") or ""),
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+        if len(owners) != 1 or owners[0] in aliases:
+            continue
+        if len(aliases) >= len(next_aliases):
+            return {}
+        aliases[owners[0]] = next_aliases[len(aliases)]
+    return aliases if len(aliases) >= 2 else {}
+
+
+def _is_endpoint_projection_anchor(
+    slot_term: Mapping[str, Any],
+    *,
+    candidates: list[SemanticCandidate],
+    registry: Any,
+    selected_vertices: list[str],
+) -> bool:
+    text = str(slot_term.get("text") or "").strip()
+    normalized = _norm(text)
+    if not normalized or not normalized.endswith("端"):
+        return False
+    owners = _projection_attached_owner_names(
+        str(slot_term.get("attached_to") or text),
+        candidates=candidates,
+        registry=registry,
+        selected_vertices=selected_vertices,
+    )
+    return len(owners) == 1
+
+
+def _source_target_projection_owner_alias(
+    slot_term: Mapping[str, Any],
+    *,
+    selected_vertices: list[str],
+) -> tuple[str, str] | None:
+    if len(selected_vertices) < 2:
+        return None
+    text = _norm(str(slot_term.get("text") or ""))
+    if text.startswith("源") or text.startswith("source"):
+        return selected_vertices[0], "source"
+    if text.startswith("目标") or text.startswith("target"):
+        return selected_vertices[-1], "target"
+    return None
+
+
+def _projection_property_alias(
+    *,
+    owner: str,
+    property_name: str,
+    slot_term: Mapping[str, Any],
+    endpoint_owner_aliases: Mapping[str, str],
+    expanded_refs: list[tuple[str, str]],
+) -> str:
+    if len(expanded_refs) > 1 and owner in endpoint_owner_aliases:
+        return f"{endpoint_owner_aliases[owner]}_{_projection_alias_property_suffix(property_name)}"
+    return f"{_snake_case(owner)}_{property_name}"
+
+
+def _projection_alias_property_suffix(property_name: str) -> str:
+    if property_name == "elem_type":
+        return "type"
+    return property_name
 
 
 def _resolve_projection_object_owner(
@@ -945,9 +1357,20 @@ def _resolve_projection_vertex_full(
     candidates: list[SemanticCandidate],
     registry: Any,
     selected_vertices: list[str],
+    decomposition: Mapping[str, Any] | None = None,
 ) -> str | None:
     text = str(slot_term.get("text") or "").strip()
+    normalized_text = _norm(text)
     if not _is_vertex_full_projection_text(text):
+        owner = _resolve_compound_vertex_full_owner(
+            text,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+        return owner
+
+    if normalized_text in {"信息", "节点信息"} and len(selected_vertices) > 2:
         return None
 
     attached_to = str(slot_term.get("attached_to") or "").strip()
@@ -957,6 +1380,14 @@ def _resolve_projection_vertex_full(
         registry=registry,
         selected_vertices=selected_vertices,
     )
+    if not attached_owners:
+        attached_owners = _projection_chained_attachment_owner_names(
+            attached_to,
+            decomposition=decomposition,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
     if not attached_owners and len(selected_vertices) == 1:
         attached_owners = [selected_vertices[0]]
 
@@ -964,6 +1395,95 @@ def _resolve_projection_vertex_full(
     if len(owners) != 1:
         return None
     return owners[0]
+
+
+def _resolve_compound_vertex_full_owner(
+    text: str,
+    *,
+    candidates: list[SemanticCandidate],
+    registry: Any,
+    selected_vertices: list[str],
+) -> str | None:
+    if len(selected_vertices) > 2:
+        return None
+    matches = _compound_vertex_full_owner_names(
+        text,
+        candidates=candidates,
+        registry=registry,
+        selected_vertices=selected_vertices,
+    )
+    return matches[0] if len(matches) == 1 else None
+
+
+def _compound_vertex_full_owner_names(
+    text: str,
+    *,
+    candidates: list[SemanticCandidate],
+    registry: Any,
+    selected_vertices: list[str],
+) -> list[str]:
+    normalized_text = _norm(text)
+    if not normalized_text:
+        return []
+    matches: list[str] = []
+    for suffix in _VERTEX_FULL_COMPOUND_SUFFIX_TERMS:
+        normalized_suffix = _norm(suffix)
+        if not normalized_suffix or not normalized_text.endswith(normalized_suffix):
+            continue
+        prefix = normalized_text[: -len(normalized_suffix)]
+        if not prefix:
+            continue
+        owners = _projection_attached_owner_names(
+            prefix,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+        for owner in owners:
+            if owner not in matches:
+                matches.append(owner)
+    return matches
+
+
+def _projection_chained_attachment_owner_names(
+    attached_to: str,
+    *,
+    decomposition: Mapping[str, Any] | None,
+    candidates: list[SemanticCandidate],
+    registry: Any,
+    selected_vertices: list[str],
+) -> list[str]:
+    attached = _norm(attached_to)
+    if not attached or decomposition is None:
+        return []
+    for item in _substantive_terms_with_slot(decomposition, slot="projection"):
+        text = str(item.get("text") or "").strip()
+        if _norm(text) != attached or not _is_vertex_full_projection_text(text):
+            continue
+        owners = _projection_attached_owner_names(
+            str(item.get("attached_to") or ""),
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+        if len(owners) == 1:
+            return owners
+    return []
+
+
+def _projection_vertex_full_terms(slot_term: Mapping[str, Any], decomposition: Mapping[str, Any]) -> list[str]:
+    text = str(slot_term.get("text") or "").strip()
+    terms: list[str] = []
+    attached = _norm(str(slot_term.get("attached_to") or ""))
+    if attached:
+        for item in _substantive_terms_with_slot(decomposition, slot="projection"):
+            anchor_text = str(item.get("text") or "").strip()
+            if _norm(anchor_text) == attached and _is_vertex_full_projection_text(anchor_text):
+                terms.append(anchor_text)
+                break
+    if text:
+        terms.append(text)
+    return terms
 
 
 def _is_vertex_full_projection_text(text: str) -> bool:
@@ -991,6 +1511,13 @@ def _projection_slot_term_requires_property(
         selected_vertices=selected_vertices,
     ):
         return True
+    if _compound_vertex_full_owner_names(
+        text,
+        candidates=candidates,
+        registry=registry,
+        selected_vertices=selected_vertices,
+    ):
+        return True
     object_matches = _attached_vertex_names(text, candidates)
     if not object_matches:
         object_matches = _attached_vertex_names_from_registry(
@@ -1001,6 +1528,186 @@ def _projection_slot_term_requires_property(
     if any(vertex in object_matches for vertex in selected_vertices):
         return False
     return True
+
+
+def _object_projection_requires_vertex_full(
+    slot_term: Mapping[str, Any],
+    decomposition: Mapping[str, Any],
+) -> bool:
+    text = _compact_surface(_norm(str(slot_term.get("text") or "")))
+    if not text:
+        return False
+    question = _compact_surface(
+        _norm(str(decomposition.get("original_question") or decomposition.get("question") or ""))
+    )
+    if not question:
+        return False
+    return any(
+        f"{text}{_compact_surface(_norm(suffix))}" in question
+        for suffix in _OBJECT_INFO_PROJECTION_SUFFIXES
+    )
+
+
+def _naked_object_projection_clarification_question(
+    decomposition: Mapping[str, Any],
+    *,
+    candidates: list[SemanticCandidate],
+    registry: Any,
+) -> str | None:
+    if _is_scalar_or_aggregate_output(decomposition):
+        return None
+
+    selected_vertices = _candidate_ids(candidates, "vertex")
+    if not selected_vertices:
+        return None
+
+    projection_terms = [
+        item
+        for item in _substantive_terms_with_slot(decomposition, slot="projection")
+        if str(item.get("text") or "").strip()
+    ]
+    if not projection_terms:
+        return None
+
+    has_naked_object_term = False
+    for slot_term in projection_terms:
+        if _resolve_projection_vertex_full(
+            slot_term,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+            decomposition=decomposition,
+        ):
+            return None
+        if _object_projection_requires_vertex_full(slot_term, decomposition):
+            return None
+        if _projection_slot_term_requires_property(
+            slot_term,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        ):
+            return None
+
+        object_owner = _resolve_projection_object_owner(
+            slot_term,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+        if object_owner is None:
+            return None
+        if _projection_object_is_path_context(slot_term, decomposition):
+            continue
+        has_naked_object_term = True
+
+    if not has_naked_object_term:
+        return None
+    return _output_projection_clarification_text(selected_vertices)
+
+
+def _projection_object_is_path_context(
+    slot_term: Mapping[str, Any],
+    decomposition: Mapping[str, Any],
+) -> bool:
+    if not _decomposition_has_path_context(decomposition):
+        return False
+    text = _compact_surface(_norm(str(slot_term.get("text") or "")))
+    if not text:
+        return False
+    path_texts = {
+        _compact_surface(_norm(str(item.get("text") or "")))
+        for item in _substantive_terms_with_slot(decomposition, slot="path")
+        if str(item.get("text") or "").strip()
+    }
+    if text in path_texts:
+        return True
+    question = _compact_surface(
+        _norm(str(decomposition.get("original_question") or decomposition.get("question") or ""))
+    )
+    if not question:
+        return True
+    path_markers = ("使用", "经过", "途经", "穿过", "关联", "连接", "对应", "源", "目的", "目标")
+    text_index = question.find(text)
+    if text_index < 0:
+        return True
+    return any(
+        marker in question[:text_index] or marker in question[text_index + len(text) :]
+        for marker in path_markers
+    )
+
+
+def _has_other_concrete_projection_term(
+    slot_term: Mapping[str, Any],
+    *,
+    decomposition: Mapping[str, Any],
+    candidates: list[SemanticCandidate],
+    registry: Any,
+    selected_vertices: list[str],
+) -> bool:
+    text = str(slot_term.get("text") or "").strip()
+    attached_to = str(slot_term.get("attached_to") or "").strip()
+    for other in _substantive_terms_with_slot(decomposition, slot="projection"):
+        other_text = str(other.get("text") or "").strip()
+        other_attached_to = str(other.get("attached_to") or "").strip()
+        if other_text == text and other_attached_to == attached_to:
+            continue
+        if _projection_slot_term_requires_property(
+            other,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        ):
+            return True
+    return False
+
+
+def _decomposition_has_path_context(decomposition: Mapping[str, Any]) -> bool:
+    if _substantive_terms_with_slot(decomposition, slot="path"):
+        return True
+    structural = decomposition.get("structural_requirements")
+    if isinstance(structural, Mapping):
+        path_terms = structural.get("path_terms")
+        if isinstance(path_terms, list) and path_terms:
+            return True
+        try:
+            return int(structural.get("min_path_hops") or 0) > 0
+        except (TypeError, ValueError):
+            return False
+    return False
+
+
+def _is_scalar_or_aggregate_output(decomposition: Mapping[str, Any]) -> bool:
+    output_shape = str(decomposition.get("output_shape") or "").strip()
+    intent_type = str(decomposition.get("intent_type") or "").strip()
+    structural = decomposition.get("structural_requirements")
+    requires_aggregate = isinstance(structural, Mapping) and bool(structural.get("requires_aggregate"))
+    raw_terms = decomposition.get("substantive_terms")
+    substantive_terms = [term for term in raw_terms if isinstance(term, Mapping)] if isinstance(raw_terms, list) else []
+    structural_slots = {
+        str(term.get("slot") or "").strip()
+        for term in substantive_terms
+    }
+    has_aggregate_structure = bool(structural_slots & {"group_by", "order_by", "limit"})
+    has_quantity_projection = any(
+        _is_quantity_projection_text(str(term.get("text") or ""))
+        for term in _substantive_terms_with_slot(decomposition, slot="projection")
+        if isinstance(term, Mapping)
+    )
+    return (
+        output_shape == "scalar"
+        or intent_type in {"count", "aggregate", "top_n"}
+        or requires_aggregate
+        or has_aggregate_structure
+        or has_quantity_projection
+    )
+
+
+def _output_projection_clarification_text(selected_vertices: list[str]) -> str:
+    owners = "、".join(_snake_case(owner) for owner in selected_vertices[:3])
+    if owners:
+        return f"请明确需要返回 {owners} 的哪些字段，或说明是否返回完整节点信息。"
+    return "请明确需要返回哪些字段，或说明是否返回完整节点信息。"
 
 
 def _resolve_projection_property(
@@ -1027,6 +1734,7 @@ def _resolve_projection_property_refs(
     candidates: list[SemanticCandidate],
     registry: Any,
     selected_vertices: list[str],
+    decomposition: Mapping[str, Any] | None = None,
 ) -> list[tuple[str, str]] | None:
     term = str(slot_term.get("text") or "").strip()
     if not term:
@@ -1055,6 +1763,27 @@ def _resolve_projection_property_refs(
     owners = [owner for owner in selected_vertices if not attached_owners or owner in attached_owners]
     if not owners:
         owners = selected_vertices
+    expanded_owners = _expanded_projection_property_owners(
+        term,
+        owners=owners,
+        candidates=candidates,
+        registry=registry,
+        selected_vertices=selected_vertices,
+        decomposition=decomposition,
+    )
+    if expanded_owners:
+        refs: list[tuple[str, str]] = []
+        for owner in expanded_owners:
+            property_ref = _resolve_projection_property_for_owners(
+                term,
+                owners=[owner],
+                registry=registry,
+                require_unique_across_owners=False,
+            )
+            if property_ref is None:
+                return None
+            refs.append(property_ref)
+        return refs
     property_ref = _resolve_projection_property_for_owners(
         term,
         owners=owners,
@@ -1062,6 +1791,40 @@ def _resolve_projection_property_refs(
         require_unique_across_owners=(attached_to == "" and len(selected_vertices) > 1),
     )
     return [property_ref] if property_ref is not None else None
+
+
+def _expanded_projection_property_owners(
+    term: str,
+    *,
+    owners: list[str],
+    candidates: list[SemanticCandidate],
+    registry: Any,
+    selected_vertices: list[str],
+    decomposition: Mapping[str, Any] | None,
+) -> list[str]:
+    if decomposition is None or len(owners) < 2:
+        return []
+    endpoint_aliases = _endpoint_projection_owner_aliases(
+        decomposition,
+        candidates=candidates,
+        registry=registry,
+        selected_vertices=selected_vertices,
+    )
+    if endpoint_aliases:
+        return [owner for owner in selected_vertices if owner in endpoint_aliases and owner in owners]
+    question = str(decomposition.get("original_question") or decomposition.get("question") or "")
+    if not any(marker in question for marker in ("双方", "两端", "各自", "分别")):
+        return []
+    resolved: list[str] = []
+    for owner in owners:
+        if _resolve_projection_property_for_owners(
+            term,
+            owners=[owner],
+            registry=registry,
+            require_unique_across_owners=False,
+        ):
+            resolved.append(owner)
+    return resolved if len(resolved) >= 2 else []
 
 
 def _resolve_projection_property_for_owners(
@@ -1269,6 +2032,8 @@ _PROPERTY_PROJECTION_TERM_SURFACES = {
 
 _VERTEX_FULL_PROJECTION_TERMS = {
     "节点",
+    "信息",
+    "节点信息",
     "详细信息",
     "详情",
     "完整信息",
@@ -1279,6 +2044,10 @@ _VERTEX_FULL_PROJECTION_TERMS = {
     "所有属性",
     "所有属性信息",
 }
+
+_VERTEX_FULL_COMPOUND_SUFFIX_TERMS = ("节点信息", "节点", "信息")
+
+_OBJECT_INFO_PROJECTION_SUFFIXES = ("信息", "详情", "详细信息", "完整信息", "全部信息", "所有信息", "节点")
 
 
 def _attached_vertex_names_from_registry(
@@ -1415,11 +2184,19 @@ def _required_projection_slot_terms(
     for item in _substantive_terms_with_slot(decomposition, slot="projection"):
         if _norm(str(item.get("text") or "")) in attachment_anchors:
             continue
+        if _is_endpoint_projection_anchor(
+            item,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        ):
+            continue
         if _resolve_projection_vertex_full(
             item,
             candidates=candidates,
             registry=registry,
             selected_vertices=selected_vertices,
+            decomposition=decomposition,
         ) or _resolve_projection_object_owner(
             item,
             candidates=candidates,
@@ -1456,6 +2233,7 @@ def _uncovered_projection_slots(
             candidates=candidates,
             registry=registry,
             selected_vertices=selected_vertices,
+            decomposition=decomposition,
         )
         if vertex_name is not None:
             if not any(
@@ -1470,19 +2248,42 @@ def _uncovered_projection_slots(
             candidates=candidates,
             registry=registry,
             selected_vertices=selected_vertices,
+            decomposition=decomposition,
         )
-        if not property_refs:
-            uncovered.append(label)
+        if property_refs:
+            for owner, property_name in property_refs:
+                if not any(
+                    item.get("semantic_type") == "property"
+                    and item.get("owner") == owner
+                    and item.get("name") == property_name
+                    for item in projection
+                ):
+                    uncovered.append(label)
+                    break
             continue
-        for owner, property_name in property_refs:
+
+        object_owner = _resolve_projection_object_owner(
+            slot_term,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+        if object_owner is not None:
             if not any(
-                item.get("semantic_type") == "property"
-                and item.get("owner") == owner
-                and item.get("name") == property_name
+                (
+                    item.get("semantic_type") == "property"
+                    and item.get("owner") == object_owner
+                )
+                or (
+                    item.get("semantic_type") == "vertex_full"
+                    and item.get("name") == object_owner
+                )
                 for item in projection
             ):
                 uncovered.append(label)
-                break
+            continue
+
+        uncovered.append(label)
     return uncovered
 
 
@@ -1751,21 +2552,13 @@ def _multihop_assembler_requirements(
     if (
         not projection
         and not projection_terms
+        and not _substantive_terms_with_slot(decomposition, slot="projection")
         and shape in {QueryShape.F4_PATH_PROJECTION_MULTIHOP, QueryShape.F5_PATH_FILTER_MULTIHOP}
         and vertex_ids
     ):
         projection_vertex = _projection_vertex_for_traversal(vertex_ids, literal_results)
         projection = [_id_projection_item(projection_vertex, registry)]
-    requirements["projection"] = [
-        {
-            "owner": item["owner"],
-            "property": item["name"],
-            "alias": item.get("alias"),
-            "projection_terms": item.get("projection_terms", []),
-        }
-        for item in projection
-        if item.get("semantic_type") == "property" and item.get("owner") and item.get("name")
-    ]
+    requirements["projection"] = [_multihop_projection_requirement_item(item) for item in projection]
 
     filters = _filters_from_literal_results(literal_results, decomposition=decomposition)
     if filters:
@@ -1819,6 +2612,23 @@ def _multihop_assembler_requirements(
             requirements["limit"] = structural_requirements.requires_limit.value
 
     return requirements
+
+
+def _multihop_projection_requirement_item(item: Mapping[str, Any]) -> dict[str, Any]:
+    if item.get("semantic_type") == "vertex_full":
+        payload = {
+            "semantic_type": "vertex_full",
+            "name": item.get("name"),
+            "alias": item.get("alias"),
+            "projection_terms": item.get("projection_terms", []),
+        }
+        return {key: value for key, value in payload.items() if value is not None}
+    return {
+        "owner": item["owner"],
+        "property": item["name"],
+        "alias": item.get("alias"),
+        "projection_terms": item.get("projection_terms", []),
+    }
 
 
 def _slot_property_items_from_substantive_terms(
@@ -2007,7 +2817,8 @@ def _owner_names_from_text_or_attachment(
 
 
 def _is_quantity_projection_text(term: str) -> bool:
-    return any(marker in term for marker in ("数量", "个数", "总数", "多少", "次数", "频率", "count", "Count"))
+    normalized = term.strip()
+    return normalized == "总" or any(marker in term for marker in ("数量", "个数", "总数", "多少", "次数", "频率", "count", "Count"))
 
 
 def _is_distribution_noise_term(term: str) -> bool:
@@ -2178,19 +2989,20 @@ def _zero_hop_assembler_requirements(
         ]
 
     if shape == QueryShape.F3_VERTEX_AGGREGATE_0HOP:
-        payload["filters"] = [
-            {
-                "property": result.expected_property,
-                "operator": _filter_operator_for_literal(decomposition, result),
-            }
-            for result in literal_results
-            if result.resolved and result.expected_property
-        ]
-        aggregate = _zero_hop_count_measure_from_projection_terms(
+        aggregate = _zero_hop_count_aggregate_from_projection_terms(
             decomposition=decomposition,
             candidates=candidates,
             registry=registry,
             selected_vertices=selected_vertices,
+        )
+        payload["filters"] = _zero_hop_filters_for_assembler(
+            decomposition=decomposition,
+            literal_results=literal_results,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+            aggregate=aggregate,
+            skip_literal_terms=_aggregate_projection_terms(aggregate),
         )
         if aggregate is None:
             aggregate = (
@@ -2206,6 +3018,235 @@ def _zero_hop_assembler_requirements(
     return payload
 
 
+def _zero_hop_filters_for_assembler(
+    *,
+    decomposition: Mapping[str, Any],
+    literal_results: list[LiteralResolverResult],
+    candidates: list[SemanticCandidate],
+    registry: Any,
+    selected_vertices: list[str],
+    aggregate: Mapping[str, Any] | None = None,
+    skip_literal_terms: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    skip_literal_terms = skip_literal_terms or set()
+    filters = [
+        {
+            "property": result.expected_property,
+            "operator": _filter_operator_for_literal(decomposition, result),
+        }
+        for result in literal_results
+        if result.resolved
+        and result.expected_property
+        and _norm(str(result.raw_literal)) not in skip_literal_terms
+    ]
+    for item in _zero_hop_non_null_filters_from_terms(
+        decomposition=decomposition,
+        candidates=candidates,
+        registry=registry,
+        selected_vertices=selected_vertices,
+        aggregate=aggregate,
+    ):
+        if item not in filters:
+            filters.append(item)
+    return filters
+
+
+def _aggregate_projection_terms(aggregate: Mapping[str, Any] | None) -> set[str]:
+    if not isinstance(aggregate, Mapping):
+        return set()
+    raw_measures = aggregate.get("measures")
+    specs = list(raw_measures) if isinstance(raw_measures, list | tuple) else []
+    if not specs:
+        specs = [aggregate]
+    terms: set[str] = set()
+    for spec in specs:
+        if not isinstance(spec, Mapping):
+            continue
+        for term in spec.get("projection_terms", []) or []:
+            text = str(term).strip()
+            if text:
+                terms.add(_norm(text))
+    return terms
+
+
+def _zero_hop_non_null_filters_from_terms(
+    *,
+    decomposition: Mapping[str, Any],
+    candidates: list[SemanticCandidate],
+    registry: Any,
+    selected_vertices: list[str],
+    aggregate: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    if len(selected_vertices) != 1:
+        return []
+    filters: list[dict[str, Any]] = []
+    filter_terms = list(_substantive_terms_with_slot(decomposition, slot="filter"))
+    for index, slot_term in enumerate(filter_terms):
+        text = str(slot_term.get("text") or "").strip()
+        if not _is_non_empty_filter_text(text):
+            continue
+        attached_to = str(slot_term.get("attached_to") or "").strip()
+        if not attached_to:
+            attached_to = _previous_zero_hop_filter_property_term(filter_terms, index)
+        if not attached_to:
+            continue
+        refs = _resolve_projection_property_refs(
+            {"text": attached_to, "slot": "filter"},
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+        if refs is None or len(refs) != 1:
+            continue
+        owner, property_name = refs[0]
+        if owner != selected_vertices[0]:
+            continue
+        item = {"property": property_name, "operator": "is_not_null"}
+        if item not in filters:
+            filters.append(item)
+    if _has_closed_owned_property_count_phrase(decomposition) and not _aggregate_has_multiple_measures(aggregate):
+        aggregate_refs = _aggregate_measure_property_refs(aggregate)
+        for slot_term in filter_terms:
+            text = str(slot_term.get("text") or "").strip()
+            if not text or _is_property_count_modifier_text(text) or _is_non_empty_filter_text(text):
+                continue
+            if not _closed_owned_property_count_phrase_matches(decomposition, text):
+                continue
+            refs = _resolve_projection_property_refs(
+                slot_term,
+                candidates=candidates,
+                registry=registry,
+                selected_vertices=selected_vertices,
+            )
+            if refs is None or len(refs) != 1:
+                continue
+            owner, property_name = refs[0]
+            if owner != selected_vertices[0] or (owner, property_name) in aggregate_refs:
+                continue
+            item = {"property": property_name, "operator": "is_not_null"}
+            if item not in filters:
+                filters.append(item)
+    return filters
+
+
+def _previous_zero_hop_filter_property_term(
+    filter_terms: list[dict[str, Any]],
+    index: int,
+) -> str | None:
+    for term in reversed(filter_terms[:index]):
+        text = str(term.get("text") or "").strip()
+        if not text:
+            continue
+        if _is_non_empty_filter_text(text) or _is_filter_operator_term(text) or _is_property_count_modifier_text(text):
+            continue
+        return text
+    return None
+
+
+def _zero_hop_count_aggregate_from_projection_terms(
+    *,
+    decomposition: Mapping[str, Any],
+    candidates: list[SemanticCandidate],
+    registry: Any,
+    selected_vertices: list[str],
+) -> dict[str, Any] | None:
+    property_measure = _zero_hop_count_measure_from_projection_terms(
+        decomposition=decomposition,
+        candidates=candidates,
+        registry=registry,
+        selected_vertices=selected_vertices,
+    )
+    if property_measure is None:
+        return None
+    entity_measure = _zero_hop_entity_count_measure_from_projection_terms(
+        decomposition=decomposition,
+        candidates=candidates,
+        registry=registry,
+        selected_vertices=selected_vertices,
+    )
+    if entity_measure is None:
+        return property_measure
+    entity_terms = {
+        str(term).strip()
+        for term in entity_measure.get("projection_terms", [])
+        if str(term).strip()
+    }
+    property_terms = [
+        str(term).strip()
+        for term in property_measure.get("projection_terms", [])
+        if str(term).strip()
+        and str(term).strip() not in entity_terms
+        and str(term).strip() not in {"节点", "实例"}
+    ]
+    if property_terms:
+        property_measure = {**property_measure, "projection_terms": property_terms}
+    return {"measures": [entity_measure, property_measure]}
+
+
+def _zero_hop_entity_count_measure_from_projection_terms(
+    *,
+    decomposition: Mapping[str, Any],
+    candidates: list[SemanticCandidate],
+    registry: Any,
+    selected_vertices: list[str],
+) -> dict[str, Any] | None:
+    if len(selected_vertices) != 1:
+        return None
+    owner = selected_vertices[0]
+    terms: list[str] = []
+    for slot_term in _substantive_terms_with_slot(decomposition, slot="projection"):
+        text = str(slot_term.get("text") or "").strip()
+        if not text or not _is_quantity_projection_text(text):
+            continue
+        if _has_closed_owned_property_count_phrase(decomposition) and "总" not in text:
+            continue
+        attached_to = str(slot_term.get("attached_to") or "").strip()
+        if not attached_to:
+            continue
+        object_owner = _resolve_projection_object_owner(
+            {"text": attached_to, "slot": "projection"},
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+        if object_owner == owner:
+            terms.append(text)
+            continue
+        if object_owner is not None:
+            continue
+        property_refs = _resolve_projection_property_refs(
+            {"text": attached_to, "slot": "projection"},
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+        if property_refs:
+            continue
+    if not terms:
+        terms = _zero_hop_unattached_entity_total_terms(decomposition)
+    if not terms:
+        return None
+    return {
+        "function": "count",
+        "alias": f"{_snake_case(owner)}_count",
+        "projection_terms": _unique_texts(terms),
+    }
+
+
+def _zero_hop_unattached_entity_total_terms(decomposition: Mapping[str, Any]) -> list[str]:
+    question = str(decomposition.get("original_question") or decomposition.get("question") or "")
+    if not any(marker in question for marker in ("以及", "及", "和", "与")):
+        return []
+    terms = [
+        str(slot_term.get("text") or "").strip()
+        for slot_term in _substantive_terms_with_slot(decomposition, slot="projection")
+        if _is_quantity_projection_text(str(slot_term.get("text") or ""))
+        and "总" in str(slot_term.get("text") or "")
+        and not str(slot_term.get("attached_to") or "").strip()
+    ]
+    return _unique_texts(terms)
+
+
 def _zero_hop_count_measure_from_projection_terms(
     *,
     decomposition: Mapping[str, Any],
@@ -2215,11 +3256,54 @@ def _zero_hop_count_measure_from_projection_terms(
 ) -> dict[str, Any] | None:
     if len(selected_vertices) != 1:
         return None
-    quantity_terms = _zero_hop_quantity_projection_terms(decomposition)
-    if not quantity_terms:
-        return None
+    raw_quantity_terms = _zero_hop_quantity_projection_terms(decomposition)
+    explicit_count_property_terms = _zero_hop_explicit_count_property_terms_from_quantity(
+        decomposition=decomposition,
+        candidates=candidates,
+        registry=registry,
+        selected_vertices=selected_vertices,
+    )
+    if explicit_count_property_terms:
+        unique_refs = {ref for _, ref in explicit_count_property_terms}
+        if len(unique_refs) != 1:
+            return None
+        owner, property_name = next(iter(unique_refs))
+        quantity_terms = _zero_hop_quantity_projection_terms_for_property(
+            decomposition,
+            property_ref=(owner, property_name),
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        ) or raw_quantity_terms
+        property_terms = [text for text, _ in explicit_count_property_terms]
+        modifier_terms = _zero_hop_property_count_modifier_terms_for_property(
+            decomposition=decomposition,
+            property_ref=(owner, property_name),
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+        return {
+            "function": "count",
+            "owner": owner,
+            "property": property_name,
+            "alias": f"{_snake_case(owner)}_{property_name}_count",
+            "projection_terms": _unique_texts([*property_terms, *modifier_terms, *quantity_terms]),
+        }
     modifier_terms = _zero_hop_property_count_modifier_terms(decomposition)
-    if not modifier_terms:
+    implicit_property_terms = _zero_hop_implicit_count_property_terms(
+        decomposition=decomposition,
+        candidates=candidates,
+        registry=registry,
+        selected_vertices=selected_vertices,
+    )
+    if not raw_quantity_terms and _is_count_slot(decomposition) and implicit_property_terms:
+        raw_quantity_terms = ["数量"]
+    if not raw_quantity_terms and _is_count_slot(decomposition) and modifier_terms and _zero_hop_non_empty_filter_terms(decomposition):
+        raw_quantity_terms = ["数量"]
+    if not raw_quantity_terms:
+        return None
+    if not modifier_terms and not implicit_property_terms:
         return None
     property_terms: list[str] = []
     property_refs: list[tuple[str, str]] = []
@@ -2233,6 +3317,13 @@ def _zero_hop_count_measure_from_projection_terms(
             or _is_non_empty_filter_text(text)
         ):
             continue
+        if _resolve_projection_object_owner(
+            slot_term,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        ) is not None:
+            continue
         refs = _resolve_projection_property_refs(
             slot_term,
             candidates=candidates,
@@ -2245,9 +3336,20 @@ def _zero_hop_count_measure_from_projection_terms(
         if ref not in property_refs:
             property_refs.append(ref)
             property_terms.append(text)
+    for text, ref in implicit_property_terms:
+        if ref not in property_refs:
+            property_refs.append(ref)
+            property_terms.append(text)
     if len(property_refs) != 1:
         return None
     owner, property_name = property_refs[0]
+    quantity_terms = _zero_hop_quantity_projection_terms_for_property(
+        decomposition,
+        property_ref=(owner, property_name),
+        candidates=candidates,
+        registry=registry,
+        selected_vertices=selected_vertices,
+    ) or raw_quantity_terms
     return {
         "function": "count",
         "owner": owner,
@@ -2255,6 +3357,192 @@ def _zero_hop_count_measure_from_projection_terms(
         "alias": f"{_snake_case(owner)}_{property_name}_count",
         "projection_terms": _unique_texts([*property_terms, *modifier_terms, *quantity_terms]),
     }
+
+
+def _zero_hop_explicit_count_property_terms_from_quantity(
+    *,
+    decomposition: Mapping[str, Any],
+    candidates: list[SemanticCandidate],
+    registry: Any,
+    selected_vertices: list[str],
+) -> list[tuple[str, tuple[str, str]]]:
+    terms: list[tuple[str, tuple[str, str]]] = []
+    for slot_term in _substantive_terms_with_slot(decomposition, slot="projection"):
+        text = str(slot_term.get("text") or "").strip()
+        if not text or not _is_quantity_projection_text(text):
+            continue
+        attached_to = str(slot_term.get("attached_to") or "").strip()
+        if not attached_to:
+            continue
+        object_owner = _resolve_projection_object_owner(
+            {"text": attached_to, "slot": "projection"},
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+        if object_owner is not None:
+            continue
+        refs = _resolve_projection_property_refs(
+            {"text": attached_to, "slot": "projection"},
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+        if refs is None or len(refs) != 1:
+            continue
+        terms.append((attached_to, refs[0]))
+    return terms
+
+
+def _zero_hop_property_count_modifier_terms_for_property(
+    *,
+    decomposition: Mapping[str, Any],
+    property_ref: tuple[str, str],
+    candidates: list[SemanticCandidate],
+    registry: Any,
+    selected_vertices: list[str],
+) -> list[str]:
+    terms: list[str] = []
+    for slot_term in [
+        *_substantive_terms_with_slot(decomposition, slot="projection"),
+        *_substantive_terms_with_slot(decomposition, slot="filter"),
+    ]:
+        text = str(slot_term.get("text") or "").strip()
+        if not text or not _is_property_count_modifier_text(text):
+            continue
+        attached_to = str(slot_term.get("attached_to") or "").strip()
+        if not attached_to:
+            continue
+        refs = _resolve_projection_property_refs(
+            {"text": attached_to, "slot": "projection"},
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+        if refs is None or len(refs) != 1 or refs[0] != property_ref:
+            continue
+        terms.append(text)
+    return _unique_texts(terms)
+
+
+def _zero_hop_implicit_count_property_terms(
+    *,
+    decomposition: Mapping[str, Any],
+    candidates: list[SemanticCandidate],
+    registry: Any,
+    selected_vertices: list[str],
+) -> list[tuple[str, tuple[str, str]]]:
+    if not _is_count_slot(decomposition):
+        return []
+    matches: list[tuple[str, tuple[str, str]]] = []
+    slot_terms = list(_substantive_terms_with_slot(decomposition, slot="projection"))
+    if _has_closed_owned_property_count_phrase(decomposition):
+        slot_terms.extend(_substantive_terms_with_slot(decomposition, slot="filter"))
+    for slot_term in slot_terms:
+        text = str(slot_term.get("text") or "").strip()
+        if (
+            not text
+            or _is_quantity_projection_text(text)
+            or _is_distribution_noise_term(text)
+            or _is_aggregate_modifier_projection_text(text)
+            or _is_property_count_modifier_text(text)
+        ):
+            continue
+        object_owner = _resolve_projection_object_owner(
+            slot_term,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+        if object_owner is not None:
+            continue
+        refs = _resolve_projection_property_refs(
+            slot_term,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+        if refs is None or len(refs) != 1:
+            continue
+        matches.append((text, refs[0]))
+    unique_refs = {ref for _, ref in matches}
+    return matches if len(unique_refs) == 1 else []
+
+
+def _has_closed_owned_property_count_phrase(decomposition: Mapping[str, Any]) -> bool:
+    return any(
+        _closed_owned_property_count_phrase_matches(decomposition, str(slot_term.get("text") or ""))
+        for slot_term in _substantive_terms_with_slot(decomposition, slot="filter")
+    )
+
+
+def _closed_owned_property_count_phrase_matches(decomposition: Mapping[str, Any], text: str) -> bool:
+    question = _compact_surface(
+        _norm(str(decomposition.get("original_question") or decomposition.get("question") or ""))
+    )
+    if not question:
+        return False
+    normalized_text = _compact_surface(_norm(text))
+    if not normalized_text or _is_property_count_modifier_text(normalized_text) or _is_non_empty_filter_text(normalized_text):
+        return False
+    return any(f"{prefix}{normalized_text}的" in question for prefix in ("拥有", "具有", "带有")) or any(
+        f"{prefix}{normalized_text}{modifier}的" in question
+        for prefix in ("拥有", "具有", "带有")
+        for modifier in ("属性", "字段", "参数", "记录", "属性记录")
+    )
+
+
+def _aggregate_has_multiple_measures(aggregate: Mapping[str, Any] | None) -> bool:
+    if not isinstance(aggregate, Mapping):
+        return False
+    raw_measures = aggregate.get("measures")
+    return isinstance(raw_measures, list | tuple) and len(raw_measures) > 1
+
+
+def _aggregate_measure_property_refs(aggregate: Mapping[str, Any] | None) -> set[tuple[str, str]]:
+    if not isinstance(aggregate, Mapping):
+        return set()
+    raw_measures = aggregate.get("measures")
+    specs = list(raw_measures) if isinstance(raw_measures, list | tuple) else [aggregate]
+    refs: set[tuple[str, str]] = set()
+    for spec in specs:
+        if not isinstance(spec, Mapping):
+            continue
+        owner = str(spec.get("owner") or "").strip()
+        property_name = str(spec.get("property") or "").strip()
+        if owner and property_name:
+            refs.add((owner, property_name))
+    return refs
+
+
+def _zero_hop_quantity_projection_terms_for_property(
+    decomposition: Mapping[str, Any],
+    *,
+    property_ref: tuple[str, str],
+    candidates: list[SemanticCandidate],
+    registry: Any,
+    selected_vertices: list[str],
+) -> list[str]:
+    terms: list[str] = []
+    for slot_term in _substantive_terms_with_slot(decomposition, slot="projection"):
+        text = str(slot_term.get("text") or "").strip()
+        if not text or not _is_quantity_projection_text(text):
+            continue
+        attached_to = str(slot_term.get("attached_to") or "").strip()
+        if not attached_to:
+            terms.append(text)
+            continue
+        refs = _resolve_projection_property_refs(
+            {"text": attached_to, "slot": "projection"},
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+        )
+        if refs is None:
+            continue
+        if len(refs) == 1 and refs[0] == property_ref:
+            terms.append(text)
+    return _unique_texts(terms)
 
 
 def _zero_hop_property_count_candidate_terms(decomposition: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -2267,6 +3555,16 @@ def _zero_hop_property_count_candidate_terms(decomposition: Mapping[str, Any]) -
             if _is_property_count_modifier_text(text) and attached_to:
                 terms.append({"text": attached_to, "slot": slot})
     return terms
+
+
+def _zero_hop_non_empty_filter_terms(decomposition: Mapping[str, Any]) -> list[str]:
+    return _unique_texts(
+        [
+            str(slot_term.get("text") or "").strip()
+            for slot_term in _substantive_terms_with_slot(decomposition, slot="filter")
+            if _is_non_empty_filter_text(str(slot_term.get("text") or ""))
+        ]
+    )
 
 
 def _zero_hop_property_count_modifier_terms(decomposition: Mapping[str, Any]) -> list[str]:
@@ -3343,6 +4641,67 @@ def _grounded_binder_payload(result: Any) -> dict[str, Any]:
     raise TypeError(f"grounded understanding returned unsupported payload: {result!r}")
 
 
+def _enrich_binder_projection_from_decomposition(
+    grounded: dict[str, Any],
+    *,
+    decomposition: Mapping[str, Any],
+    candidates: list[SemanticCandidate],
+    registry: Any,
+) -> dict[str, Any]:
+    if grounded.get("projection"):
+        return grounded
+    selected_vertices = [
+        str(item.get("name") or item.get("semantic_id") or "").strip()
+        for item in grounded.get("selected_vertices", [])
+        if isinstance(item, Mapping) and str(item.get("name") or item.get("semantic_id") or "").strip()
+    ]
+    if not selected_vertices:
+        return grounded
+    projection: list[dict[str, Any]] = []
+    for slot_term in _substantive_terms_with_slot(decomposition, slot="projection"):
+        vertex_name = _resolve_projection_vertex_full(
+            slot_term,
+            candidates=candidates,
+            registry=registry,
+            selected_vertices=selected_vertices,
+            decomposition=decomposition,
+        )
+        if vertex_name is None:
+            object_owner = _resolve_projection_object_owner(
+                slot_term,
+                candidates=candidates,
+                registry=registry,
+                selected_vertices=selected_vertices,
+            )
+            if object_owner is None:
+                continue
+            if not (
+                _object_projection_requires_vertex_full(slot_term, decomposition)
+                or (
+                    _projection_object_is_path_context(slot_term, decomposition)
+                    and not _has_other_concrete_projection_term(
+                        slot_term,
+                        decomposition=decomposition,
+                        candidates=candidates,
+                        registry=registry,
+                        selected_vertices=selected_vertices,
+                    )
+                )
+            ):
+                continue
+            vertex_name = object_owner
+        item = {
+            "semantic_type": "vertex_full",
+            "name": vertex_name,
+            "alias": _snake_case(vertex_name),
+        }
+        if item not in projection:
+            projection.append(item)
+    if not projection:
+        return grounded
+    return {**grounded, "projection": projection}
+
+
 def _coerce_grounded_understanding(result: Any) -> GroundedUnderstanding | None:
     if isinstance(result, GroundedUnderstanding):
         return result
@@ -3365,6 +4724,9 @@ def _clarification_question_from_payload(payload: Any) -> str | None:
 
 def _mock_decompose(question: str) -> dict[str, Any]:
     if "svc-gold-001" in question and "服务" in question and "隧道" in question:
+        projection_terms = [_term("隧道", "projection")]
+        if "ID" in question or "编号" in question:
+            projection_terms = [_term("隧道", "path"), _term("ID", "projection", attached_to="隧道")]
         return {
             "schema_version": "question_decomposition_v1",
             "original_question": question,
@@ -3374,7 +4736,7 @@ def _mock_decompose(question: str) -> dict[str, Any]:
                 _term("服务", "path"),
                 _term("svc-gold-001", "filter", attached_to="服务"),
                 _term("使用", "path"),
-                _term("隧道", "projection"),
+                *projection_terms,
             ],
             "literal_requests": [
                 {
@@ -3390,6 +4752,11 @@ def _mock_decompose(question: str) -> dict[str, Any]:
 
     if ("Gold" in question or "Platinum" in question) and "服务" in question and "隧道" in question:
         service_tier = "Gold" if "Gold" in question else "Platinum"
+        projection_terms = [_term("隧道", "projection")]
+        if "ID" in question or "编号" in question:
+            projection_terms = [_term("隧道", "path"), _term("ID", "projection", attached_to="隧道")]
+        elif any(term in question for term in ("信息", "详情", "详细信息", "全部信息", "完整信息")):
+            projection_terms = [_term("信息", "projection", attached_to="隧道")]
         return {
             "schema_version": "question_decomposition_v1",
             "original_question": question,
@@ -3399,7 +4766,7 @@ def _mock_decompose(question: str) -> dict[str, Any]:
                 _term(service_tier, "filter", attached_to="服务"),
                 _term("服务", "path"),
                 _term("使用", "path"),
-                _term("隧道", "projection"),
+                *projection_terms,
             ],
             "literal_requests": [
                 {
@@ -3414,6 +4781,7 @@ def _mock_decompose(question: str) -> dict[str, Any]:
         }
 
     if "tun-mpls-001" in question and "隧道" in question and "设备" in question:
+        projection_term = _term("设备", "projection")
         return {
             "schema_version": "question_decomposition_v1",
             "original_question": question,
@@ -3423,7 +4791,7 @@ def _mock_decompose(question: str) -> dict[str, Any]:
                 _term("隧道", "path"),
                 _term("tun-mpls-001", "filter", attached_to="隧道"),
                 _term("经过", "path"),
-                _term("设备", "projection"),
+                projection_term,
             ],
             "literal_requests": [
                 {
@@ -3463,6 +4831,9 @@ def _mock_decompose(question: str) -> dict[str, Any]:
 
     if "设备" in question and "端口" in question and ("ne-0001" in question or "ne-9999" in question):
         device_id = "ne-0001" if "ne-0001" in question else "ne-9999"
+        projection_terms = [_term("端口", "projection")]
+        if "ID" in question or "编号" in question:
+            projection_terms.append(_term("ID", "projection", attached_to="端口"))
         return {
             "schema_version": "question_decomposition_v1",
             "original_question": question,
@@ -3471,7 +4842,7 @@ def _mock_decompose(question: str) -> dict[str, Any]:
             "substantive_terms": [
                 _term("设备", "path"),
                 _term(device_id, "filter", attached_to="设备"),
-                _term("端口", "projection"),
+                *projection_terms,
             ],
             "literal_requests": [
                 {
@@ -3486,6 +4857,9 @@ def _mock_decompose(question: str) -> dict[str, Any]:
         }
 
     if "down" in question and "端口" in question:
+        projection_terms = [_term("端口", "projection")]
+        if "ID" in question or "编号" in question:
+            projection_terms.append(_term("ID", "projection", attached_to="端口"))
         return {
             "schema_version": "question_decomposition_v1",
             "original_question": question,
@@ -3494,7 +4868,7 @@ def _mock_decompose(question: str) -> dict[str, Any]:
             "substantive_terms": [
                 _term("当前", "unknown"),
                 _term("down", "filter", attached_to="端口"),
-                _term("端口", "projection"),
+                *projection_terms,
             ],
             "literal_requests": [
                 {

@@ -623,6 +623,8 @@ _PROPERTY_PROJECTION_TERM_SURFACES = {
 
 _VERTEX_FULL_PROJECTION_TERM_SURFACES = (
     "节点",
+    "信息",
+    "节点信息",
     "详细信息",
     "详情",
     "完整信息",

@@ -310,6 +310,15 @@ class GroundedUnderstanding(UnderstandingBaseModel):
             role = binding.role.casefold()
             if not any(token in role for token in ("projection", "return", "field")):
                 continue
+            if binding.semantic_type == "vertex":
+                item = {
+                    "semantic_type": "vertex_full",
+                    "name": binding.semantic_id,
+                    "alias": _snake_case(binding.semantic_id),
+                }
+                if item not in projection:
+                    projection.append(item)
+                continue
             if binding.semantic_type != "property":
                 continue
             owner, name = binding._property_owner_name()
@@ -412,3 +421,14 @@ def _looks_like_legacy_full_grounding_payload(payload: Any) -> bool:
         and any(key in binding for key in ("semantic_type", "semantic_id", "semantic_name", "owner"))
         for binding in selected_bindings
     )
+
+
+def _snake_case(value: str) -> str:
+    output = []
+    previous_lower = False
+    for char in value:
+        if char.isupper() and previous_lower:
+            output.append("_")
+        output.append(char.lower())
+        previous_lower = char.islower() or char.isdigit()
+    return "".join(output).replace("__", "_")

@@ -6,7 +6,7 @@ description: >
 cases:
   - id: perf-gq-001
     source_golden_id: gq-001
-    question: Gold 服务使用了哪些隧道
+    question: Gold 服务使用了哪些隧道ID
     expected_status: generated
     category: generated_smoke
 

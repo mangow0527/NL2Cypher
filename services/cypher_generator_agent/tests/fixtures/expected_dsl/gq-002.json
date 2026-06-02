@@ -1,31 +1,31 @@
 {
   "schema_version": "restricted_query_dsl_v1",
-  "query_id": "gq-002",
+  "query_id": "multihop-f5",
   "query_shape": "single_hop_traversal",
-  "source_question": "服务 svc-gold-001 使用了哪些隧道",
+  "source_question": "",
   "bindings": {
-    "start": {
+    "v0": {
       "vertex_name": "Service"
     },
-    "end": {
+    "v1": {
       "vertex_name": "Tunnel"
     },
-    "edge": {
+    "edge_0": {
       "edge_name": "SERVICE_USES_TUNNEL"
     }
   },
   "operations": [
     {
       "op": "traverse_edge",
-      "from": "start",
-      "edge": "edge",
-      "to": "end",
+      "from": "v0",
+      "edge": "edge_0",
+      "to": "v1",
       "direction": "forward"
     }
   ],
   "filters": [
     {
-      "target": "start",
+      "target": "v0",
       "property": {
         "owner": "Service",
         "name": "id"
@@ -41,12 +41,15 @@
   "projection": {
     "items": [
       {
-        "alias": "tunnel_id",
-        "target": "end",
+        "target": "v1",
         "property": {
           "owner": "Tunnel",
           "name": "id"
-        }
+        },
+        "alias": "tunnel_id",
+        "projection_terms": [
+          "ID"
+        ]
       }
     ]
   }
