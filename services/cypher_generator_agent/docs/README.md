@@ -1,7 +1,7 @@
 # Graph Cypher Generation 文档索引
 
 > 更新日期：2026-06-02
-> 适用分支：`cypher-generation-osi`
+> 适用分支：`main`
 > 状态：v1 基础 IR 已闭环，后续进入 680 回归驱动的小步收尾
 
 ## 阅读顺序
@@ -18,6 +18,12 @@
 10. [Observability v1](./2026-05-27-observability-v1-design.md)：trace、stage、指标和排障视图。
 11. [Schema Versioning Policy](./2026-05-27-schema-versioning-policy.md)：各类 schema 的演进和兼容策略。
 12. [Graph-native Terminology](./2026-05-27-graph-terminology-design.md) 与 [Network Topology Vocabulary](./2026-05-27-network-topology-vocabulary.md)：术语与网络拓扑示例词汇。
+
+## 实验和运行分析
+
+- [QA Agent Sample Pool Experiment](./experiments/2026-05-20-qa-agent-sample-pool-experiment.md)：样本池构造与派发记录。
+- [CGA Experiment Issues](./experiments/2026-05-22-cga-experiment-issues.md)：CGA 实验问题、修复记录和回归证据。
+- [Runtime Center CGA Job Analysis](./experiments/2026-05-28-runtime-center-cga-job-analysis.md)：运行中心样本分析、MIR 跟踪和回归结果。
 
 ## 当前工程事实
 

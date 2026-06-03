@@ -4,7 +4,7 @@
 
 - 基线采集时间：2026-05-25T13:22:29Z
 - 远端基线文件：`/home/mabingjie/apps/qa-agent/artifacts/experiment_runs/runtime_baseline_before_280_20260525T132229Z.json`
-- 本地同步文件：`docs/experiments/artifacts/runtime_baseline_before_280_20260525T132229Z.json`
+- 本地同步文件：`services/cypher_generator_agent/docs/experiments/artifacts/runtime_baseline_before_280_20260525T132229Z.json`
 - 8000/glm5.1（testing 8003）：`passed=158`，`failed=39`，`generation_failed=83`，`pending=0`
 - 8006/qwen3-32b（testing 8013）：`passed=155`，`failed=29`，`generation_failed=96`，`pending=0`
 
@@ -15,7 +15,7 @@
 - 样本池：`/home/mabingjie/apps/qa-agent/artifacts/experiment_pools/pool_20260520T111838Z.jsonl`（280 条）
 - 8000/glm5.1 发送记录：`/home/mabingjie/apps/qa-agent/artifacts/experiment_runs/dispatch_8000_full280_after_lexical_vector_off_20260525T132247Z.jsonl`；其中 `qa_d11531c27f90` 首次 question POST 500，已用 `dispatch_8000_retry_qa_d11531c27f90_after_full280_20260525T135845Z.jsonl` 单条补发成功。
 - 8006/qwen3-32b 发送记录：`/home/mabingjie/apps/qa-agent/artifacts/experiment_runs/dispatch_8006_full280_after_lexical_vector_off_20260525T132247Z.jsonl`
-- 汇总文件：`/home/mabingjie/apps/qa-agent/artifacts/experiment_runs/summary_full280_after_lexical_vector_off_20260525T1359Z.json`；本地同步文件：`docs/experiments/artifacts/summary_full280_after_lexical_vector_off_20260525T1359Z.json`
+- 汇总文件：`/home/mabingjie/apps/qa-agent/artifacts/experiment_runs/summary_full280_after_lexical_vector_off_20260525T1359Z.json`；本地同步文件：`services/cypher_generator_agent/docs/experiments/artifacts/summary_full280_after_lexical_vector_off_20260525T1359Z.json`
 - 8000/glm5.1 最新结果：`passed=160`，`failed=53`，`generation_failed=67`，`pending=0`，`stale=0`
 - 8006/qwen3-32b 最新结果：`passed=159`，`failed=42`，`generation_failed=79`，`pending=0`，`stale=0`
 
@@ -47,7 +47,7 @@
 - 样本池：`/home/mabingjie/apps/qa-agent/artifacts/experiment_pools/pool_20260525T070416Z_balanced400_L1-L8_50_each.jsonl`（400 条，L1-L8 各 50 条；选择该池作为最新完成的 400 条样本池）
 - 8000/glm5.1 发送记录：`/home/mabingjie/apps/qa-agent/artifacts/experiment_runs/dispatch_8000_new400_after_lexical_vector_off_20260525T140110Z.jsonl`；首次 `qa_a53a92fefe9c`、`qa_b3ae05c536bf`、`qa_e7cec9f95c69` question POST 500，已分别用 `dispatch_8000_retry_qa_a53a92fefe9c_after_new400_20260525T145239Z.jsonl`、`dispatch_8000_retry_qa_b3ae05c536bf_after_new400_20260525T145239Z.jsonl`、`dispatch_8000_retry_qa_e7cec9f95c69_after_new400_20260525T145239Z.jsonl` 单条补发成功。
 - 8006/qwen3-32b 发送记录：`/home/mabingjie/apps/qa-agent/artifacts/experiment_runs/dispatch_8006_new400_after_lexical_vector_off_20260525T140110Z.jsonl`
-- 汇总文件：`/home/mabingjie/apps/qa-agent/artifacts/experiment_runs/summary_new400_after_lexical_vector_off_20260525T1505Z.json`；本地同步文件：`docs/experiments/artifacts/summary_new400_after_lexical_vector_off_20260525T1505Z.json`
+- 汇总文件：`/home/mabingjie/apps/qa-agent/artifacts/experiment_runs/summary_new400_after_lexical_vector_off_20260525T1505Z.json`；本地同步文件：`services/cypher_generator_agent/docs/experiments/artifacts/summary_new400_after_lexical_vector_off_20260525T1505Z.json`
 - 8000/glm5.1 最新结果：`passed=211`，`failed=82`，`generation_failed=106`，`pending=1`，首发 `partial=3` 均已补发；8006/qwen3-32b 最新结果：`passed=212`，`failed=69`，`generation_failed=118`，`pending=1`
 - 两路同时通过：`201`；任一路未通过或待定：`199`。完整分通道状态、gold/generated Cypher、失败原因和 dispatch 记录见上述 JSON artifact。
 
