@@ -21,8 +21,6 @@
 
 ## 实验和运行分析
 
-- [QA Agent Sample Pool Experiment](./experiments/2026-05-20-qa-agent-sample-pool-experiment.md)：样本池构造与派发记录。
-- [CGA Experiment Issues](./experiments/2026-05-22-cga-experiment-issues.md)：CGA 实验问题、修复记录和回归证据。
 - [Runtime Center CGA Job Analysis](./experiments/2026-05-28-runtime-center-cga-job-analysis.md)：运行中心样本分析、MIR 跟踪和回归结果。
 
 ## 当前工程事实
